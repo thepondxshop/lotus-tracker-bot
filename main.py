@@ -24,26 +24,17 @@ from app.helpers import (
 from app.database import (
     init_database,
     SessionLocal,
+    load_user_preferences,
+    sync_member_to_database,
 )
 
 
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 0.4.1
+# Version 0.4.2
 #
-# Modular Foundation + PostgreSQL
-#
-# Includes:
-# - Discord bot
-# - Game role system
-# - Permanent #roles selector
-# - Subscription detection
-# - Settings
-# - Tier access engine
-# - Test alert routing
-# - PostgreSQL connection
-# - /dbstatus
+# Persistent User Preferences
 # =========================================================
 
 
@@ -52,9 +43,32 @@ from app.database import (
 # =========================================================
 
 intents = discord.Intents.default()
-
-# Required for Discord role management
 intents.members = True
+
+
+# =========================================================
+# SAVE MEMBER TO DATABASE
+# =========================================================
+
+async def save_member_to_database(
+    member: discord.Member
+):
+
+    tier = get_subscription(
+        member
+    )
+
+    followed_games = (
+        get_followed_games(
+            member
+        )
+    )
+
+    await sync_member_to_database(
+        member=member,
+        subscription_tier=tier,
+        selected_games=followed_games,
+    )
 
 
 # =========================================================
@@ -65,18 +79,21 @@ async def update_game_roles(
     interaction: discord.Interaction,
     selected_games
 ):
+
     member = interaction.user
 
     if not isinstance(
         member,
         discord.Member
     ):
+
         return (
             False,
             "❌ This must be used inside the server."
         )
 
     if interaction.guild is None:
+
         return (
             False,
             "❌ This must be used inside the server."
@@ -90,7 +107,14 @@ async def update_game_roles(
     removed_roles = []
     errors = []
 
-    for game_name, role_id in GAME_ROLES.items():
+    # =====================================================
+    # UPDATE DISCORD ROLES
+    # =====================================================
+
+    for (
+        game_name,
+        role_id
+    ) in GAME_ROLES.items():
 
         role_id = safe_int(
             role_id
@@ -104,8 +128,10 @@ async def update_game_roles(
 
             continue
 
-        role = interaction.guild.get_role(
-            role_id
+        role = (
+            interaction.guild.get_role(
+                role_id
+            )
         )
 
         if role is None:
@@ -117,7 +143,7 @@ async def update_game_roles(
             continue
 
         # -------------------------------------------------
-        # ADD SELECTED GAME ROLE
+        # ADD ROLE
         # -------------------------------------------------
 
         if game_name in selected_games:
@@ -146,11 +172,14 @@ async def update_game_roles(
                 except discord.HTTPException as error:
 
                     errors.append(
-                        f"{game_name}: Discord error: {error}"
+                        (
+                            f"{game_name}: Discord error: "
+                            f"{error}"
+                        )
                     )
 
         # -------------------------------------------------
-        # REMOVE DESELECTED GAME ROLE
+        # REMOVE ROLE
         # -------------------------------------------------
 
         else:
@@ -179,25 +208,59 @@ async def update_game_roles(
                 except discord.HTTPException as error:
 
                     errors.append(
-                        f"{game_name}: Discord error: {error}"
+                        (
+                            f"{game_name}: Discord error: "
+                            f"{error}"
+                        )
                     )
 
-    # -------------------------------------------------
-    # BUILD CONFIRMATION
-    # -------------------------------------------------
+    # =====================================================
+    # SAVE PREFERENCES TO POSTGRESQL
+    # =====================================================
+
+    database_saved = False
+
+    try:
+
+        await save_member_to_database(
+            member
+        )
+
+        database_saved = True
+
+    except Exception as error:
+
+        print(
+            "USER DATABASE SAVE ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        errors.append(
+            "Database save failed"
+        )
+
+    # =====================================================
+    # CONFIRMATION MESSAGE
+    # =====================================================
 
     message = (
         "✅ **Your game alert preferences were updated!**\n\n"
     )
 
-    if selected_games:
+    actual_games = (
+        get_followed_games(
+            member
+        )
+    )
+
+    if actual_games:
 
         message += (
             "**You are following:**\n"
         )
 
         for game in sorted(
-            selected_games
+            actual_games
         ):
 
             message += (
@@ -234,10 +297,16 @@ async def update_game_roles(
                 f"• {game}\n"
             )
 
+    if database_saved:
+
+        message += (
+            "\n💾 **Preferences saved to Lotus.**"
+        )
+
     if errors:
 
         message += (
-            "\n⚠️ **Warnings:**\n"
+            "\n\n⚠️ **Warnings:**\n"
         )
 
         for error in errors:
@@ -246,11 +315,14 @@ async def update_game_roles(
                 f"• {error}\n"
             )
 
-    return True, message
+    return (
+        True,
+        message
+    )
 
 
 # =========================================================
-# TEMPORARY /GAMES SELECTOR
+# /GAMES SELECTOR
 # =========================================================
 
 class GameSelect(
@@ -281,7 +353,7 @@ class GameSelect(
                 )
             )
 
-            is_selected = (
+            selected = (
                 role_id in current_role_ids
                 if role_id
                 else False
@@ -293,7 +365,7 @@ class GameSelect(
                     description=description,
                     emoji=emoji,
                     value=game_name,
-                    default=is_selected,
+                    default=selected,
                 )
             )
 
@@ -348,7 +420,7 @@ class GameSelectView(
 
 
 # =========================================================
-# PERMANENT #ROLES SELECTOR
+# PERSISTENT #ROLES SELECTOR
 # =========================================================
 
 class PersistentGameSelect(
@@ -442,10 +514,7 @@ class LotusTrackerBot(
             intents=intents,
         )
 
-        # Tracks database health
         self.database_ready = False
-
-        # Stores startup database error
         self.database_error = None
 
     async def setup_hook(
@@ -453,7 +522,7 @@ class LotusTrackerBot(
     ):
 
         # -------------------------------------------------
-        # REGISTER PERSISTENT DISCORD COMPONENTS
+        # PERSISTENT DISCORD COMPONENTS
         # -------------------------------------------------
 
         self.add_view(
@@ -461,10 +530,7 @@ class LotusTrackerBot(
         )
 
         # -------------------------------------------------
-        # INITIALIZE POSTGRESQL
-        #
-        # IMPORTANT:
-        # Database failure will NOT crash the Discord bot.
+        # POSTGRESQL
         # -------------------------------------------------
 
         try:
@@ -481,6 +547,7 @@ class LotusTrackerBot(
         except Exception as error:
 
             self.database_ready = False
+
             self.database_error = (
                 f"{type(error).__name__}: {error}"
             )
@@ -496,7 +563,7 @@ class LotusTrackerBot(
             )
 
         # -------------------------------------------------
-        # SYNC DISCORD COMMANDS
+        # SLASH COMMANDS
         # -------------------------------------------------
 
         synced = (
@@ -533,7 +600,7 @@ async def on_ready():
     )
 
     print(
-        "Architecture: Modular v0.4.1"
+        "Architecture: Modular v0.4.2"
     )
 
     if bot.database_ready:
@@ -631,7 +698,9 @@ async def games(
             "**Lotus Tracker Bot** to monitor.\n\n"
             "**Game roles determine which games you follow.**\n"
             "**Your subscription determines which "
-            "features you unlock.**"
+            "features you unlock.**\n\n"
+            "Your selections are now saved "
+            "to the Lotus database."
         ),
     )
 
@@ -660,8 +729,10 @@ async def games(
 
     await interaction.response.send_message(
         embed=embed,
-        view=GameSelectView(
-            member
+        view=(
+            GameSelectView(
+                member
+            )
         ),
         ephemeral=True,
     )
@@ -800,7 +871,8 @@ async def setupgames(
                 "Choose every TCG you want alerts for.\n\n"
                 "You may select **as many games as you want**.\n\n"
                 "Game roles control **which games you follow**.\n"
-                "Your subscription controls **which features you unlock**."
+                "Your subscription controls **which features you unlock**.\n\n"
+                "Selections are saved to Lotus."
             ),
         )
 
@@ -896,6 +968,24 @@ async def subscription(
             member
         )
     )
+
+    # Keep current Discord state synced
+    # to PostgreSQL whenever this command is used.
+
+    if bot.database_ready:
+
+        try:
+
+            await save_member_to_database(
+                member
+            )
+
+        except Exception as error:
+
+            print(
+                "SUBSCRIPTION DB SYNC ERROR: "
+                f"{type(error).__name__}: {error}"
+            )
 
     games_text = (
         "\n".join(
@@ -1006,7 +1096,7 @@ async def subscription(
 
 @bot.tree.command(
     name="settings",
-    description="View your Lotus Tracker Bot settings."
+    description="View your persistent Lotus settings."
 )
 async def settings(
     interaction: discord.Interaction
@@ -1029,24 +1119,115 @@ async def settings(
 
         return
 
-    tier = get_subscription(
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    # =====================================================
+    # CURRENT DISCORD STATE
+    # =====================================================
+
+    discord_tier = get_subscription(
         member
     )
 
-    followed_games = (
+    discord_games = (
         get_followed_games(
             member
         )
     )
 
-    games_text = (
-        "\n".join(
-            f"✅ {game}"
-            for game in followed_games
+    # =====================================================
+    # TRY TO LOAD DATABASE SETTINGS
+    # =====================================================
+
+    database_settings = None
+
+    if bot.database_ready:
+
+        try:
+
+            database_settings = (
+                await load_user_preferences(
+                    member.id
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                "SETTINGS DATABASE READ ERROR: "
+                f"{type(error).__name__}: {error}"
+            )
+
+    # =====================================================
+    # FIRST-TIME USER
+    #
+    # If the user is not in PostgreSQL yet,
+    # sync their current Discord state.
+    # =====================================================
+
+    if (
+        database_settings is None
+        and bot.database_ready
+    ):
+
+        try:
+
+            await save_member_to_database(
+                member
+            )
+
+            database_settings = (
+                await load_user_preferences(
+                    member.id
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                "SETTINGS INITIAL SYNC ERROR: "
+                f"{type(error).__name__}: {error}"
+            )
+
+    # =====================================================
+    # SETTINGS SOURCE
+    # =====================================================
+
+    if database_settings:
+
+        tier = (
+            database_settings[
+                "subscription"
+            ]
         )
-        if followed_games
-        else "No games selected"
-    )
+
+        followed_games = (
+            database_settings[
+                "games"
+            ]
+        )
+
+        storage_status = (
+            "💾 PostgreSQL"
+        )
+
+    else:
+
+        tier = discord_tier
+
+        followed_games = (
+            discord_games
+        )
+
+        storage_status = (
+            "⚠️ Discord fallback"
+        )
+
+    # =====================================================
+    # FEATURE ACCESS
+    # =====================================================
 
     features = [
 
@@ -1113,15 +1294,28 @@ async def settings(
             f"{symbol} {feature_name}"
         )
 
+    games_text = (
+        "\n".join(
+            f"✅ {game}"
+            for game in followed_games
+        )
+        if followed_games
+        else "No games selected"
+    )
+
+    # =====================================================
+    # EMBED
+    # =====================================================
+
     embed = discord.Embed(
         title=(
             "⚙️ Lotus Tracker Settings"
         ),
         description=(
-            f"**Subscription:** {tier}\n\n"
-            "Persistent personal alert controls "
-            "will be connected to PostgreSQL "
-            "in the next database stage."
+            f"**Subscription:** {tier}\n"
+            f"**Settings Storage:** {storage_status}\n\n"
+            "Your selected games are now "
+            "stored persistently by Lotus."
         ),
     )
 
@@ -1149,18 +1343,165 @@ async def settings(
 
     embed.set_footer(
         text=(
-            "Lotus Tracker Bot • Version 0.4.1"
+            "Lotus Tracker Bot • Version 0.4.2"
         )
     )
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         embed=embed,
         ephemeral=True,
     )
 
 
 # =========================================================
-# TEST ALERT EMBED BUILDER
+# /DBME
+#
+# Shows whether the current member exists
+# in PostgreSQL.
+# =========================================================
+
+@bot.tree.command(
+    name="dbme",
+    description="Check your saved Lotus database profile."
+)
+async def dbme(
+    interaction: discord.Interaction
+):
+
+    member = interaction.user
+
+    if not isinstance(
+        member,
+        discord.Member
+    ):
+
+        await interaction.response.send_message(
+            (
+                "❌ Use this command inside "
+                "the Discord server."
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    if not bot.database_ready:
+
+        await interaction.followup.send(
+            (
+                "🔴 **PostgreSQL is currently offline.**"
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    try:
+
+        profile = (
+            await load_user_preferences(
+                member.id
+            )
+        )
+
+        # ---------------------------------------------
+        # IF MEMBER DOES NOT EXIST YET, CREATE THEM
+        # ---------------------------------------------
+
+        if profile is None:
+
+            await save_member_to_database(
+                member
+            )
+
+            profile = (
+                await load_user_preferences(
+                    member.id
+                )
+            )
+
+        games = (
+            profile[
+                "games"
+            ]
+        )
+
+        games_text = (
+            "\n".join(
+                f"• {game}"
+                for game in games
+            )
+            if games
+            else "No games saved"
+        )
+
+        embed = discord.Embed(
+            title=(
+                "💾 Your Lotus Database Profile"
+            ),
+            description=(
+                "Your Discord account is "
+                "successfully stored in PostgreSQL."
+            ),
+        )
+
+        embed.add_field(
+            name="Discord User",
+            value=(
+                f"`{profile['discord_user_id']}`"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Subscription",
+            value=(
+                profile[
+                    "subscription"
+                ]
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Saved Games",
+            value=games_text,
+            inline=False,
+        )
+
+        embed.set_footer(
+            text=(
+                "Lotus Tracker Bot • PostgreSQL"
+            )
+        )
+
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=True,
+        )
+
+    except Exception as error:
+
+        print(
+            "DBME ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        await interaction.followup.send(
+            (
+                "❌ Database profile lookup failed.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# TEST ALERT BUILDER
 # =========================================================
 
 def build_test_alert_embed(
@@ -1168,16 +1509,10 @@ def build_test_alert_embed(
     game
 ):
 
-    # -------------------------------------------------
-    # MAJOR RETAILER
-    # -------------------------------------------------
-
     if alert_type == "major_retailer":
 
         embed = discord.Embed(
-            title=(
-                "🚨 MAJOR RETAILER DROP"
-            ),
+            title="🚨 MAJOR RETAILER DROP",
             description=(
                 f"**{game} Test Product**"
             ),
@@ -1207,16 +1542,10 @@ def build_test_alert_embed(
             inline=False,
         )
 
-    # -------------------------------------------------
-    # PREORDER
-    # -------------------------------------------------
-
     elif alert_type == "preorder":
 
         embed = discord.Embed(
-            title=(
-                "🟣 PREORDER LIVE"
-            ),
+            title="🟣 PREORDER LIVE",
             description=(
                 f"**{game} Upcoming Product**"
             ),
@@ -1240,16 +1569,10 @@ def build_test_alert_embed(
             inline=False,
         )
 
-    # -------------------------------------------------
-    # PAGE LIVE
-    # -------------------------------------------------
-
     elif alert_type == "page_live":
 
         embed = discord.Embed(
-            title=(
-                "🔵 EARLY PAGE DETECTION"
-            ),
+            title="🔵 EARLY PAGE DETECTION",
             description=(
                 f"**{game} New Product Page**"
             ),
@@ -1273,16 +1596,10 @@ def build_test_alert_embed(
             inline=False,
         )
 
-    # -------------------------------------------------
-    # DEAL
-    # -------------------------------------------------
-
     elif alert_type == "deal":
 
         embed = discord.Embed(
-            title=(
-                "🔥 DEAL DETECTED"
-            ),
+            title="🔥 DEAL DETECTED",
             description=(
                 f"**{game} Test Booster Box**"
             ),
@@ -1312,22 +1629,10 @@ def build_test_alert_embed(
             inline=False,
         )
 
-        embed.add_field(
-            name="Alert Tier",
-            value="PREMIUM+",
-            inline=False,
-        )
-
-    # -------------------------------------------------
-    # INTERNATIONAL
-    # -------------------------------------------------
-
     elif alert_type == "international":
 
         embed = discord.Embed(
-            title=(
-                "🌎 INTERNATIONAL EXCLUSIVE"
-            ),
+            title="🌎 INTERNATIONAL EXCLUSIVE",
             description=(
                 f"**{game} Japan Exclusive Test Product**"
             ),
@@ -1357,22 +1662,10 @@ def build_test_alert_embed(
             inline=True,
         )
 
-        embed.add_field(
-            name="Alert Tier",
-            value="PREMIUM+",
-            inline=False,
-        )
-
-    # -------------------------------------------------
-    # INVENTORY FLICKER
-    # -------------------------------------------------
-
     elif alert_type == "inventory_flicker":
 
         embed = discord.Embed(
-            title=(
-                "⚡ INVENTORY FLICKER"
-            ),
+            title="⚡ INVENTORY FLICKER",
             description=(
                 f"**{game} High-Demand Test Product**"
             ),
@@ -1417,16 +1710,10 @@ def build_test_alert_embed(
             inline=False,
         )
 
-    # -------------------------------------------------
-    # RELEASE RADAR
-    # -------------------------------------------------
-
     elif alert_type == "release_radar":
 
         embed = discord.Embed(
-            title=(
-                "📡 RELEASE RADAR"
-            ),
+            title="📡 RELEASE RADAR",
             description=(
                 f"**Potential New {game} "
                 "Product Detected**"
@@ -1459,16 +1746,10 @@ def build_test_alert_embed(
             inline=False,
         )
 
-    # -------------------------------------------------
-    # UNKNOWN TYPE
-    # -------------------------------------------------
-
     else:
 
         embed = discord.Embed(
-            title=(
-                "Lotus Test Alert"
-            ),
+            title="Lotus Test Alert",
             description=(
                 "Unknown alert type."
             ),
@@ -1755,8 +2036,8 @@ async def dbstatus(
         await interaction.followup.send(
             (
                 "🟢 **PostgreSQL is online!**\n\n"
-                "Lotus Tracker Bot successfully "
-                "connected to the PonDeX database."
+                "Lotus successfully connected "
+                "to the PonDeX database."
             ),
             ephemeral=True,
         )
@@ -1818,11 +2099,12 @@ async def status(
             "**Access Engine:** Online ✅\n"
             "**Test Alert Engine:** Online ✅\n"
             f"**PostgreSQL:** {database_status}\n"
+            "**Persistent User Data:** Online ✅\n"
             "**Redis:** Coming Next\n"
             "**Monitoring Worker:** Coming Soon\n"
             "**Live Alert Engine:** Coming Soon\n\n"
             f"**Latency:** {latency}ms\n"
-            "**Version:** 0.4.1"
+            "**Version:** 0.4.2"
         ),
     )
 
@@ -1839,7 +2121,7 @@ async def status(
 
 
 # =========================================================
-# COMMAND ERROR HANDLERS
+# ERROR HANDLERS
 # =========================================================
 
 @setupgames.error
