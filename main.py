@@ -3,11 +3,14 @@ import asyncio
 import discord
 
 from discord.ext import commands
-
 from discord import app_commands
 
 from sqlalchemy import text
 
+
+# =========================================================
+# CONFIG
+# =========================================================
 
 from app.config import (
     DISCORD_TOKEN,
@@ -18,12 +21,22 @@ from app.config import (
     CHANNEL_ROLES,
 )
 
+
+# =========================================================
+# HELPERS
+# =========================================================
+
 from app.helpers import (
     safe_int,
     get_subscription,
     get_followed_games,
     tier_allows,
 )
+
+
+# =========================================================
+# DATABASE
+# =========================================================
 
 from app.database import (
     init_database,
@@ -32,10 +45,20 @@ from app.database import (
     sync_member_to_database,
 )
 
+
+# =========================================================
+# REDIS
+# =========================================================
+
 from app.redis_client import (
     init_redis,
     check_redis,
 )
+
+
+# =========================================================
+# EVENTS
+# =========================================================
 
 from app.events import (
     ProductEvent,
@@ -47,9 +70,19 @@ from app.event_service import (
     get_queue_size,
 )
 
+
+# =========================================================
+# EVENT WORKER
+# =========================================================
+
 from app.worker import (
     run_event_worker,
 )
+
+
+# =========================================================
+# SHOPIFY
+# =========================================================
 
 from app.shopify_monitor import (
     add_shopify_store,
@@ -64,29 +97,49 @@ from app.shopify_monitor import (
     set_shopify_store_active,
 )
 
+
+# =========================================================
+# STORE HEALTH
+# =========================================================
+
 from app.store_health import (
     get_health_overview,
 )
 
 
 # =========================================================
+# POKEMON CENTER
+# =========================================================
+
+from app.pokemon_center_monitor import (
+    get_pokemon_center_status,
+    run_pokemon_center_monitor,
+    scan_pokemon_center,
+)
+
+
+# =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 0.6.3
+# Version 0.7
 #
+# Discord
 # PostgreSQL
 # Alembic
 # Redis
-# Product Events
-# Discord Routing
+# Event Worker
 # Affiliate Pipeline
 # Shopify Monitoring
-# Product Intelligence
+# Store Health / Self-Healing
 # Inventory Flicker
-# Store Health
-# Self-Healing
+# Product Intelligence
+# Pokemon Center Queue Intelligence
 # =========================================================
 
+
+# =========================================================
+# INTENTS
+# =========================================================
 
 intents = (
     discord.Intents.default()
@@ -96,7 +149,7 @@ intents.members = True
 
 
 # =========================================================
-# CHOICES
+# GAME / EVENT CHOICES
 # =========================================================
 
 GAME_CHOICES = [
@@ -214,6 +267,21 @@ EVENT_CHOICES = [
         name="Release Date Changed",
         value="RELEASE_DATE_CHANGED",
     ),
+
+    app_commands.Choice(
+        name="Pokemon Queue Detected",
+        value="QUEUE_DETECTED",
+    ),
+
+    app_commands.Choice(
+        name="Pokemon Queue Active",
+        value="QUEUE_ACTIVE",
+    ),
+
+    app_commands.Choice(
+        name="Pokemon Queue Cleared",
+        value="QUEUE_CLEARED",
+    ),
 ]
 
 
@@ -226,12 +294,15 @@ async def save_member_to_database(
 ):
 
     await sync_member_to_database(
+
         member=member,
+
         subscription_tier=(
             get_subscription(
                 member
             )
         ),
+
         selected_games=(
             get_followed_games(
                 member
@@ -241,7 +312,7 @@ async def save_member_to_database(
 
 
 # =========================================================
-# GAME ROLES
+# GAME ROLE UPDATE
 # =========================================================
 
 async def update_game_roles(
@@ -249,7 +320,9 @@ async def update_game_roles(
     selected_games,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -299,10 +372,7 @@ async def update_game_roles(
 
         try:
 
-            if (
-                game_name
-                in selected_games
-            ):
+            if game_name in selected_games:
 
                 if role not in member.roles:
 
@@ -313,14 +383,16 @@ async def update_game_roles(
                         ),
                     )
 
-            elif role in member.roles:
+            else:
 
-                await member.remove_roles(
-                    role,
-                    reason=(
-                        "Lotus game selection"
-                    ),
-                )
+                if role in member.roles:
+
+                    await member.remove_roles(
+                        role,
+                        reason=(
+                            "Lotus game selection"
+                        ),
+                    )
 
         except Exception as error:
 
@@ -363,12 +435,11 @@ async def update_game_roles(
 
     if games:
 
-        message += (
-            "\n".join(
-                f"• {game}"
-                for game in sorted(
-                    games
-                )
+        message += "\n".join(
+            f"• {game}"
+            for game
+            in sorted(
+                games
             )
         )
 
@@ -400,7 +471,7 @@ async def update_game_roles(
 
 
 # =========================================================
-# GAME SELECT UI
+# GAME SELECTOR
 # =========================================================
 
 class GameSelect(
@@ -414,7 +485,8 @@ class GameSelect(
 
         current_ids = {
             role.id
-            for role in member.roles
+            for role
+            in member.roles
         }
 
         options = []
@@ -434,10 +506,15 @@ class GameSelect(
             options.append(
 
                 discord.SelectOption(
+
                     label=game,
+
                     value=game,
+
                     description=description,
+
                     emoji=emoji,
+
                     default=(
                         role_id
                         in current_ids
@@ -497,6 +574,10 @@ class GameSelectView(
         )
 
 
+# =========================================================
+# PERSISTENT GAME SELECTOR
+# =========================================================
+
 class PersistentGameSelect(
     discord.ui.Select
 ):
@@ -516,9 +597,13 @@ class PersistentGameSelect(
             options.append(
 
                 discord.SelectOption(
+
                     label=game,
+
                     value=game,
+
                     description=description,
+
                     emoji=emoji,
                 )
             )
@@ -597,17 +682,23 @@ class LotusTrackerBot(
 
         self.shopify_monitor_task = None
 
+        self.pokemon_center_task = None
+
 
     async def setup_hook(
         self,
     ):
+
+        # =================================================
+        # PERSISTENT UI
+        # =================================================
 
         self.add_view(
             PersistentGameSelectView()
         )
 
         # =================================================
-        # POSTGRESQL + ALEMBIC
+        # POSTGRESQL / ALEMBIC
         # =================================================
 
         try:
@@ -662,20 +753,15 @@ class LotusTrackerBot(
             )
 
         # =================================================
-        # WORKERS
+        # EVENT WORKER
         # =================================================
 
         self.event_worker_task = (
             asyncio.create_task(
+
                 run_event_worker(
                     self
                 )
-            )
-        )
-
-        self.shopify_monitor_task = (
-            asyncio.create_task(
-                run_shopify_monitor()
             )
         )
 
@@ -683,9 +769,39 @@ class LotusTrackerBot(
             "Lotus Event Worker task created."
         )
 
+        # =================================================
+        # SHOPIFY MONITOR
+        # =================================================
+
+        self.shopify_monitor_task = (
+            asyncio.create_task(
+
+                run_shopify_monitor()
+            )
+        )
+
         print(
             "Lotus Shopify Monitor task created."
         )
+
+        # =================================================
+        # POKEMON CENTER MONITOR
+        # =================================================
+
+        self.pokemon_center_task = (
+            asyncio.create_task(
+
+                run_pokemon_center_monitor()
+            )
+        )
+
+        print(
+            "Pokémon Center Monitor task created."
+        )
+
+        # =================================================
+        # COMMAND SYNC
+        # =================================================
 
         synced = (
             await self.tree.sync()
@@ -717,7 +833,7 @@ async def on_ready():
     )
 
     print(
-        "Version: 0.6.3"
+        "Version: 0.7"
     )
 
     print(
@@ -738,14 +854,52 @@ async def on_ready():
         ),
     )
 
+    print(
+        "Event Worker:",
+        (
+            "ONLINE"
+            if (
+                bot.event_worker_task
+                and not bot.event_worker_task.done()
+            )
+            else "OFFLINE"
+        ),
+    )
+
+    print(
+        "Shopify Monitor:",
+        (
+            "ONLINE"
+            if (
+                bot.shopify_monitor_task
+                and not bot.shopify_monitor_task.done()
+            )
+            else "OFFLINE"
+        ),
+    )
+
+    print(
+        "Pokemon Center:",
+        (
+            "ONLINE"
+            if (
+                bot.pokemon_center_task
+                and not bot.pokemon_center_task.done()
+            )
+            else "OFFLINE"
+        ),
+    )
+
     print("=" * 60)
 
     await bot.change_presence(
 
         activity=discord.Activity(
+
             type=(
                 discord.ActivityType.watching
             ),
+
             name=(
                 "TCG drops worldwide 🌎"
             ),
@@ -754,7 +908,7 @@ async def on_ready():
 
 
 # =========================================================
-# BASIC COMMANDS
+# /PING
 # =========================================================
 
 @bot.tree.command(
@@ -767,12 +921,17 @@ async def ping(
 
     await interaction.response.send_message(
         (
-            "🏓 Lotus is online.\n"
-            f"Latency: `{round(bot.latency * 1000)}ms`"
+            "🏓 **Lotus is online.**\n"
+            f"Latency: "
+            f"`{round(bot.latency * 1000)}ms`"
         ),
         ephemeral=True,
     )
 
+
+# =========================================================
+# /GAMES
+# =========================================================
 
 @bot.tree.command(
     name="games",
@@ -782,7 +941,9 @@ async def games(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -791,20 +952,28 @@ async def games(
 
         return
 
-    await interaction.response.send_message(
-        embed=discord.Embed(
-            title="🎴 Choose Your TCGs",
-            description=(
-                "Select every game "
-                "you want Lotus alerts for."
-            ),
+    embed = discord.Embed(
+        title="🎴 Choose Your TCGs",
+        description=(
+            "Select every game you want "
+            "Lotus alerts for."
         ),
-        view=GameSelectView(
-            member
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=(
+            GameSelectView(
+                member
+            )
         ),
         ephemeral=True,
     )
 
+
+# =========================================================
+# /SETUPGAMES
+# =========================================================
 
 @bot.tree.command(
     name="setupgames",
@@ -830,10 +999,13 @@ async def setupgames(
     )
 
     channel = (
+
         interaction.guild.get_channel(
             channel_id
         )
+
         if channel_id
+
         else None
     )
 
@@ -846,14 +1018,16 @@ async def setupgames(
 
         return
 
-    await channel.send(
-        embed=discord.Embed(
-            title="🎴 Choose Your Games",
-            description=(
-                "Select every TCG "
-                "you want Lotus alerts for."
-            ),
+    embed = discord.Embed(
+        title="🎴 Choose Your Games",
+        description=(
+            "Select every TCG you want "
+            "Lotus alerts for."
         ),
+    )
+
+    await channel.send(
+        embed=embed,
         view=PersistentGameSelectView(),
     )
 
@@ -867,7 +1041,7 @@ async def setupgames(
 
 
 # =========================================================
-# SUBSCRIPTION / SETTINGS
+# /SUBSCRIPTION
 # =========================================================
 
 @bot.tree.command(
@@ -878,7 +1052,9 @@ async def subscription(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -899,11 +1075,81 @@ async def subscription(
         )
     )
 
-    embed = discord.Embed(
-        title="💳 PonDeX Subscription",
-        description=(
-            f"**Current Tier:** {tier}"
+    tier_details = {
+
+        "Free": (
+            "⚪",
+            "$0",
+            (
+                "• Major retailer alerts\n"
+                "• Basic stock alerts\n"
+                "• Game role selection"
+            ),
         ),
+
+        "Lite": (
+            "🌿",
+            "$1.99/month",
+            (
+                "• Everything in Free\n"
+                "• Preorder alerts\n"
+                "• Preorder calendar\n"
+                "• Priority support\n"
+                "• 14-day free trial"
+            ),
+        ),
+
+        "Premium": (
+            "👑",
+            "$17.99/month",
+            (
+                "• Everything in Lite\n"
+                "• Shopify / TCG stores\n"
+                "• Early page detection\n"
+                "• Price drops & deals\n"
+                "• International alerts\n"
+                "• Advanced discovery"
+            ),
+        ),
+
+        "Premium+": (
+            "💎",
+            "$44.99/month",
+            (
+                "• Everything in Premium\n"
+                "• Inventory Flicker ⚡\n"
+                "• Release Radar\n"
+                "• Pokémon Center Queue Intelligence\n"
+                "• Cart Watch\n"
+                "• Earliest detections\n"
+                "• Global intelligence"
+            ),
+        ),
+    }
+
+    icon, price, features = (
+        tier_details.get(
+            tier,
+            tier_details[
+                "Free"
+            ],
+        )
+    )
+
+    embed = discord.Embed(
+        title=(
+            f"{icon} PonDeX Subscription"
+        ),
+        description=(
+            f"**Current Tier:** {tier}\n"
+            f"**Price:** {price}"
+        ),
+    )
+
+    embed.add_field(
+        name="Your Access",
+        value=features,
+        inline=False,
     )
 
     embed.add_field(
@@ -911,7 +1157,8 @@ async def subscription(
         value=(
             "\n".join(
                 f"• {game}"
-                for game in games
+                for game
+                in games
             )
             if games
             else "None"
@@ -925,6 +1172,10 @@ async def subscription(
     )
 
 
+# =========================================================
+# /SETTINGS
+# =========================================================
+
 @bot.tree.command(
     name="settings",
     description="View Lotus settings.",
@@ -933,7 +1184,9 @@ async def settings(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -955,14 +1208,51 @@ async def settings(
     )
 
     features = [
-        ("Major Retailer Alerts", "Free"),
-        ("Preorders", "Lite"),
-        ("Early Page Detection", "Premium"),
-        ("Deals", "Premium"),
-        ("International", "Premium"),
-        ("Release Radar", "Premium+"),
-        ("Inventory Flicker", "Premium+"),
-        ("Cart Watch", "Premium+"),
+
+        (
+            "Major Retailer Alerts",
+            "Free",
+        ),
+
+        (
+            "Preorder Alerts",
+            "Lite",
+        ),
+
+        (
+            "Early Page Detection",
+            "Premium",
+        ),
+
+        (
+            "Deals",
+            "Premium",
+        ),
+
+        (
+            "International",
+            "Premium",
+        ),
+
+        (
+            "Release Radar",
+            "Premium+",
+        ),
+
+        (
+            "Inventory Flicker",
+            "Premium+",
+        ),
+
+        (
+            "Pokémon Center Queue",
+            "Premium+",
+        ),
+
+        (
+            "Cart Watch",
+            "Premium+",
+        ),
     ]
 
     feature_text = "\n".join(
@@ -995,7 +1285,8 @@ async def settings(
         value=(
             "\n".join(
                 f"✅ {game}"
-                for game in games
+                for game
+                in games
             )
             if games
             else "None"
@@ -1015,6 +1306,10 @@ async def settings(
     )
 
 
+# =========================================================
+# /DBME
+# =========================================================
+
 @bot.tree.command(
     name="dbme",
     description="View your stored Lotus profile.",
@@ -1033,22 +1328,23 @@ async def dbme(
         )
     )
 
-    if profile is None:
-
-        if isinstance(
+    if (
+        profile is None
+        and isinstance(
             interaction.user,
             discord.Member,
-        ):
+        )
+    ):
 
-            await save_member_to_database(
-                interaction.user
-            )
+        await save_member_to_database(
+            interaction.user
+        )
 
-            profile = (
-                await load_user_preferences(
-                    interaction.user.id
-                )
+        profile = (
+            await load_user_preferences(
+                interaction.user.id
             )
+        )
 
     if profile is None:
 
@@ -1062,7 +1358,8 @@ async def dbme(
     await interaction.followup.send(
         (
             "💾 **Lotus Database Profile**\n\n"
-            f"Tier: **{profile['subscription']}**\n"
+            f"Tier: "
+            f"**{profile['subscription']}**\n\n"
             "Games:\n"
             + (
                 "\n".join(
@@ -1083,7 +1380,7 @@ async def dbme(
 
 
 # =========================================================
-# INFRASTRUCTURE STATUS
+# /DBSTATUS
 # =========================================================
 
 @bot.tree.command(
@@ -1128,11 +1425,16 @@ async def dbstatus(
         await interaction.followup.send(
             (
                 "🔴 PostgreSQL failed.\n"
-                f"`{type(error).__name__}: {error}`"
+                f"`{type(error).__name__}: "
+                f"{error}`"
             ),
             ephemeral=True,
         )
 
+
+# =========================================================
+# /REDISSTATUS
+# =========================================================
 
 @bot.tree.command(
     name="redisstatus",
@@ -1146,7 +1448,9 @@ async def redisstatus(
         await check_redis()
     )
 
-    bot.redis_ready = online
+    bot.redis_ready = (
+        online
+    )
 
     await interaction.response.send_message(
         (
@@ -1157,6 +1461,10 @@ async def redisstatus(
         ephemeral=True,
     )
 
+
+# =========================================================
+# /EVENTSTATUS
+# =========================================================
 
 @bot.tree.command(
     name="eventstatus",
@@ -1176,15 +1484,23 @@ async def eventstatus(
         and not bot.event_worker_task.done()
     )
 
-    await interaction.response.send_message(
-        (
-            "📡 **Lotus Event Engine**\n\n"
-            f"PostgreSQL: {'✅' if bot.database_ready else '❌'}\n"
-            f"Redis: {'✅' if bot.redis_ready else '❌'}\n"
-            f"Worker: {'✅' if worker else '❌'}\n"
-            f"Queue: `{queue}`\n"
-            "Affiliate Pipeline: ✅"
+    embed = discord.Embed(
+        title="📡 Lotus Event Engine",
+        description=(
+            f"**PostgreSQL:** "
+            f"{'✅' if bot.database_ready else '❌'}\n"
+            f"**Redis:** "
+            f"{'✅' if bot.redis_ready else '❌'}\n"
+            f"**Event Worker:** "
+            f"{'✅' if worker else '❌'}\n"
+            f"**Queue:** `{queue}`\n"
+            "**Affiliate Pipeline:** ✅\n"
+            "**Pokemon Queue Events:** ✅"
         ),
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
         ephemeral=True,
     )
 
@@ -1213,8 +1529,11 @@ async def addshopifystore(
 
     store, created = (
         await add_shopify_store(
+
             name=name,
+
             domain=domain,
+
             region=region,
         )
     )
@@ -1263,7 +1582,8 @@ async def stores(
 
         lines.append(
             (
-                f"**ID {store.id} — {store.name}**\n"
+                f"**ID {store.id} — "
+                f"{store.name}**\n"
                 f"`{store.domain}`\n"
                 f"{'🟢' if store.active else '⚫'} "
                 f"{store.health_status}"
@@ -1276,8 +1596,10 @@ async def stores(
         )
 
     await interaction.followup.send(
-        "\n\n".join(
-            lines
+        (
+            "\n\n".join(
+                lines
+            )
         )[
             :1900
         ],
@@ -1319,7 +1641,7 @@ async def storeinfo(
     )
 
     embed.add_field(
-        name="ID",
+        name="Store ID",
         value=str(
             store.id
         ),
@@ -1327,7 +1649,9 @@ async def storeinfo(
 
     embed.add_field(
         name="Health",
-        value=store.health_status,
+        value=(
+            store.health_status
+        ),
     )
 
     embed.add_field(
@@ -1390,11 +1714,9 @@ async def storeinfo(
     embed.add_field(
         name="Last Error",
         value=(
-            (
-                store.last_error[
-                    :1000
-                ]
-            )
+            store.last_error[
+                :1000
+            ]
             if store.last_error
             else "None ✅"
         ),
@@ -1437,7 +1759,8 @@ async def disablestore(
 
     await interaction.response.send_message(
         (
-            f"⚫ **{store.name}** manually disabled.\n\n"
+            f"⚫ **{store.name}** "
+            "manually disabled.\n\n"
             "It will NOT automatically reactivate."
         ),
         ephemeral=True,
@@ -1473,7 +1796,9 @@ async def enablestore(
         return
 
     await interaction.response.send_message(
-        f"🟢 **{store.name}** enabled.",
+        (
+            f"🟢 **{store.name}** enabled."
+        ),
         ephemeral=True,
     )
 
@@ -1507,7 +1832,8 @@ async def removestore(
 
     await interaction.response.send_message(
         (
-            f"🗑️ **{store.name}** removed from monitoring.\n\n"
+            f"🗑️ **{store.name}** removed "
+            "from monitoring.\n\n"
             "It will no longer appear in `/stores`.\n"
             "Historical data remains preserved."
         ),
@@ -1544,8 +1870,8 @@ async def restorestore(
 
     await interaction.response.send_message(
         (
-            f"♻️ **{store.name}** restored "
-            "to active monitoring."
+            f"♻️ **{store.name}** "
+            "restored to active monitoring."
         ),
         ephemeral=True,
     )
@@ -1587,7 +1913,8 @@ async def storehealth(
             f"🩺 {store.name} Health"
         ),
         description=(
-            f"**Status:** {store.health_status}\n"
+            f"**Status:** "
+            f"{store.health_status}\n"
             f"**Active:** "
             f"{'✅' if store.active else '❌'}\n"
             f"**Failures:** "
@@ -1641,7 +1968,7 @@ async def storehealth(
 
 @bot.tree.command(
     name="healthstatus",
-    description="View overall Lotus store health.",
+    description="View overall store health.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -1657,13 +1984,18 @@ async def healthstatus(
     await interaction.response.send_message(
         (
             "🩺 **Lotus Store Health**\n\n"
-            f"🟢 Healthy: `{overview['healthy']}`\n"
-            f"🟡 Degraded: `{overview['degraded']}`\n"
-            f"🔴 Unhealthy: `{overview['unhealthy']}`\n"
-            f"⚫ Disabled: `{overview['disabled']}`\n"
-            f"🗑️ Removed: `{overview['removed']}`\n\n"
-            "Health-disabled stores are automatically "
-            "checked for recovery every 5 minutes."
+            f"🟢 Healthy: "
+            f"`{overview['healthy']}`\n"
+            f"🟡 Degraded: "
+            f"`{overview['degraded']}`\n"
+            f"🔴 Unhealthy: "
+            f"`{overview['unhealthy']}`\n"
+            f"⚫ Disabled: "
+            f"`{overview['disabled']}`\n"
+            f"🗑️ Removed: "
+            f"`{overview['removed']}`\n\n"
+            "Health-disabled stores are "
+            "automatically checked for recovery."
         ),
         ephemeral=True,
     )
@@ -1691,9 +2023,13 @@ async def retrystore(
         )
     )
 
-    if result[
-        "reason"
-    ] == "NOT_FOUND":
+    reason = (
+        result[
+            "reason"
+        ]
+    )
+
+    if reason == "NOT_FOUND":
 
         await interaction.followup.send(
             "❌ Store not found.",
@@ -1702,28 +2038,24 @@ async def retrystore(
 
         return
 
-    if result[
-        "reason"
-    ] == "MANUAL":
+    if reason == "MANUAL":
 
         await interaction.followup.send(
             (
                 "⚠️ This store was manually disabled.\n"
-                "Use `/enablestore` instead."
+                "Use `/enablestore`."
             ),
             ephemeral=True,
         )
 
         return
 
-    if result[
-        "reason"
-    ] == "REMOVED":
+    if reason == "REMOVED":
 
         await interaction.followup.send(
             (
                 "⚠️ This store was removed.\n"
-                "Use `/restorestore` instead."
+                "Use `/restorestore`."
             ),
             ephemeral=True,
         )
@@ -1747,14 +2079,14 @@ async def retrystore(
         await interaction.followup.send(
             (
                 "🔴 Store health check failed.\n\n"
-                f"`{result['reason']}`"
+                f"`{reason}`"
             ),
             ephemeral=True,
         )
 
 
 # =========================================================
-# SHOPIFY MONITOR COMMANDS
+# SHOPIFY COMMANDS
 # =========================================================
 
 @bot.tree.command(
@@ -1795,11 +2127,16 @@ async def scanshopify(
         lines.append(
             (
                 f"**{result['store']}**\n"
-                f"Products: {result['seen']}\n"
-                f"New: {result['new']}\n"
-                f"Updated: {result['updated']}\n"
-                f"Events: {result['events']}\n"
-                f"Flickers: {result['flickers']}"
+                f"Products: "
+                f"{result['seen']}\n"
+                f"New: "
+                f"{result['new']}\n"
+                f"Updated: "
+                f"{result['updated']}\n"
+                f"Events: "
+                f"{result['events']}\n"
+                f"Flickers: "
+                f"{result['flickers']}"
                 + (
                     "\n🌱 Initial baseline"
                     if result[
@@ -1811,8 +2148,10 @@ async def scanshopify(
         )
 
     await interaction.followup.send(
-        "\n\n".join(
-            lines
+        (
+            "\n\n".join(
+                lines
+            )
         )[
             :1900
         ],
@@ -1841,13 +2180,20 @@ async def shopifystatus(
     embed = discord.Embed(
         title="🛍️ Lotus Shopify Monitor",
         description=(
-            f"**Worker:** {'✅' if worker else '❌'}\n"
-            f"**Running:** {'✅' if data['running'] else '❌'}\n"
-            f"**Stores Scanned:** {data['stores_scanned']}\n"
-            f"**Products Seen:** {data['products_seen']}\n"
-            f"**Events:** {data['events_created']}\n"
-            f"**Flickers:** {data['flickers_detected']}\n"
-            f"**Recovered Stores:** {data['stores_recovered']}"
+            f"**Worker:** "
+            f"{'✅' if worker else '❌'}\n"
+            f"**Running:** "
+            f"{'✅' if data['running'] else '❌'}\n"
+            f"**Stores Scanned:** "
+            f"{data['stores_scanned']}\n"
+            f"**Products Seen:** "
+            f"{data['products_seen']}\n"
+            f"**Events:** "
+            f"{data['events_created']}\n"
+            f"**Flickers:** "
+            f"{data['flickers_detected']}\n"
+            f"**Recovered Stores:** "
+            f"{data['stores_recovered']}"
         ),
     )
 
@@ -1891,6 +2237,165 @@ async def shopifystatus(
 
 
 # =========================================================
+# POKEMON CENTER STATUS
+# =========================================================
+
+@bot.tree.command(
+    name="pokemoncenterstatus",
+    description="View Pokémon Center monitoring status.",
+)
+async def pokemoncenterstatus(
+    interaction,
+):
+
+    data = (
+        get_pokemon_center_status()
+    )
+
+    worker_online = (
+        bot.pokemon_center_task
+        is not None
+        and not bot.pokemon_center_task.done()
+    )
+
+    embed = discord.Embed(
+        title="⚡ Pokémon Center Intelligence",
+        description=(
+            f"**Worker:** "
+            f"{'✅ Online' if worker_online else '❌ Offline'}\n"
+            f"**Running:** "
+            f"{'✅' if data['running'] else '❌'}\n"
+            f"**Regions Checked:** "
+            f"{data['regions_checked']}\n"
+            f"**Queues Active:** "
+            f"{data['queues_active']}\n"
+            f"**Events Created:** "
+            f"{data['events_created']}"
+        ),
+    )
+
+    embed.add_field(
+        name="Last Scan",
+        value=(
+            data[
+                "last_scan"
+            ]
+            or "Not yet"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Last Error",
+        value=(
+            data[
+                "last_error"
+            ]
+            or "None ✅"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Alert Destination",
+        value=(
+            "💎 Premium+ "
+            "`#pokemon-center-queue`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Important",
+        value=(
+            "A queue is an early signal. "
+            "It does not guarantee a specific "
+            "Pokémon product is launching."
+        ),
+        inline=False,
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True,
+    )
+
+
+# =========================================================
+# MANUAL POKEMON CENTER SCAN
+# =========================================================
+
+@bot.tree.command(
+    name="scanpokemoncenter",
+    description="Run a Pokémon Center queue scan now.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def scanpokemoncenter(
+    interaction,
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    try:
+
+        results = (
+            await scan_pokemon_center()
+        )
+
+        if not results:
+
+            await interaction.followup.send(
+                (
+                    "⚠️ Pokémon Center scan "
+                    "returned no successful regions."
+                ),
+                ephemeral=True,
+            )
+
+            return
+
+        lines = []
+
+        for result in results:
+
+            lines.append(
+                (
+                    f"**{result['region']}**\n"
+                    f"HTTP: "
+                    f"`{result['http_status']}`\n"
+                    f"Queue: "
+                    f"{'🚨 ACTIVE' if result['queue_active'] else '✅ Clear'}"
+                )
+            )
+
+        await interaction.followup.send(
+            (
+                "\n\n".join(
+                    lines
+                )
+            )[
+                :1900
+            ],
+            ephemeral=True,
+        )
+
+    except Exception as error:
+
+        await interaction.followup.send(
+            (
+                "❌ Pokémon Center scan failed.\n\n"
+                f"`{type(error).__name__}: "
+                f"{error}`"
+            ),
+            ephemeral=True,
+        )
+
+
+# =========================================================
 # SIMULATOR
 # =========================================================
 
@@ -1915,25 +2420,57 @@ async def simulateproduct(
         ephemeral=True
     )
 
+    queue_event = (
+        event.value.startswith(
+            "QUEUE_"
+        )
+    )
+
     product_event = (
         ProductEvent(
+
             event_type=(
                 ProductEventType(
                     event.value
                 )
             ),
-            game=game.value,
+
+            game=(
+                "Pokemon"
+                if queue_event
+                else game.value
+            ),
+
             product_name=(
-                f"{game.value} Test Product"
+                (
+                    "Pokémon Center US Virtual Queue"
+                )
+                if queue_event
+                else (
+                    f"{game.value} Test Product"
+                )
             ),
+
             store_name=(
-                "Lotus Simulation Store"
+                "Pokémon Center"
+                if queue_event
+                else "Lotus Simulation Store"
             ),
+
             product_url=(
-                "https://example.com/test"
+                "https://www.pokemoncenter.com/"
+                if queue_event
+                else "https://example.com/test"
             ),
-            price=119.99,
+
+            price=(
+                None
+                if queue_event
+                else 119.99
+            ),
+
             currency="USD",
+
             in_stock=(
                 event.value
                 in (
@@ -1942,9 +2479,16 @@ async def simulateproduct(
                     "INVENTORY_FLICKER",
                 )
             ),
+
             region="US",
+
             language="English",
-            product_type="Booster Box",
+
+            product_type=(
+                "Virtual Queue"
+                if queue_event
+                else "Booster Box"
+            ),
         )
     )
 
@@ -1957,6 +2501,7 @@ async def simulateproduct(
     await interaction.followup.send(
         (
             "🧪 Event submitted.\n\n"
+            f"Event: `{event.value}`\n"
             f"PostgreSQL: "
             f"{'✅' if result['database_saved'] else '❌'}\n"
             f"Redis: "
@@ -1972,7 +2517,7 @@ async def simulateproduct(
 
 @bot.tree.command(
     name="testalert",
-    description="Send a test alert through configured routing.",
+    description="Send a test alert through routing.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -2005,10 +2550,15 @@ async def testalert(
         await interaction.followup.send(
             (
                 "❌ Unknown alert type.\n\n"
-                "Examples: `major_retailer`, "
-                "`preorder`, `page_live`, `deal`, "
-                "`international`, `inventory_flicker`, "
-                "`release_radar`"
+                "Examples:\n"
+                "`major_retailer`\n"
+                "`preorder`\n"
+                "`page_live`\n"
+                "`deal`\n"
+                "`international`\n"
+                "`inventory_flicker`\n"
+                "`release_radar`\n"
+                "`pokemon_queue`"
             ),
             ephemeral=True,
         )
@@ -2024,10 +2574,13 @@ async def testalert(
     )
 
     channel = (
+
         interaction.guild.get_channel(
             channel_id
         )
+
         if channel_id
+
         else None
     )
 
@@ -2047,26 +2600,33 @@ async def testalert(
     )
 
     role = (
+
         interaction.guild.get_role(
             role_id
         )
+
         if role_id
+
         else None
     )
 
     await channel.send(
+
         content=(
             role.mention
             if role
             else game.value
         ),
+
         embed=discord.Embed(
             title="🧪 LOTUS TEST ALERT",
             description=(
                 f"**{game.value} Test Product**\n\n"
-                f"Alert type: `{alert_type}`"
+                f"Alert type: "
+                f"`{alert_type}`"
             ),
         ),
+
         allowed_mentions=(
             discord.AllowedMentions(
                 roles=True,
@@ -2086,7 +2646,7 @@ async def testalert(
 
 
 # =========================================================
-# SYSTEM STATUS
+# /STATUS
 # =========================================================
 
 @bot.tree.command(
@@ -2101,16 +2661,22 @@ async def status(
         await get_queue_size()
     )
 
-    event_worker = (
+    event_worker_online = (
         bot.event_worker_task
         is not None
         and not bot.event_worker_task.done()
     )
 
-    shopify_worker = (
+    shopify_worker_online = (
         bot.shopify_monitor_task
         is not None
         and not bot.shopify_monitor_task.done()
+    )
+
+    pokemon_center_online = (
+        bot.pokemon_center_task
+        is not None
+        and not bot.pokemon_center_task.done()
     )
 
     health = (
@@ -2125,16 +2691,24 @@ async def status(
             f"**Redis:** "
             f"{'✅' if bot.redis_ready else '❌'}\n"
             f"**Event Worker:** "
-            f"{'✅' if event_worker else '❌'}\n"
-            f"**Shopify Worker:** "
-            f"{'✅' if shopify_worker else '❌'}\n"
+            f"{'✅' if event_worker_online else '❌'}\n"
+            f"**Shopify Monitor:** "
+            f"{'✅' if shopify_worker_online else '❌'}\n"
+            f"**Pokémon Center Monitor:** "
+            f"{'✅' if pokemon_center_online else '❌'}\n"
             "**Affiliate Pipeline:** ✅\n"
             "**Store Self-Healing:** ✅\n"
-            f"**Healthy Stores:** {health['healthy']}\n"
-            f"**Degraded Stores:** {health['degraded']}\n"
-            f"**Unhealthy Stores:** {health['unhealthy']}\n"
-            f"**Queue:** {queue}\n\n"
-            "**Version:** 0.6.3"
+            "**Inventory Flicker:** ✅\n"
+            "**Pokémon Queue Intelligence:** ✅\n"
+            f"**Healthy Stores:** "
+            f"{health['healthy']}\n"
+            f"**Degraded Stores:** "
+            f"{health['degraded']}\n"
+            f"**Unhealthy Stores:** "
+            f"{health['unhealthy']}\n"
+            f"**Redis Queue:** "
+            f"{queue}\n\n"
+            "**Version:** 0.7"
         ),
     )
 
@@ -2145,7 +2719,7 @@ async def status(
 
 
 # =========================================================
-# GLOBAL COMMAND ERROR HANDLER
+# GLOBAL ERROR HANDLER
 # =========================================================
 
 @bot.tree.error
@@ -2176,7 +2750,8 @@ async def on_app_command_error(
 
         message = (
             "❌ Command failed.\n\n"
-            f"`{type(error).__name__}: {error}`"
+            f"`{type(error).__name__}: "
+            f"{error}`"
         )
 
     if interaction.response.is_done():
