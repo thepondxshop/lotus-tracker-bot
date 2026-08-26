@@ -1,20 +1,18 @@
 from dataclasses import dataclass
-
-from enum import Enum
-
 from datetime import datetime
+from enum import Enum
 
 
 # =========================================================
-# LOTUS PRODUCT EVENT TYPES
+# LOTUS PRODUCT EVENTS
 # PonDeX Trackers
-# Version 0.5
+# Version 0.7
 # =========================================================
 
 
 class ProductEventType(
     str,
-    Enum
+    Enum,
 ):
 
     DISCOVERED = "DISCOVERED"
@@ -41,10 +39,16 @@ class ProductEventType(
 
     RELEASE_DATE_CHANGED = "RELEASE_DATE_CHANGED"
 
+    # =====================================================
+    # POKEMON CENTER EARLY INTELLIGENCE
+    # =====================================================
 
-# =========================================================
-# PRODUCT EVENT
-# =========================================================
+    QUEUE_DETECTED = "QUEUE_DETECTED"
+
+    QUEUE_ACTIVE = "QUEUE_ACTIVE"
+
+    QUEUE_CLEARED = "QUEUE_CLEARED"
+
 
 @dataclass
 class ProductEvent:
@@ -75,7 +79,7 @@ class ProductEvent:
 
 
     def __post_init__(
-        self
+        self,
     ):
 
         if self.timestamp is None:
