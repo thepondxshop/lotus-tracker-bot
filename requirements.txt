@@ -3,3 +3,4 @@ SQLAlchemy
 asyncpg
 redis
 aiohttp
+alembic
