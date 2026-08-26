@@ -1,36 +1,104 @@
+from urllib.parse import urlparse
+
 import aiohttp
+
+from app.product_intelligence import (
+    classify_product_state,
+)
 
 
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Version 0.6
+# Version 0.6.2
 #
-# Uses publicly accessible Shopify product data only.
-# Does not bypass CAPTCHA, queues, rate limits,
-# authentication, or anti-bot protections.
+# Features:
+# - URL cleanup
+# - Shopify catalog retrieval
+# - TCG classification
+# - Product-state intelligence
 # =========================================================
 
 
+# =========================================================
+# DOMAIN NORMALIZATION
+# =========================================================
+
 def normalize_shopify_domain(
-    domain: str,
+    value: str,
 ) -> str:
 
-    domain = domain.strip()
+    value = value.strip()
 
-    domain = domain.replace(
-        "https://",
-        "",
+    if not value:
+
+        raise ValueError(
+            "Store domain cannot be empty."
+        )
+
+    # -----------------------------------------------------
+    # Users may paste:
+    #
+    # sagaconcepts.com
+    #
+    # https://sagaconcepts.com
+    #
+    # https://www.sagaconcepts.com/
+    #
+    # https://sagaconcepts.com/?tracking=123
+    #
+    # https://sagaconcepts.com/products/item
+    #
+    # Lotus always saves:
+    #
+    # sagaconcepts.com
+    # -----------------------------------------------------
+
+    if not value.startswith(
+        (
+            "http://",
+            "https://",
+        )
+    ):
+
+        value = (
+            "https://"
+            + value
+        )
+
+    parsed = urlparse(
+        value
     )
 
-    domain = domain.replace(
-        "http://",
-        "",
+    hostname = (
+        parsed.hostname
+        or ""
+    ).lower()
+
+    if hostname.startswith(
+        "www."
+    ):
+
+        hostname = (
+            hostname[
+                4:
+            ]
+        )
+
+    hostname = hostname.strip(
+        "."
     )
 
-    domain = domain.rstrip("/")
+    if not hostname:
 
-    return domain.lower()
+        raise ValueError(
+            (
+                "Could not determine "
+                "a valid store domain."
+            )
+        )
+
+    return hostname
 
 
 # =========================================================
@@ -64,6 +132,12 @@ def classify_shopify_game(
             str(
                 product.get(
                     "tags",
+                    "",
+                )
+            ),
+            str(
+                product.get(
+                    "body_html",
                     "",
                 )
             ),
@@ -206,7 +280,7 @@ class ShopifyAdapter:
                 "application/json",
 
             "User-Agent":
-                "PonDeX-Trackers/0.6",
+                "PonDeX-Trackers/0.6.2",
         }
 
         all_products = []
@@ -250,8 +324,8 @@ class ShopifyAdapter:
                         raise RuntimeError(
                             (
                                 "Shopify product endpoint "
-                                f"not accessible: HTTP "
-                                f"{response.status}"
+                                f"not accessible: "
+                                f"HTTP {response.status}"
                             )
                         )
 
@@ -273,9 +347,22 @@ class ShopifyAdapter:
                             )
                         )
 
-                    data = (
-                        await response.json()
-                    )
+                    try:
+
+                        data = (
+                            await response.json()
+                        )
+
+                    except Exception as error:
+
+                        raise RuntimeError(
+                            (
+                                "Shopify returned invalid "
+                                "product JSON: "
+                                f"{type(error).__name__}: "
+                                f"{error}"
+                            )
+                        )
 
                     products = (
                         data.get(
@@ -315,8 +402,11 @@ class ShopifyAdapter:
 
                         new_products_found += 1
 
-                    # Some stores may return the
+                    # -------------------------------------
+                    # Some Shopify stores may return the
                     # same page repeatedly.
+                    # -------------------------------------
+
                     if new_products_found == 0:
 
                         break
@@ -346,6 +436,10 @@ class ShopifyAdapter:
             or []
         )
 
+        # -------------------------------------------------
+        # AVAILABILITY
+        # -------------------------------------------------
+
         available = any(
             variant.get(
                 "available",
@@ -353,6 +447,10 @@ class ShopifyAdapter:
             )
             for variant in variants
         )
+
+        # -------------------------------------------------
+        # PRICE
+        # -------------------------------------------------
 
         prices = []
 
@@ -391,24 +489,52 @@ class ShopifyAdapter:
             else None
         )
 
+        # -------------------------------------------------
+        # PRODUCT URL
+        # -------------------------------------------------
+
         handle = (
             product.get(
                 "handle"
             )
         )
 
-        if handle:
+        product_url = (
 
-            product_url = (
+            (
                 f"{self.base_url}"
                 f"/products/{handle}"
             )
 
-        else:
+            if handle
 
-            product_url = (
-                self.base_url
+            else self.base_url
+        )
+
+        # -------------------------------------------------
+        # GAME
+        # -------------------------------------------------
+
+        game = (
+            classify_shopify_game(
+                product
             )
+        )
+
+        # -------------------------------------------------
+        # PRODUCT INTELLIGENCE
+        # -------------------------------------------------
+
+        product_state = (
+            classify_product_state(
+                product,
+                available,
+            )
+        )
+
+        # -------------------------------------------------
+        # RESULT
+        # -------------------------------------------------
 
         return {
 
@@ -451,7 +577,8 @@ class ShopifyAdapter:
                 ),
 
             "game":
-                classify_shopify_game(
-                    product
-                ),
+                game,
+
+            "product_state":
+                product_state,
         }
