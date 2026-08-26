@@ -20,9 +20,9 @@ from sqlalchemy.orm import (
 
 
 # =========================================================
-# LOTUS TRACKER BOT DATABASE MODELS
+# LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 0.5
+# Version 0.6.3
 # =========================================================
 
 
@@ -120,9 +120,7 @@ class Subscription(Base):
 
 class UserGamePreference(Base):
 
-    __tablename__ = (
-        "user_game_preferences"
-    )
+    __tablename__ = "user_game_preferences"
 
     __table_args__ = (
         UniqueConstraint(
@@ -209,6 +207,49 @@ class Store(Base):
         nullable=True,
     )
 
+    # =====================================================
+    # STORE HEALTH
+    # =====================================================
+
+    health_status: Mapped[str] = mapped_column(
+        String(50),
+        default="HEALTHY",
+        nullable=False,
+    )
+
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    last_failure_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # Possible values:
+    #
+    # None
+    # MANUAL
+    # HEALTH
+    # REMOVED
+
+    disabled_reason: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
@@ -288,13 +329,17 @@ class StoreProduct(Base):
     )
 
     store_id: Mapped[int] = mapped_column(
-        ForeignKey("stores.id"),
+        ForeignKey(
+            "stores.id"
+        ),
         nullable=False,
         index=True,
     )
 
     product_id: Mapped[int] = mapped_column(
-        ForeignKey("products.id"),
+        ForeignKey(
+            "products.id"
+        ),
         nullable=False,
         index=True,
     )
@@ -353,13 +398,17 @@ class Alert(Base):
     )
 
     product_id: Mapped[int | None] = mapped_column(
-        ForeignKey("products.id"),
+        ForeignKey(
+            "products.id"
+        ),
         nullable=True,
         index=True,
     )
 
     store_id: Mapped[int | None] = mapped_column(
-        ForeignKey("stores.id"),
+        ForeignKey(
+            "stores.id"
+        ),
         nullable=True,
         index=True,
     )
@@ -398,9 +447,7 @@ class Alert(Base):
 
 class ProductEventRecord(Base):
 
-    __tablename__ = (
-        "product_event_history"
-    )
+    __tablename__ = "product_event_history"
 
     id: Mapped[int] = mapped_column(
         Integer,
