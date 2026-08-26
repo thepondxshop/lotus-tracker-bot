@@ -1,7 +1,9 @@
 import asyncio
+
 from datetime import datetime
 
 import aiohttp
+
 
 from app.event_service import (
     process_product_event,
@@ -18,17 +20,14 @@ from app.redis_client import (
 
 
 # =========================================================
-# POKEMON CENTER INTELLIGENCE
+# POKEMON CENTER QUEUE INTELLIGENCE
 # PonDeX Trackers
-# Version 0.7
+# Version 0.7.3
 #
 # Public queue-state observation only.
 #
-# NO:
-# - queue bypass
-# - CAPTCHA solving
-# - queue token manipulation
-# - alternate-link bypasses
+# Queue events automatically trigger Pokémon Center
+# product discovery / monitoring burst mode.
 # =========================================================
 
 
@@ -63,19 +62,29 @@ QUEUE_CACHE_PREFIX = (
 
 
 QUEUE_HOST_HINTS = (
+
     "queue-it",
+
     "queueit",
+
     "waitingroom",
+
     "waiting-room",
 )
 
 
 QUEUE_TEXT_HINTS = (
+
     "virtual queue",
+
     "waiting room",
+
     "you are now in line",
+
     "you are in line",
+
     "estimated wait time",
+
     "waiting to enter",
 )
 
@@ -97,13 +106,16 @@ MONITOR_STATUS = {
     "events_created":
         0,
 
+    "burst_triggers":
+        0,
+
     "last_error":
         None,
 }
 
 
 # =========================================================
-# DETECT QUEUE FROM RESPONSE
+# QUEUE DETECTION
 # =========================================================
 
 def response_looks_like_queue(
@@ -119,28 +131,16 @@ def response_looks_like_queue(
         body.lower()
     )
 
-    # -----------------------------------------------------
-    # Redirected/served queue infrastructure
-    # -----------------------------------------------------
-
     if any(
-        hint
-        in final_url_lower
-        for hint
-        in QUEUE_HOST_HINTS
+        hint in final_url_lower
+        for hint in QUEUE_HOST_HINTS
     ):
 
         return True
 
-    # -----------------------------------------------------
-    # Public waiting-room text
-    # -----------------------------------------------------
-
     if any(
-        hint
-        in body_lower
-        for hint
-        in QUEUE_TEXT_HINTS
+        hint in body_lower
+        for hint in QUEUE_TEXT_HINTS
     ):
 
         return True
@@ -149,7 +149,7 @@ def response_looks_like_queue(
 
 
 # =========================================================
-# REDIS QUEUE STATE
+# REDIS STATE
 # =========================================================
 
 async def get_previous_queue_state(
@@ -209,7 +209,61 @@ async def set_queue_state(
 
 
 # =========================================================
-# CHECK ONE REGION
+# PRODUCT BURST TRIGGER
+#
+# Import happens inside the function intentionally.
+#
+# This avoids a circular import between the queue monitor
+# and product monitor.
+# =========================================================
+
+async def trigger_queue_product_burst(
+    region: str,
+):
+
+    try:
+
+        from app.pokemon_center_products import (
+            trigger_product_burst,
+        )
+
+        success = (
+            await trigger_product_burst(
+                region
+            )
+        )
+
+        if success:
+
+            MONITOR_STATUS[
+                "burst_triggers"
+            ] += 1
+
+            print(
+                (
+                    "QUEUE -> PRODUCT BURST: "
+                    f"{region}"
+                )
+            )
+
+        return success
+
+    except Exception as error:
+
+        print(
+            (
+                "QUEUE BURST TRIGGER ERROR: "
+                f"{region} | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
+
+        return False
+
+
+# =========================================================
+# CHECK REGION
 # =========================================================
 
 async def check_region(
@@ -227,8 +281,10 @@ async def check_region(
             response.url
         )
 
-        body = await response.text(
-            errors="ignore"
+        body = (
+            await response.text(
+                errors="ignore"
+            )
         )
 
         queue_active = (
@@ -239,6 +295,7 @@ async def check_region(
         )
 
         return {
+
             "region":
                 region,
 
@@ -257,7 +314,7 @@ async def check_region(
 
 
 # =========================================================
-# CREATE QUEUE EVENT
+# QUEUE EVENT
 # =========================================================
 
 async def create_queue_event(
@@ -266,34 +323,38 @@ async def create_queue_event(
     url: str,
 ):
 
-    event = ProductEvent(
+    event = (
+        ProductEvent(
 
-        event_type=event_type,
+            event_type=event_type,
 
-        game="Pokemon",
+            game="Pokemon",
 
-        product_name=(
-            f"Pokémon Center {region} "
-            "Virtual Queue"
-        ),
+            product_name=(
+                f"Pokémon Center "
+                f"{region} Virtual Queue"
+            ),
 
-        store_name="Pokémon Center",
+            store_name=(
+                "Pokémon Center"
+            ),
 
-        product_url=url,
+            product_url=url,
 
-        price=None,
+            price=None,
 
-        currency="USD",
+            currency="USD",
 
-        in_stock=False,
+            in_stock=False,
 
-        region=region,
+            region=region,
 
-        language="English",
+            language="English",
 
-        product_type=(
-            "Virtual Queue"
-        ),
+            product_type=(
+                "Virtual Queue"
+            ),
+        )
     )
 
     return await process_product_event(
@@ -302,7 +363,7 @@ async def create_queue_event(
 
 
 # =========================================================
-# SCAN POKEMON CENTER
+# SCAN
 # =========================================================
 
 async def scan_pokemon_center():
@@ -314,11 +375,18 @@ async def scan_pokemon_center():
     )
 
     headers = {
+
         "Accept":
-            "text/html,application/xhtml+xml",
+            (
+                "text/html,"
+                "application/xhtml+xml"
+            ),
+
+        "Accept-Language":
+            "en-US,en;q=0.9",
 
         "User-Agent":
-            "PonDeX-Trackers/0.7",
+            "PonDeX-Trackers/0.7.3",
     }
 
     results = []
@@ -363,9 +431,9 @@ async def scan_pokemon_center():
                     )
                 )
 
-                # -----------------------------------------
+                # =========================================
                 # FIRST OBSERVATION
-                # -----------------------------------------
+                # =========================================
 
                 if previous is None:
 
@@ -378,8 +446,11 @@ async def scan_pokemon_center():
 
                         event_result = (
                             await create_queue_event(
+
                                 region,
+
                                 ProductEventType.QUEUE_DETECTED,
+
                                 result[
                                     "final_url"
                                 ],
@@ -392,9 +463,18 @@ async def scan_pokemon_center():
 
                             events_created += 1
 
-                # -----------------------------------------
-                # QUEUE BECAME ACTIVE
-                # -----------------------------------------
+                        # ---------------------------------
+                        # Queue already active when Lotus
+                        # starts. Begin product burst.
+                        # ---------------------------------
+
+                        await trigger_queue_product_burst(
+                            region
+                        )
+
+                # =========================================
+                # QUEUE ACTIVATED
+                # =========================================
 
                 elif (
                     previous is False
@@ -408,8 +488,11 @@ async def scan_pokemon_center():
 
                     event_result = (
                         await create_queue_event(
+
                             region,
+
                             ProductEventType.QUEUE_ACTIVE,
+
                             result[
                                 "final_url"
                             ],
@@ -422,9 +505,17 @@ async def scan_pokemon_center():
 
                         events_created += 1
 
-                # -----------------------------------------
+                    # -------------------------------------
+                    # Automatic 5-minute burst.
+                    # -------------------------------------
+
+                    await trigger_queue_product_burst(
+                        region
+                    )
+
+                # =========================================
                 # QUEUE CLEARED
-                # -----------------------------------------
+                # =========================================
 
                 elif (
                     previous is True
@@ -438,8 +529,11 @@ async def scan_pokemon_center():
 
                     event_result = (
                         await create_queue_event(
+
                             region,
+
                             ProductEventType.QUEUE_CLEARED,
+
                             result[
                                 "original_url"
                             ],
@@ -451,6 +545,16 @@ async def scan_pokemon_center():
                     ]:
 
                         events_created += 1
+
+                    # -------------------------------------
+                    # This may be the most important scan:
+                    # products can become accessible after
+                    # the waiting room clears.
+                    # -------------------------------------
+
+                    await trigger_queue_product_burst(
+                        region
+                    )
 
                 if current:
 
@@ -471,14 +575,16 @@ async def scan_pokemon_center():
                 print(
                     (
                         "POKEMON CENTER "
-                        "MONITOR ERROR: "
+                        "QUEUE ERROR: "
                         f"{error_text}"
                     )
                 )
 
                 MONITOR_STATUS[
                     "last_error"
-                ] = error_text
+                ] = (
+                    error_text
+                )
 
     MONITOR_STATUS[
         "last_scan"
@@ -494,11 +600,15 @@ async def scan_pokemon_center():
 
     MONITOR_STATUS[
         "queues_active"
-    ] = active_count
+    ] = (
+        active_count
+    )
 
     MONITOR_STATUS[
         "events_created"
-    ] = events_created
+    ] = (
+        events_created
+    )
 
     return results
 
@@ -514,7 +624,10 @@ async def run_pokemon_center_monitor():
     ] = True
 
     print(
-        "Pokémon Center Monitor started."
+        (
+            "Pokémon Center Queue "
+            "Monitor v0.7.3 started."
+        )
     )
 
     await asyncio.sleep(
@@ -534,7 +647,10 @@ async def run_pokemon_center_monitor():
             ] = False
 
             print(
-                "Pokémon Center Monitor stopped."
+                (
+                    "Pokémon Center "
+                    "Queue Monitor stopped."
+                )
             )
 
             raise
@@ -559,6 +675,10 @@ async def run_pokemon_center_monitor():
             POLL_SECONDS
         )
 
+
+# =========================================================
+# STATUS
+# =========================================================
 
 def get_pokemon_center_status():
 
