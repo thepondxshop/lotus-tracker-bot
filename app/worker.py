@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 
 import discord
@@ -33,17 +34,18 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 0.6.1
+# Version 0.7
 #
-# Redis Consumer
-# Discord Routing
+# Redis Event Consumer
 # Smart Deduplication
-# Affiliate Link Pipeline
+# Tier / Channel Routing
+# Affiliate Pipeline
+# Pokemon Center Queue Intelligence
 # =========================================================
 
 
 # =========================================================
-# EVENT ROUTING
+# EVENT -> ALERT TYPE
 # =========================================================
 
 EVENT_ROUTE_MAP = {
@@ -83,6 +85,19 @@ EVENT_ROUTE_MAP = {
 
     "RELEASE_DATE_CHANGED":
         "release_radar",
+
+    # =====================================================
+    # POKEMON CENTER
+    # =====================================================
+
+    "QUEUE_DETECTED":
+        "pokemon_queue",
+
+    "QUEUE_ACTIVE":
+        "pokemon_queue",
+
+    "QUEUE_CLEARED":
+        "pokemon_queue",
 }
 
 
@@ -127,13 +142,27 @@ EVENT_TITLES = {
 
     "RELEASE_DATE_CHANGED":
         "📅 RELEASE DATE CHANGED",
+
+    # =====================================================
+    # POKEMON CENTER
+    # =====================================================
+
+    "QUEUE_DETECTED":
+        "🚨 POKÉMON CENTER QUEUE DETECTED",
+
+    "QUEUE_ACTIVE":
+        "🚨 POKÉMON CENTER QUEUE LIVE",
+
+    "QUEUE_CLEARED":
+        "✅ POKÉMON CENTER QUEUE CLEARED",
 }
 
 
 # =========================================================
-# EVENTS WHERE REAL REPEATED TRANSITIONS MATTER
+# REAL-TIME TRANSITIONS
 #
-# DO NOT globally dedupe these.
+# These must NOT be globally suppressed because repeated
+# transitions themselves carry valuable information.
 # =========================================================
 
 REALTIME_TRANSITION_EVENTS = {
@@ -143,11 +172,17 @@ REALTIME_TRANSITION_EVENTS = {
     "SOLD_OUT",
 
     "INVENTORY_FLICKER",
+
+    "QUEUE_DETECTED",
+
+    "QUEUE_ACTIVE",
+
+    "QUEUE_CLEARED",
 }
 
 
 # =========================================================
-# SHOULD DUPLICATE EVENT BE SUPPRESSED?
+# SMART DEDUPLICATION
 # =========================================================
 
 async def should_suppress_duplicate(
@@ -161,12 +196,10 @@ async def should_suppress_duplicate(
         )
     )
 
-    # -----------------------------------------------------
-    # Genuine stock transitions are intentionally not
-    # suppressed here.
-    # -----------------------------------------------------
-
-    if event_type in REALTIME_TRANSITION_EVENTS:
+    if (
+        event_type
+        in REALTIME_TRANSITION_EVENTS
+    ):
 
         return False
 
@@ -221,28 +254,20 @@ async def should_suppress_duplicate(
         ).hexdigest()
     )
 
-    dedupe_key = (
-        f"lotus:dedupe:"
-        f"{digest}"
+    key = (
+        f"lotus:dedupe:{digest}"
     )
 
     try:
 
-        # NX means only create if key does not exist.
-        #
-        # EX 120 means the exact same event cannot
-        # accidentally send twice within 2 minutes.
-
         result = (
             await redis_client.set(
-                dedupe_key,
+                key,
                 "1",
-                ex=120,
                 nx=True,
+                ex=120,
             )
         )
-
-        # None means the key already existed.
 
         return (
             result is None
@@ -251,17 +276,21 @@ async def should_suppress_duplicate(
     except Exception as error:
 
         print(
-            "DEDUPE ERROR: "
-            f"{type(error).__name__}: {error}"
+            (
+                "DEDUPE ERROR: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
         )
 
-        # Never lose an alert because dedupe failed.
+        # Never lose an alert merely because
+        # duplicate protection failed.
 
         return False
 
 
 # =========================================================
-# BUILD DISCORD EMBED
+# BUILD DISCORD EVENT EMBED
 # =========================================================
 
 def build_event_embed(
@@ -275,9 +304,11 @@ def build_event_embed(
         )
     )
 
-    title = EVENT_TITLES.get(
-        event_type,
-        "📡 LOTUS PRODUCT EVENT",
+    title = (
+        EVENT_TITLES.get(
+            event_type,
+            "📡 LOTUS PRODUCT EVENT",
+        )
     )
 
     product_name = (
@@ -300,6 +331,14 @@ def build_event_embed(
             "",
         )
     )
+
+    # =====================================================
+    # AFFILIATE PIPELINE
+    #
+    # Every URL passes through here.
+    #
+    # Unsupported merchants remain unchanged.
+    # =====================================================
 
     final_url, affiliate_used = (
         build_affiliate_url(
@@ -324,7 +363,7 @@ def build_event_embed(
     )
 
     # =====================================================
-    # BASIC PRODUCT DETAILS
+    # STORE
     # =====================================================
 
     embed.add_field(
@@ -332,6 +371,10 @@ def build_event_embed(
         value=store_name,
         inline=True,
     )
+
+    # =====================================================
+    # GAME
+    # =====================================================
 
     game = (
         event.get(
@@ -347,6 +390,10 @@ def build_event_embed(
             inline=True,
         )
 
+    # =====================================================
+    # PRODUCT TYPE
+    # =====================================================
+
     product_type = (
         event.get(
             "product_type"
@@ -356,7 +403,7 @@ def build_event_embed(
     if product_type:
 
         embed.add_field(
-            name="Product Type",
+            name="Type",
             value=product_type,
             inline=True,
         )
@@ -393,7 +440,8 @@ def build_event_embed(
         ):
 
             price_text = (
-                f"{price} {currency}"
+                f"{price} "
+                f"{currency}"
             )
 
         embed.add_field(
@@ -420,13 +468,21 @@ def build_event_embed(
             inline=True,
         )
 
+    # =====================================================
+    # LANGUAGE
+    # =====================================================
+
     language = (
         event.get(
             "language"
         )
     )
 
-    if language:
+    if (
+        language
+        and product_type
+        != "Virtual Queue"
+    ):
 
         embed.add_field(
             name="Language",
@@ -455,30 +511,31 @@ def build_event_embed(
             )
         )
 
-        stock_text = (
-            "🟢 In Stock"
-            if in_stock
-            else "🔴 Out of Stock"
-        )
-
         embed.add_field(
             name="Availability",
-            value=stock_text,
+            value=(
+                "🟢 In Stock"
+                if in_stock
+                else "🔴 Out of Stock"
+            ),
             inline=True,
         )
 
     # =====================================================
-    # PREMIUM+ FLICKER MESSAGE
+    # INVENTORY FLICKER
     # =====================================================
 
-    if event_type == "INVENTORY_FLICKER":
+    if (
+        event_type
+        == "INVENTORY_FLICKER"
+    ):
 
         embed.add_field(
             name="⚡ Rapid Inventory Activity",
             value=(
                 "Lotus detected multiple legitimate "
-                "stock transitions within a short period.\n\n"
-                "**Inventory may only be available briefly.**"
+                "stock transitions in a short period.\n\n"
+                "Inventory may only be available briefly."
             ),
             inline=False,
         )
@@ -489,22 +546,78 @@ def build_event_embed(
 
             embed.add_field(
                 name="Action",
-                value=(
-                    "🔥 **TRY CHECKOUT NOW**"
-                ),
+                value="🔥 **TRY CHECKOUT NOW**",
                 inline=False,
             )
 
     # =====================================================
-    # PRODUCT LINK
+    # POKEMON CENTER QUEUE
+    # =====================================================
+
+    if event_type in {
+
+        "QUEUE_DETECTED",
+
+        "QUEUE_ACTIVE",
+
+        "QUEUE_CLEARED",
+    }:
+
+        if event_type == "QUEUE_DETECTED":
+
+            queue_message = (
+                "Lotus detected a Pokémon Center "
+                "virtual queue/waiting-room signal.\n\n"
+                "This can happen before a product drop, "
+                "but a queue does **not guarantee** "
+                "that a specific product is launching."
+            )
+
+        elif event_type == "QUEUE_ACTIVE":
+
+            queue_message = (
+                "The Pokémon Center virtual queue "
+                "is currently active.\n\n"
+                "Members should use Pokémon Center "
+                "normally and enter the official queue."
+            )
+
+        else:
+
+            queue_message = (
+                "The previously detected Pokémon Center "
+                "queue is no longer being observed."
+            )
+
+        embed.add_field(
+            name="⚡ Queue Intelligence",
+            value=queue_message,
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Access",
+            value="💎 Premium+ Early Intelligence",
+            inline=False,
+        )
+
+    # =====================================================
+    # PRODUCT / STORE LINK
     # =====================================================
 
     if final_url:
 
+        label = (
+            "Open Pokémon Center"
+            if product_type
+            == "Virtual Queue"
+            else "Open Product"
+        )
+
         embed.add_field(
-            name="Product Link",
+            name="Link",
             value=(
-                f"[Open Product]({final_url})"
+                f"[{label}]({final_url})"
             ),
             inline=False,
         )
@@ -537,7 +650,7 @@ def build_event_embed(
 
 
 # =========================================================
-# PRIMARY DISCORD SERVER
+# PRIMARY DISCORD GUILD
 # =========================================================
 
 def get_primary_guild(
@@ -554,7 +667,7 @@ def get_primary_guild(
 
 
 # =========================================================
-# ROUTE EVENT TO DISCORD
+# ROUTE EVENT
 # =========================================================
 
 async def route_event_to_discord(
@@ -569,27 +682,25 @@ async def route_event_to_discord(
     )
 
     # =====================================================
-    # SMART DUPLICATE PROTECTION
+    # DUPLICATE PROTECTION
     # =====================================================
 
-    suppress = (
-        await should_suppress_duplicate(
-            event
-        )
-    )
-
-    if suppress:
+    if await should_suppress_duplicate(
+        event
+    ):
 
         print(
-            "DUPLICATE EVENT SUPPRESSED: "
-            f"{event_type} | "
-            f"{event.get('product_name')}"
+            (
+                "DUPLICATE EVENT SUPPRESSED: "
+                f"{event_type} | "
+                f"{event.get('product_name')}"
+            )
         )
 
         return True
 
     # =====================================================
-    # ROUTE LOOKUP
+    # ROUTE
     # =====================================================
 
     alert_type = (
@@ -601,35 +712,39 @@ async def route_event_to_discord(
     if not alert_type:
 
         print(
-            "NO ROUTE FOR EVENT: "
-            f"{event_type}"
+            (
+                "NO ROUTE FOR EVENT: "
+                f"{event_type}"
+            )
         )
 
         return False
 
-    access_config = (
+    access = (
         ALERT_ACCESS.get(
             alert_type
         )
     )
 
-    if not access_config:
+    if not access:
 
         print(
-            "NO ALERT ACCESS CONFIG: "
-            f"{alert_type}"
+            (
+                "NO ACCESS CONFIG FOR: "
+                f"{alert_type}"
+            )
         )
 
         return False
 
     channel_variable = (
-        access_config.get(
+        access.get(
             "channel_variable"
         )
     )
 
     minimum_tier = (
-        access_config.get(
+        access.get(
             "minimum_tier",
             "Free",
         )
@@ -644,16 +759,13 @@ async def route_event_to_discord(
     if not channel_id:
 
         print(
-            "MISSING CHANNEL FOR EVENT: "
-            f"{event_type} -> "
-            f"{channel_variable}"
+            (
+                "MISSING ALERT CHANNEL: "
+                f"{channel_variable}"
+            )
         )
 
         return False
-
-    # =====================================================
-    # DISCORD GUILD + CHANNEL
-    # =====================================================
 
     guild = (
         get_primary_guild(
@@ -664,7 +776,6 @@ async def route_event_to_discord(
     if guild is None:
 
         print(
-            "EVENT WORKER: "
             "No Discord guild available."
         )
 
@@ -679,8 +790,10 @@ async def route_event_to_discord(
     if channel is None:
 
         print(
-            "EVENT WORKER CHANNEL NOT FOUND: "
-            f"{channel_id}"
+            (
+                "DISCORD CHANNEL NOT FOUND: "
+                f"{channel_id}"
+            )
         )
 
         return False
@@ -720,7 +833,7 @@ async def route_event_to_discord(
     )
 
     # =====================================================
-    # EMBED + AFFILIATE PIPELINE
+    # EMBED
     # =====================================================
 
     embed, affiliate_used = (
@@ -738,9 +851,7 @@ async def route_event_to_discord(
         message = (
             await channel.send(
 
-                content=(
-                    mention_text
-                ),
+                content=mention_text,
 
                 embed=embed,
 
@@ -756,13 +867,9 @@ async def route_event_to_discord(
 
         await save_alert_delivery(
 
-            alert_type=(
-                alert_type
-            ),
+            alert_type=alert_type,
 
-            minimum_tier=(
-                minimum_tier
-            ),
+            minimum_tier=minimum_tier,
 
             discord_channel_id=(
                 channel.id
@@ -774,12 +881,14 @@ async def route_event_to_discord(
         )
 
         print(
-            "ALERT SENT: "
-            f"{event_type} | "
-            f"{game} | "
-            f"{channel.name} | "
-            f"Affiliate="
-            f"{affiliate_used}"
+            (
+                "ALERT SENT: "
+                f"{event_type} | "
+                f"{game} | "
+                f"{channel.name} | "
+                f"Affiliate="
+                f"{affiliate_used}"
+            )
         )
 
         return True
@@ -787,8 +896,11 @@ async def route_event_to_discord(
     except Exception as error:
 
         print(
-            "EVENT DISCORD SEND ERROR: "
-            f"{type(error).__name__}: {error}"
+            (
+                "DISCORD ALERT ERROR: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
         )
 
         return False
@@ -828,8 +940,6 @@ async def run_event_worker(
 
                     bot.redis_ready = True
 
-                    bot.redis_error = None
-
                     print(
                         "Event Worker reconnected to Redis."
                     )
@@ -838,12 +948,13 @@ async def run_event_worker(
 
                     bot.redis_ready = False
 
-                    bot.redis_error = (
-                        f"{type(error).__name__}: "
-                        f"{error}"
+                    print(
+                        (
+                            "REDIS RECONNECT ERROR: "
+                            f"{type(error).__name__}: "
+                            f"{error}"
+                        )
                     )
-
-                    import asyncio
 
                     await asyncio.sleep(
                         5
@@ -852,7 +963,7 @@ async def run_event_worker(
                     continue
 
             # =================================================
-            # WAIT FOR NEXT EVENT
+            # NEXT EVENT
             # =================================================
 
             event = (
@@ -866,38 +977,34 @@ async def run_event_worker(
                 continue
 
             print(
-                "EVENT RECEIVED: "
-                f"{event.get('event_type')} | "
-                f"{event.get('product_name')}"
+                (
+                    "EVENT RECEIVED: "
+                    f"{event.get('event_type')} | "
+                    f"{event.get('product_name')}"
+                )
             )
-
-            # =================================================
-            # DISCORD ROUTING
-            # =================================================
 
             await route_event_to_discord(
                 bot,
                 event,
             )
 
-        except Exception as error:
-
-            import asyncio
-
-            if isinstance(
-                error,
-                asyncio.CancelledError,
-            ):
-
-                print(
-                    "Lotus Event Worker stopped."
-                )
-
-                raise
+        except asyncio.CancelledError:
 
             print(
-                "EVENT WORKER ERROR: "
-                f"{type(error).__name__}: {error}"
+                "Lotus Event Worker stopped."
+            )
+
+            raise
+
+        except Exception as error:
+
+            print(
+                (
+                    "EVENT WORKER ERROR: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
             )
 
             await asyncio.sleep(
