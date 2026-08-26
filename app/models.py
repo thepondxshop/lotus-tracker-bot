@@ -22,7 +22,7 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 0.6.3
+# Version 0.7.2
 # =========================================================
 
 
@@ -238,7 +238,7 @@ class Store(Base):
         nullable=True,
     )
 
-    # Possible values:
+    # Values:
     #
     # None
     # MANUAL
@@ -561,4 +561,81 @@ class PriceHistory(Base):
         DateTime,
         default=datetime.utcnow,
         nullable=False,
-    ) 
+    )
+
+
+# =========================================================
+# POKEMON CENTER PRODUCT REGISTRY
+# =========================================================
+
+class PokemonCenterProduct(Base):
+
+    __tablename__ = "pokemon_center_products"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    region: Mapped[str] = mapped_column(
+        String(20),
+        default="US",
+        nullable=False,
+        index=True,
+    )
+
+    url: Mapped[str] = mapped_column(
+        Text,
+        unique=True,
+        nullable=False,
+    )
+
+    product_code: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        index=True,
+    )
+
+    title: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
+    last_state: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    last_price: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    last_available: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
