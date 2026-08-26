@@ -1,4 +1,4 @@
-import asyncio
+import hashlib
 
 import discord
 
@@ -25,6 +25,7 @@ from app.helpers import (
 
 from app.redis_client import (
     check_redis,
+    get_redis,
     init_redis,
 )
 
@@ -32,68 +33,61 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 0.5.1
+# Version 0.6.1
+#
+# Redis Consumer
+# Discord Routing
+# Smart Deduplication
+# Affiliate Link Pipeline
 # =========================================================
 
 
 # =========================================================
-# EVENT → ALERT ROUTING
+# EVENT ROUTING
 # =========================================================
 
 EVENT_ROUTE_MAP = {
 
-    "DISCOVERED": (
-        "release_radar"
-    ),
+    "DISCOVERED":
+        "release_radar",
 
-    "PAGE_LIVE": (
-        "page_live"
-    ),
+    "PAGE_LIVE":
+        "page_live",
 
-    "COMING_SOON": (
-        "release_radar"
-    ),
+    "COMING_SOON":
+        "release_radar",
 
-    "PREORDER_LIVE": (
-        "preorder"
-    ),
+    "PREORDER_LIVE":
+        "preorder",
 
-    "STOCK_AVAILABLE": (
-        "major_retailer"
-    ),
+    "STOCK_AVAILABLE":
+        "major_retailer",
 
-    "RESTOCK": (
-        "major_retailer"
-    ),
+    "RESTOCK":
+        "major_retailer",
 
-    "SOLD_OUT": (
-        "major_retailer"
-    ),
+    "SOLD_OUT":
+        "major_retailer",
 
-    "PRICE_DROP": (
-        "deal"
-    ),
+    "PRICE_DROP":
+        "deal",
 
-    "PRICE_INCREASE": (
-        "deal"
-    ),
+    "PRICE_INCREASE":
+        "deal",
 
-    "PRICE_ERROR": (
-        "deal"
-    ),
+    "PRICE_ERROR":
+        "deal",
 
-    "INVENTORY_FLICKER": (
-        "inventory_flicker"
-    ),
+    "INVENTORY_FLICKER":
+        "inventory_flicker",
 
-    "RELEASE_DATE_CHANGED": (
-        "release_radar"
-    ),
+    "RELEASE_DATE_CHANGED":
+        "release_radar",
 }
 
 
 # =========================================================
-# EVENT DISPLAY TITLES
+# EVENT TITLES
 # =========================================================
 
 EVENT_TITLES = {
@@ -137,7 +131,137 @@ EVENT_TITLES = {
 
 
 # =========================================================
-# BUILD LIVE EVENT EMBED
+# EVENTS WHERE REAL REPEATED TRANSITIONS MATTER
+#
+# DO NOT globally dedupe these.
+# =========================================================
+
+REALTIME_TRANSITION_EVENTS = {
+
+    "RESTOCK",
+
+    "SOLD_OUT",
+
+    "INVENTORY_FLICKER",
+}
+
+
+# =========================================================
+# SHOULD DUPLICATE EVENT BE SUPPRESSED?
+# =========================================================
+
+async def should_suppress_duplicate(
+    event: dict,
+):
+
+    event_type = (
+        event.get(
+            "event_type",
+            "UNKNOWN",
+        )
+    )
+
+    # -----------------------------------------------------
+    # Genuine stock transitions are intentionally not
+    # suppressed here.
+    # -----------------------------------------------------
+
+    if event_type in REALTIME_TRANSITION_EVENTS:
+
+        return False
+
+    redis_client = (
+        get_redis()
+    )
+
+    if redis_client is None:
+
+        return False
+
+    game = (
+        event.get(
+            "game",
+            "",
+        )
+    )
+
+    store_name = (
+        event.get(
+            "store_name",
+            "",
+        )
+    )
+
+    product_url = (
+        event.get(
+            "product_url",
+            "",
+        )
+    )
+
+    price = (
+        event.get(
+            "price"
+        )
+    )
+
+    identity = (
+        f"{event_type}|"
+        f"{game}|"
+        f"{store_name}|"
+        f"{product_url}|"
+        f"{price}"
+    )
+
+    digest = (
+        hashlib.sha256(
+            identity.encode(
+                "utf-8"
+            )
+        ).hexdigest()
+    )
+
+    dedupe_key = (
+        f"lotus:dedupe:"
+        f"{digest}"
+    )
+
+    try:
+
+        # NX means only create if key does not exist.
+        #
+        # EX 120 means the exact same event cannot
+        # accidentally send twice within 2 minutes.
+
+        result = (
+            await redis_client.set(
+                dedupe_key,
+                "1",
+                ex=120,
+                nx=True,
+            )
+        )
+
+        # None means the key already existed.
+
+        return (
+            result is None
+        )
+
+    except Exception as error:
+
+        print(
+            "DEDUPE ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        # Never lose an alert because dedupe failed.
+
+        return False
+
+
+# =========================================================
+# BUILD DISCORD EMBED
 # =========================================================
 
 def build_event_embed(
@@ -185,10 +309,13 @@ def build_event_embed(
     )
 
     embed = discord.Embed(
+
         title=title,
+
         description=(
             f"**{product_name}**"
         ),
+
         url=(
             final_url
             if final_url
@@ -196,14 +323,20 @@ def build_event_embed(
         ),
     )
 
+    # =====================================================
+    # BASIC PRODUCT DETAILS
+    # =====================================================
+
     embed.add_field(
         name="Store",
         value=store_name,
         inline=True,
     )
 
-    game = event.get(
-        "game"
+    game = (
+        event.get(
+            "game"
+        )
     )
 
     if game:
@@ -228,8 +361,14 @@ def build_event_embed(
             inline=True,
         )
 
-    price = event.get(
-        "price"
+    # =====================================================
+    # PRICE
+    # =====================================================
+
+    price = (
+        event.get(
+            "price"
+        )
     )
 
     currency = (
@@ -241,16 +380,36 @@ def build_event_embed(
 
     if price is not None:
 
+        try:
+
+            price_text = (
+                f"{float(price):.2f} "
+                f"{currency}"
+            )
+
+        except (
+            ValueError,
+            TypeError,
+        ):
+
+            price_text = (
+                f"{price} {currency}"
+            )
+
         embed.add_field(
             name="Price",
-            value=(
-                f"{price:.2f} {currency}"
-            ),
+            value=price_text,
             inline=True,
         )
 
-    region = event.get(
-        "region"
+    # =====================================================
+    # REGION
+    # =====================================================
+
+    region = (
+        event.get(
+            "region"
+        )
     )
 
     if region:
@@ -261,8 +420,10 @@ def build_event_embed(
             inline=True,
         )
 
-    language = event.get(
-        "language"
+    language = (
+        event.get(
+            "language"
+        )
     )
 
     if language:
@@ -273,16 +434,26 @@ def build_event_embed(
             inline=True,
         )
 
-    in_stock = event.get(
-        "in_stock"
-    )
+    # =====================================================
+    # STOCK STATUS
+    # =====================================================
 
-    if event_type in (
+    if event_type in {
+
         "STOCK_AVAILABLE",
+
         "RESTOCK",
+
         "SOLD_OUT",
+
         "INVENTORY_FLICKER",
-    ):
+    }:
+
+        in_stock = bool(
+            event.get(
+                "in_stock"
+            )
+        )
 
         stock_text = (
             "🟢 In Stock"
@@ -296,6 +467,38 @@ def build_event_embed(
             inline=True,
         )
 
+    # =====================================================
+    # PREMIUM+ FLICKER MESSAGE
+    # =====================================================
+
+    if event_type == "INVENTORY_FLICKER":
+
+        embed.add_field(
+            name="⚡ Rapid Inventory Activity",
+            value=(
+                "Lotus detected multiple legitimate "
+                "stock transitions within a short period.\n\n"
+                "**Inventory may only be available briefly.**"
+            ),
+            inline=False,
+        )
+
+        if event.get(
+            "in_stock"
+        ):
+
+            embed.add_field(
+                name="Action",
+                value=(
+                    "🔥 **TRY CHECKOUT NOW**"
+                ),
+                inline=False,
+            )
+
+    # =====================================================
+    # PRODUCT LINK
+    # =====================================================
+
     if final_url:
 
         embed.add_field(
@@ -306,11 +509,17 @@ def build_event_embed(
             inline=False,
         )
 
+    # =====================================================
+    # AFFILIATE DISCLOSURE
+    # =====================================================
+
     if affiliate_used:
 
         embed.add_field(
             name="Affiliate Disclosure",
-            value=AFFILIATE_DISCLOSURE,
+            value=(
+                AFFILIATE_DISCLOSURE
+            ),
             inline=False,
         )
 
@@ -328,12 +537,7 @@ def build_event_embed(
 
 
 # =========================================================
-# FIND PRIMARY GUILD
-#
-# v0.5.1 assumes Lotus is currently operating
-# in one primary Discord server.
-#
-# Multi-server support can be added later.
+# PRIMARY DISCORD SERVER
 # =========================================================
 
 def get_primary_guild(
@@ -344,11 +548,13 @@ def get_primary_guild(
 
         return None
 
-    return bot.guilds[0]
+    return bot.guilds[
+        0
+    ]
 
 
 # =========================================================
-# SEND EVENT TO DISCORD
+# ROUTE EVENT TO DISCORD
 # =========================================================
 
 async def route_event_to_discord(
@@ -361,6 +567,30 @@ async def route_event_to_discord(
             "event_type"
         )
     )
+
+    # =====================================================
+    # SMART DUPLICATE PROTECTION
+    # =====================================================
+
+    suppress = (
+        await should_suppress_duplicate(
+            event
+        )
+    )
+
+    if suppress:
+
+        print(
+            "DUPLICATE EVENT SUPPRESSED: "
+            f"{event_type} | "
+            f"{event.get('product_name')}"
+        )
+
+        return True
+
+    # =====================================================
+    # ROUTE LOOKUP
+    # =====================================================
 
     alert_type = (
         EVENT_ROUTE_MAP.get(
@@ -421,20 +651,29 @@ async def route_event_to_discord(
 
         return False
 
-    guild = get_primary_guild(
-        bot
+    # =====================================================
+    # DISCORD GUILD + CHANNEL
+    # =====================================================
+
+    guild = (
+        get_primary_guild(
+            bot
+        )
     )
 
     if guild is None:
 
         print(
-            "EVENT WORKER: No Discord guild available."
+            "EVENT WORKER: "
+            "No Discord guild available."
         )
 
         return False
 
-    channel = guild.get_channel(
-        channel_id
+    channel = (
+        guild.get_channel(
+            channel_id
+        )
     )
 
     if channel is None:
@@ -446,8 +685,14 @@ async def route_event_to_discord(
 
         return False
 
-    game = event.get(
-        "game"
+    # =====================================================
+    # GAME ROLE
+    # =====================================================
+
+    game = (
+        event.get(
+            "game"
+        )
     )
 
     game_role_id = safe_int(
@@ -474,35 +719,55 @@ async def route_event_to_discord(
         )
     )
 
+    # =====================================================
+    # EMBED + AFFILIATE PIPELINE
+    # =====================================================
+
     embed, affiliate_used = (
         build_event_embed(
             event
         )
     )
 
+    # =====================================================
+    # SEND
+    # =====================================================
+
     try:
 
-        message = await channel.send(
+        message = (
+            await channel.send(
 
-            content=mention_text,
+                content=(
+                    mention_text
+                ),
 
-            embed=embed,
+                embed=embed,
 
-            allowed_mentions=(
-                discord.AllowedMentions(
-                    roles=True,
-                    users=False,
-                    everyone=False,
-                )
-            ),
+                allowed_mentions=(
+                    discord.AllowedMentions(
+                        roles=True,
+                        users=False,
+                        everyone=False,
+                    )
+                ),
+            )
         )
 
         await save_alert_delivery(
-            alert_type=alert_type,
-            minimum_tier=minimum_tier,
+
+            alert_type=(
+                alert_type
+            ),
+
+            minimum_tier=(
+                minimum_tier
+            ),
+
             discord_channel_id=(
                 channel.id
             ),
+
             discord_message_id=(
                 message.id
             ),
@@ -513,7 +778,8 @@ async def route_event_to_discord(
             f"{event_type} | "
             f"{game} | "
             f"{channel.name} | "
-            f"Affiliate={affiliate_used}"
+            f"Affiliate="
+            f"{affiliate_used}"
         )
 
         return True
@@ -550,13 +816,15 @@ async def run_event_worker(
                 await check_redis()
             )
 
+            # =================================================
+            # REDIS RECOVERY
+            # =================================================
+
             if not redis_online:
 
                 try:
 
                     await init_redis()
-
-                    redis_online = True
 
                     bot.redis_ready = True
 
@@ -571,14 +839,21 @@ async def run_event_worker(
                     bot.redis_ready = False
 
                     bot.redis_error = (
-                        f"{type(error).__name__}: {error}"
+                        f"{type(error).__name__}: "
+                        f"{error}"
                     )
+
+                    import asyncio
 
                     await asyncio.sleep(
                         5
                     )
 
                     continue
+
+            # =================================================
+            # WAIT FOR NEXT EVENT
+            # =================================================
 
             event = (
                 await pop_next_event(
@@ -596,20 +871,29 @@ async def run_event_worker(
                 f"{event.get('product_name')}"
             )
 
+            # =================================================
+            # DISCORD ROUTING
+            # =================================================
+
             await route_event_to_discord(
                 bot,
                 event,
             )
 
-        except asyncio.CancelledError:
-
-            print(
-                "Lotus Event Worker stopped."
-            )
-
-            raise
-
         except Exception as error:
+
+            import asyncio
+
+            if isinstance(
+                error,
+                asyncio.CancelledError,
+            ):
+
+                print(
+                    "Lotus Event Worker stopped."
+                )
+
+                raise
 
             print(
                 "EVENT WORKER ERROR: "
