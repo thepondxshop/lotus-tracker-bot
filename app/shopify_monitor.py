@@ -20,6 +20,10 @@ from app.events import (
     ProductEventType,
 )
 
+from app.flicker import (
+    record_stock_transition,
+)
+
 from app.models import (
     PriceHistory,
     Product,
@@ -36,7 +40,10 @@ from app.shopify_adapter import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Version 0.6
+# Version 0.6.1
+#
+# Real Shopify Monitoring
+# Inventory Flicker Detection
 # =========================================================
 
 
@@ -58,6 +65,9 @@ MONITOR_STATUS = {
         0,
 
     "events_created":
+        0,
+
+    "flickers_detected":
         0,
 
     "last_error":
@@ -117,16 +127,25 @@ async def add_shopify_store(
 
             await session.commit()
 
+            await session.refresh(
+                existing
+            )
+
             return (
                 existing,
                 False,
             )
 
         store = Store(
+
             name=name,
+
             domain=domain,
+
             platform="shopify",
+
             region=region,
+
             active=True,
         )
 
@@ -144,6 +163,81 @@ async def add_shopify_store(
             store,
             True,
         )
+
+
+# =========================================================
+# LIST SHOPIFY STORES
+# =========================================================
+
+async def list_shopify_stores():
+
+    if SessionLocal is None:
+
+        return []
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+
+            select(
+                Store
+            ).where(
+                Store.platform
+                == "shopify"
+            ).order_by(
+                Store.id.asc()
+            )
+        )
+
+        return list(
+            result.scalars().all()
+        )
+
+
+# =========================================================
+# ENABLE / DISABLE STORE
+# =========================================================
+
+async def set_shopify_store_active(
+    store_id: int,
+    active: bool,
+):
+
+    if SessionLocal is None:
+
+        raise RuntimeError(
+            "Database is not configured."
+        )
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+
+            select(
+                Store
+            ).where(
+                Store.id
+                == store_id
+            )
+        )
+
+        store = (
+            result.scalar_one_or_none()
+        )
+
+        if store is None:
+
+            return None
+
+        store.active = active
+
+        await session.commit()
+
+        await session.refresh(
+            store
+        )
+
+        return store
 
 
 # =========================================================
@@ -177,7 +271,70 @@ async def get_shopify_stores():
 
 
 # =========================================================
-# SCAN ONE STORE
+# CREATE PRODUCT EVENT
+# =========================================================
+
+def make_product_event(
+    *,
+    event_type,
+    item,
+    store,
+    in_stock,
+):
+
+    return ProductEvent(
+
+        event_type=event_type,
+
+        game=(
+            item[
+                "game"
+            ]
+        ),
+
+        product_name=(
+            item[
+                "title"
+            ]
+        ),
+
+        store_name=(
+            store.name
+        ),
+
+        product_url=(
+            item[
+                "url"
+            ]
+        ),
+
+        price=(
+            item[
+                "price"
+            ]
+        ),
+
+        currency="USD",
+
+        in_stock=in_stock,
+
+        region=(
+            store.region
+            or "US"
+        ),
+
+        language="English",
+
+        product_type=(
+            item[
+                "product_type"
+            ]
+        ),
+    )
+
+
+# =========================================================
+# SCAN ONE SHOPIFY STORE
 # =========================================================
 
 async def scan_shopify_store(
@@ -204,7 +361,11 @@ async def scan_shopify_store(
             )
         )
 
-        # Ignore unrelated products.
+        # -------------------------------------------------
+        # Ignore products not currently classified
+        # as one of our supported TCGs.
+        # -------------------------------------------------
+
         if not normalized[
             "game"
         ]:
@@ -236,6 +397,9 @@ async def scan_shopify_store(
         "events":
             0,
 
+        "flickers":
+            0,
+
         "initial_seed":
             False,
     }
@@ -247,6 +411,10 @@ async def scan_shopify_store(
         )
 
     async with SessionLocal() as session:
+
+        # =================================================
+        # DETERMINE WHETHER THIS IS INITIAL STORE SEED
+        # =================================================
 
         existing_count_result = (
             await session.execute(
@@ -267,21 +435,18 @@ async def scan_shopify_store(
             or 0
         )
 
-        # -------------------------------------------------
-        # IMPORTANT:
-        #
-        # If this is the first scan ever for this store,
-        # establish the baseline without alerting hundreds
-        # of old products.
-        # -------------------------------------------------
-
         initial_seed = (
-            existing_count == 0
+            existing_count
+            == 0
         )
 
         stats[
             "initial_seed"
         ] = initial_seed
+
+        # =================================================
+        # PRODUCTS
+        # =================================================
 
         for item in normalized_products:
 
@@ -409,123 +574,49 @@ async def scan_shopify_store(
                     "new"
                 ] += 1
 
-                # Do not blast alerts during first seed.
+                # -----------------------------------------
+                # Baseline scan should NOT blast Discord.
+                # -----------------------------------------
+
                 if not initial_seed:
 
                     events_to_send.append(
 
-                        ProductEvent(
+                        make_product_event(
 
                             event_type=(
                                 ProductEventType.DISCOVERED
                             ),
 
-                            game=(
-                                item[
-                                    "game"
-                                ]
-                            ),
+                            item=item,
 
-                            product_name=(
-                                item[
-                                    "title"
-                                ]
-                            ),
-
-                            store_name=(
-                                store.name
-                            ),
-
-                            product_url=(
-                                product_url
-                            ),
-
-                            price=(
-                                item[
-                                    "price"
-                                ]
-                            ),
-
-                            currency="USD",
+                            store=store,
 
                             in_stock=(
                                 item[
                                     "available"
                                 ]
                             ),
-
-                            region=(
-                                store.region
-                                or "US"
-                            ),
-
-                            language="English",
-
-                            product_type=(
-                                item[
-                                    "product_type"
-                                ]
-                            ),
                         )
                     )
 
-                    # If the newly-discovered product
-                    # is immediately purchasable,
-                    # create a live-stock event too.
                     if item[
                         "available"
                     ]:
 
                         events_to_send.append(
 
-                            ProductEvent(
+                            make_product_event(
 
                                 event_type=(
                                     ProductEventType.STOCK_AVAILABLE
                                 ),
 
-                                game=(
-                                    item[
-                                        "game"
-                                    ]
-                                ),
+                                item=item,
 
-                                product_name=(
-                                    item[
-                                        "title"
-                                    ]
-                                ),
-
-                                store_name=(
-                                    store.name
-                                ),
-
-                                product_url=(
-                                    product_url
-                                ),
-
-                                price=(
-                                    item[
-                                        "price"
-                                    ]
-                                ),
-
-                                currency="USD",
+                                store=store,
 
                                 in_stock=True,
-
-                                region=(
-                                    store.region
-                                    or "US"
-                                ),
-
-                                language="English",
-
-                                product_type=(
-                                    item[
-                                        "product_type"
-                                    ]
-                                ),
                             )
                         )
 
@@ -535,18 +626,18 @@ async def scan_shopify_store(
             # EXISTING PRODUCT
             # =================================================
 
-            old_stock = (
+            old_stock = bool(
                 store_product.in_stock
+            )
+
+            new_stock = bool(
+                item[
+                    "available"
+                ]
             )
 
             old_price = (
                 store_product.price
-            )
-
-            new_stock = (
-                item[
-                    "available"
-                ]
             )
 
             new_price = (
@@ -558,127 +649,112 @@ async def scan_shopify_store(
             changed = False
 
             # =================================================
-            # STOCK CHANGES
+            # REAL STOCK TRANSITION
             # =================================================
 
-            if (
-                old_stock is False
-                and new_stock is True
-            ):
+            if old_stock != new_stock:
 
                 changed = True
 
-                events_to_send.append(
+                # -----------------------------------------
+                # Record transition in flicker engine
+                # -----------------------------------------
 
-                    ProductEvent(
-
-                        event_type=(
-                            ProductEventType.RESTOCK
+                flicker_result = (
+                    await record_stock_transition(
+                        store_product_id=(
+                            store_product.id
                         ),
-
-                        game=(
-                            item[
-                                "game"
-                            ]
-                        ),
-
-                        product_name=(
-                            item[
-                                "title"
-                            ]
-                        ),
-
-                        store_name=(
-                            store.name
-                        ),
-
-                        product_url=(
-                            product_url
-                        ),
-
-                        price=(
-                            new_price
-                        ),
-
-                        currency="USD",
-
-                        in_stock=True,
-
-                        region=(
-                            store.region
-                            or "US"
-                        ),
-
-                        language="English",
-
-                        product_type=(
-                            item[
-                                "product_type"
-                            ]
+                        in_stock=(
+                            new_stock
                         ),
                     )
                 )
 
-            elif (
-                old_stock is True
-                and new_stock is False
-            ):
+                # -----------------------------------------
+                # Normal lifecycle alert
+                # -----------------------------------------
 
-                changed = True
+                if (
+                    old_stock is False
+                    and new_stock is True
+                ):
+
+                    stock_event_type = (
+                        ProductEventType.RESTOCK
+                    )
+
+                else:
+
+                    stock_event_type = (
+                        ProductEventType.SOLD_OUT
+                    )
 
                 events_to_send.append(
 
-                    ProductEvent(
+                    make_product_event(
 
                         event_type=(
-                            ProductEventType.SOLD_OUT
+                            stock_event_type
                         ),
 
-                        game=(
-                            item[
-                                "game"
-                            ]
-                        ),
+                        item=item,
 
-                        product_name=(
-                            item[
-                                "title"
-                            ]
-                        ),
+                        store=store,
 
-                        store_name=(
-                            store.name
-                        ),
-
-                        product_url=(
-                            product_url
-                        ),
-
-                        price=(
-                            new_price
-                        ),
-
-                        currency="USD",
-
-                        in_stock=False,
-
-                        region=(
-                            store.region
-                            or "US"
-                        ),
-
-                        language="English",
-
-                        product_type=(
-                            item[
-                                "product_type"
-                            ]
+                        in_stock=(
+                            new_stock
                         ),
                     )
                 )
 
+                # -----------------------------------------
+                # PREMIUM+ INVENTORY FLICKER
+                #
+                # Important:
+                # This is in ADDITION to the underlying
+                # stock transition.
+                #
+                # We are not suppressing the RESTOCK or
+                # SOLD_OUT event.
+                # -----------------------------------------
+
+                if flicker_result[
+                    "flickering"
+                ]:
+
+                    events_to_send.append(
+
+                        make_product_event(
+
+                            event_type=(
+                                ProductEventType.INVENTORY_FLICKER
+                            ),
+
+                            item=item,
+
+                            store=store,
+
+                            in_stock=(
+                                new_stock
+                            ),
+                        )
+                    )
+
+                    stats[
+                        "flickers"
+                    ] += 1
+
+                    print(
+                        "INVENTORY FLICKER DETECTED: "
+                        f"{store.name} | "
+                        f"{item['title']} | "
+                        f"Transitions="
+                        f"{flicker_result['transition_count']}"
+                    )
+
             # =================================================
-            # PRICE CHANGES
+            # PRICE CHANGE
             # =================================================
 
             if (
@@ -710,71 +786,36 @@ async def scan_shopify_store(
                     < old_price
                 ):
 
-                    price_event = (
+                    price_event_type = (
                         ProductEventType.PRICE_DROP
                     )
 
                 else:
 
-                    price_event = (
+                    price_event_type = (
                         ProductEventType.PRICE_INCREASE
                     )
 
                 events_to_send.append(
 
-                    ProductEvent(
+                    make_product_event(
 
                         event_type=(
-                            price_event
+                            price_event_type
                         ),
 
-                        game=(
-                            item[
-                                "game"
-                            ]
-                        ),
+                        item=item,
 
-                        product_name=(
-                            item[
-                                "title"
-                            ]
-                        ),
-
-                        store_name=(
-                            store.name
-                        ),
-
-                        product_url=(
-                            product_url
-                        ),
-
-                        price=(
-                            new_price
-                        ),
-
-                        currency="USD",
+                        store=store,
 
                         in_stock=(
                             new_stock
-                        ),
-
-                        region=(
-                            store.region
-                            or "US"
-                        ),
-
-                        language="English",
-
-                        product_type=(
-                            item[
-                                "product_type"
-                            ]
                         ),
                     )
                 )
 
             # =================================================
-            # UPDATE SNAPSHOT
+            # UPDATE CURRENT SNAPSHOT
             # =================================================
 
             store_product.price = (
@@ -801,10 +842,14 @@ async def scan_shopify_store(
                     "updated"
                 ] += 1
 
+        # =================================================
+        # COMMIT CURRENT STORE STATE
+        # =================================================
+
         await session.commit()
 
     # =====================================================
-    # SEND EVENTS AFTER DATABASE COMMIT
+    # SEND EVENTS AFTER DB COMMIT
     # =====================================================
 
     for event in events_to_send:
@@ -815,11 +860,9 @@ async def scan_shopify_store(
             )
         )
 
-        if (
-            result[
-                "redis_saved"
-            ]
-        ):
+        if result[
+            "redis_saved"
+        ]:
 
             stats[
                 "events"
@@ -839,10 +882,20 @@ async def scan_all_shopify_stores():
     )
 
     total_products = 0
+
     total_events = 0
+
+    total_flickers = 0
+
     stores_scanned = 0
 
     results = []
+
+    # Clear previous scan error first.
+
+    MONITOR_STATUS[
+        "last_error"
+    ] = None
 
     for store in stores:
 
@@ -869,6 +922,12 @@ async def scan_all_shopify_stores():
             total_events += (
                 result[
                     "events"
+                ]
+            )
+
+            total_flickers += (
+                result[
+                    "flickers"
                 ]
             )
 
@@ -907,11 +966,15 @@ async def scan_all_shopify_stores():
         "events_created"
     ] = total_events
 
+    MONITOR_STATUS[
+        "flickers_detected"
+    ] = total_flickers
+
     return results
 
 
 # =========================================================
-# BACKGROUND MONITOR LOOP
+# BACKGROUND MONITOR
 # =========================================================
 
 async def run_shopify_monitor():
@@ -924,7 +987,8 @@ async def run_shopify_monitor():
         "Lotus Shopify Monitor started."
     )
 
-    # Give the rest of Lotus time to initialize.
+    # Allow Discord / database / Redis to finish startup.
+
     await asyncio.sleep(
         10
     )
@@ -967,7 +1031,7 @@ async def run_shopify_monitor():
 
 
 # =========================================================
-# STATUS
+# MONITOR STATUS
 # =========================================================
 
 def get_shopify_monitor_status():
