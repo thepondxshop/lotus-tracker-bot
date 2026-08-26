@@ -8,6 +8,10 @@ from discord import app_commands
 from sqlalchemy import text
 
 
+# =========================================================
+# CONFIG
+# =========================================================
+
 from app.config import (
     DISCORD_TOKEN,
     GAME_ROLES,
@@ -17,12 +21,22 @@ from app.config import (
     CHANNEL_ROLES,
 )
 
+
+# =========================================================
+# HELPERS
+# =========================================================
+
 from app.helpers import (
     safe_int,
     get_subscription,
     get_followed_games,
     tier_allows,
 )
+
+
+# =========================================================
+# DATABASE
+# =========================================================
 
 from app.database import (
     init_database,
@@ -31,20 +45,36 @@ from app.database import (
     sync_member_to_database,
 )
 
+
+# =========================================================
+# REDIS
+# =========================================================
+
 from app.redis_client import (
     init_redis,
     check_redis,
 )
+
+
+# =========================================================
+# EVENTS
+# =========================================================
 
 from app.events import (
     ProductEvent,
     ProductEventType,
 )
 
+
 from app.event_service import (
     process_product_event,
     get_queue_size,
 )
+
+
+# =========================================================
+# EVENT WORKER
+# =========================================================
 
 from app.worker import (
     run_event_worker,
@@ -52,17 +82,35 @@ from app.worker import (
 
 
 # =========================================================
+# SHOPIFY MONITOR
+# =========================================================
+
+from app.shopify_monitor import (
+    add_shopify_store,
+    get_shopify_monitor_status,
+    run_shopify_monitor,
+    scan_all_shopify_stores,
+)
+
+
+# =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 0.5.1
+# Version 0.6
 #
+# Features:
+#
+# Discord
 # PostgreSQL
 # Redis
 # Persistent Users
+# Subscription Detection
+# Game Preferences
 # Product Event Engine
-# Background Event Worker
+# Redis Event Worker
 # Automatic Discord Routing
 # Affiliate Link Pipeline
+# Shopify Store Monitoring
 # =========================================================
 
 
@@ -70,29 +118,25 @@ from app.worker import (
 # INTENTS
 # =========================================================
 
-intents = (
-    discord.Intents.default()
-)
+intents = discord.Intents.default()
 
 intents.members = True
 
 
 # =========================================================
-# SAVE MEMBER
+# SAVE MEMBER TO DATABASE
 # =========================================================
 
 async def save_member_to_database(
-    member: discord.Member
+    member: discord.Member,
 ):
 
     tier = get_subscription(
         member
     )
 
-    followed_games = (
-        get_followed_games(
-            member
-        )
+    followed_games = get_followed_games(
+        member
     )
 
     await sync_member_to_database(
@@ -115,19 +159,19 @@ async def update_game_roles(
 
     if not isinstance(
         member,
-        discord.Member
+        discord.Member,
     ):
 
         return (
             False,
-            "❌ This must be used inside the server."
+            "❌ This must be used inside the server.",
         )
 
     if interaction.guild is None:
 
         return (
             False,
-            "❌ This must be used inside the server."
+            "❌ This must be used inside the server.",
         )
 
     selected_games = set(
@@ -138,9 +182,13 @@ async def update_game_roles(
     removed_roles = []
     errors = []
 
+    # =====================================================
+    # UPDATE GAME ROLES
+    # =====================================================
+
     for (
         game_name,
-        role_id
+        role_id,
     ) in GAME_ROLES.items():
 
         role_id = safe_int(
@@ -155,10 +203,8 @@ async def update_game_roles(
 
             continue
 
-        role = (
-            interaction.guild.get_role(
-                role_id
-            )
+        role = interaction.guild.get_role(
+            role_id
         )
 
         if role is None:
@@ -170,7 +216,7 @@ async def update_game_roles(
             continue
 
         # -------------------------------------------------
-        # ADD
+        # ADD ROLE
         # -------------------------------------------------
 
         if game_name in selected_games:
@@ -206,7 +252,7 @@ async def update_game_roles(
                     )
 
         # -------------------------------------------------
-        # REMOVE
+        # REMOVE ROLE
         # -------------------------------------------------
 
         else:
@@ -241,9 +287,9 @@ async def update_game_roles(
                         )
                     )
 
-    # -------------------------------------------------
-    # DATABASE
-    # -------------------------------------------------
+    # =====================================================
+    # SAVE TO POSTGRESQL
+    # =====================================================
 
     database_saved = False
 
@@ -266,14 +312,12 @@ async def update_game_roles(
             "Database save failed"
         )
 
-    # -------------------------------------------------
-    # CONFIRMATION
-    # -------------------------------------------------
+    # =====================================================
+    # RESPONSE
+    # =====================================================
 
-    actual_games = (
-        get_followed_games(
-            member
-        )
+    actual_games = get_followed_games(
+        member
     )
 
     message = (
@@ -344,12 +388,12 @@ async def update_game_roles(
 
     return (
         True,
-        message
+        message,
     )
 
 
 # =========================================================
-# GAME SELECT
+# TEMPORARY GAME SELECTOR
 # =========================================================
 
 class GameSelect(
@@ -371,7 +415,7 @@ class GameSelect(
         for (
             game_name,
             emoji,
-            description
+            description,
         ) in GAME_DATA:
 
             role_id = safe_int(
@@ -381,7 +425,8 @@ class GameSelect(
             )
 
             selected = (
-                role_id in current_role_ids
+                role_id
+                in current_role_ids
                 if role_id
                 else False
             )
@@ -412,11 +457,9 @@ class GameSelect(
         interaction: discord.Interaction,
     ):
 
-        _, message = (
-            await update_game_roles(
-                interaction,
-                self.values,
-            )
+        _, message = await update_game_roles(
+            interaction,
+            self.values,
         )
 
         await interaction.response.edit_message(
@@ -447,7 +490,7 @@ class GameSelectView(
 
 
 # =========================================================
-# PERSISTENT GAME SELECT
+# PERSISTENT GAME SELECTOR
 # =========================================================
 
 class PersistentGameSelect(
@@ -455,7 +498,7 @@ class PersistentGameSelect(
 ):
 
     def __init__(
-        self
+        self,
     ):
 
         options = []
@@ -463,7 +506,7 @@ class PersistentGameSelect(
         for (
             game_name,
             emoji,
-            description
+            description,
         ) in GAME_DATA:
 
             options.append(
@@ -494,11 +537,9 @@ class PersistentGameSelect(
         interaction: discord.Interaction,
     ):
 
-        _, message = (
-            await update_game_roles(
-                interaction,
-                self.values,
-            )
+        _, message = await update_game_roles(
+            interaction,
+            self.values,
         )
 
         await interaction.response.send_message(
@@ -512,7 +553,7 @@ class PersistentGameSelectView(
 ):
 
     def __init__(
-        self
+        self,
     ):
 
         super().__init__(
@@ -533,7 +574,7 @@ class LotusTrackerBot(
 ):
 
     def __init__(
-        self
+        self,
     ):
 
         super().__init__(
@@ -541,32 +582,46 @@ class LotusTrackerBot(
             intents=intents,
         )
 
+        # ---------------------------------------------
+        # DATABASE STATUS
+        # ---------------------------------------------
+
         self.database_ready = False
 
         self.database_error = None
+
+        # ---------------------------------------------
+        # REDIS STATUS
+        # ---------------------------------------------
 
         self.redis_ready = False
 
         self.redis_error = None
 
+        # ---------------------------------------------
+        # BACKGROUND TASKS
+        # ---------------------------------------------
+
         self.event_worker_task = None
+
+        self.shopify_monitor_task = None
 
 
     async def setup_hook(
-        self
+        self,
     ):
 
-        # -------------------------------------------------
-        # PERSISTENT UI
-        # -------------------------------------------------
+        # =================================================
+        # PERSISTENT DISCORD UI
+        # =================================================
 
         self.add_view(
             PersistentGameSelectView()
         )
 
-        # -------------------------------------------------
+        # =================================================
         # POSTGRESQL
-        # -------------------------------------------------
+        # =================================================
 
         try:
 
@@ -593,9 +648,13 @@ class LotusTrackerBot(
                 f"{self.database_error}"
             )
 
-        # -------------------------------------------------
+            print(
+                "Lotus will continue running."
+            )
+
+        # =================================================
         # REDIS
-        # -------------------------------------------------
+        # =================================================
 
         try:
 
@@ -622,9 +681,13 @@ class LotusTrackerBot(
                 f"{self.redis_error}"
             )
 
-        # -------------------------------------------------
+            print(
+                "Lotus will continue running."
+            )
+
+        # =================================================
         # EVENT WORKER
-        # -------------------------------------------------
+        # =================================================
 
         self.event_worker_task = (
             asyncio.create_task(
@@ -638,13 +701,25 @@ class LotusTrackerBot(
             "Lotus Event Worker task created."
         )
 
-        # -------------------------------------------------
-        # COMMAND SYNC
-        # -------------------------------------------------
+        # =================================================
+        # SHOPIFY MONITOR
+        # =================================================
 
-        synced = (
-            await self.tree.sync()
+        self.shopify_monitor_task = (
+            asyncio.create_task(
+                run_shopify_monitor()
+            )
         )
+
+        print(
+            "Lotus Shopify Monitor task created."
+        )
+
+        # =================================================
+        # SYNC SLASH COMMANDS
+        # =================================================
+
+        synced = await self.tree.sync()
 
         print(
             f"Synced {len(synced)} slash command(s)."
@@ -655,7 +730,7 @@ bot = LotusTrackerBot()
 
 
 # =========================================================
-# READY
+# READY EVENT
 # =========================================================
 
 @bot.event
@@ -671,12 +746,14 @@ async def on_ready():
         f"Logged in as: {bot.user}"
     )
 
-    print(
-        f"Bot ID: {bot.user.id}"
-    )
+    if bot.user:
+
+        print(
+            f"Bot ID: {bot.user.id}"
+        )
 
     print(
-        "Architecture: v0.5.1"
+        "Architecture: v0.6"
     )
 
     print(
@@ -685,7 +762,7 @@ async def on_ready():
             "ONLINE"
             if bot.database_ready
             else "OFFLINE"
-        )
+        ),
     )
 
     print(
@@ -694,11 +771,12 @@ async def on_ready():
             "ONLINE"
             if bot.redis_ready
             else "OFFLINE"
-        )
+        ),
     )
 
     worker_online = (
-        bot.event_worker_task is not None
+        bot.event_worker_task
+        is not None
         and not bot.event_worker_task.done()
     )
 
@@ -708,7 +786,22 @@ async def on_ready():
             "ONLINE"
             if worker_online
             else "OFFLINE"
-        )
+        ),
+    )
+
+    shopify_online = (
+        bot.shopify_monitor_task
+        is not None
+        and not bot.shopify_monitor_task.done()
+    )
+
+    print(
+        "Shopify Monitor:",
+        (
+            "ONLINE"
+            if shopify_online
+            else "OFFLINE"
+        ),
     )
 
     print("=" * 60)
@@ -731,7 +824,7 @@ async def on_ready():
 
 @bot.tree.command(
     name="ping",
-    description="Check if Lotus is online."
+    description="Check if Lotus Tracker Bot is online.",
 )
 async def ping(
     interaction: discord.Interaction,
@@ -756,19 +849,17 @@ async def ping(
 
 @bot.tree.command(
     name="games",
-    description="Choose which TCGs you want alerts for."
+    description="Choose which TCGs you want alerts for.",
 )
 async def games(
     interaction: discord.Interaction,
 ):
 
-    member = (
-        interaction.user
-    )
+    member = interaction.user
 
     if not isinstance(
         member,
-        discord.Member
+        discord.Member,
     ):
 
         await interaction.response.send_message(
@@ -787,7 +878,10 @@ async def games(
         ),
         description=(
             "Choose every game you want "
-            "Lotus Tracker Bot to monitor.\n\n"
+            "**Lotus Tracker Bot** to monitor.\n\n"
+            "Game roles determine which games you follow.\n"
+            "Your subscription determines which "
+            "features you unlock.\n\n"
             "Your selections are stored "
             "persistently in PostgreSQL."
         ),
@@ -833,7 +927,7 @@ async def games(
 
 @bot.tree.command(
     name="setupgames",
-    description="Post the permanent game selector."
+    description="Post the permanent game-role selector.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -846,90 +940,114 @@ async def setupgames(
         ephemeral=True
     )
 
-    if interaction.guild is None:
+    try:
+
+        if interaction.guild is None:
+
+            await interaction.followup.send(
+                "❌ Use this inside the server.",
+                ephemeral=True,
+            )
+
+            return
+
+        channel_id = safe_int(
+            CHANNEL_ROLES
+        )
+
+        if not channel_id:
+
+            await interaction.followup.send(
+                "❌ `CHANNEL_ROLES` is missing.",
+                ephemeral=True,
+            )
+
+            return
+
+        channel = (
+            interaction.guild.get_channel(
+                channel_id
+            )
+        )
+
+        if channel is None:
+
+            await interaction.followup.send(
+                (
+                    "❌ Lotus could not find "
+                    "the configured `#roles` channel."
+                ),
+                ephemeral=True,
+            )
+
+            return
+
+        embed = discord.Embed(
+            title=(
+                "🎴 Choose Your Games"
+            ),
+            description=(
+                "Choose every TCG you want alerts for.\n\n"
+                "You may select as many games as you want.\n\n"
+                "Game roles control which games you follow.\n"
+                "Your subscription controls which features "
+                "you unlock.\n\n"
+                "Selections are saved to Lotus."
+            ),
+        )
+
+        embed.add_field(
+            name="Available Games",
+            value=(
+                "🏴‍☠️ **One Piece**\n"
+                "⚡ **Pokémon**\n"
+                "🤖 **Gundam**\n"
+                "🐉 **Dragon Ball Fusion World**\n"
+                "🌀 **Riftbound**\n"
+                "🟢 **Palworld**\n"
+                "🍥 **Naruto**\n"
+                "🌃 **Cyberpunk TCG**\n"
+                "🔴 **Azuki TCG**\n"
+                "🔥 **Hellbreak TCG**"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(
+            text=(
+                "Lotus Tracker Bot • PonDeX Trackers"
+            )
+        )
+
+        await channel.send(
+            embed=embed,
+            view=(
+                PersistentGameSelectView()
+            ),
+        )
 
         await interaction.followup.send(
-            "❌ Use this inside the server.",
+            (
+                "✅ Permanent selector posted in "
+                f"{channel.mention}."
+            ),
             ephemeral=True,
         )
 
-        return
+    except Exception as error:
 
-    channel_id = safe_int(
-        CHANNEL_ROLES
-    )
-
-    if not channel_id:
+        print(
+            "SETUPGAMES ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
 
         await interaction.followup.send(
-            "❌ CHANNEL_ROLES is missing.",
+            (
+                "❌ Setup failed.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
             ephemeral=True,
         )
-
-        return
-
-    channel = (
-        interaction.guild.get_channel(
-            channel_id
-        )
-    )
-
-    if channel is None:
-
-        await interaction.followup.send(
-            "❌ Roles channel not found.",
-            ephemeral=True,
-        )
-
-        return
-
-    embed = discord.Embed(
-        title=(
-            "🎴 Choose Your Games"
-        ),
-        description=(
-            "Choose every TCG you want alerts for.\n\n"
-            "Selections are saved to Lotus."
-        ),
-    )
-
-    embed.add_field(
-        name="Available Games",
-        value=(
-            "🏴‍☠️ One Piece\n"
-            "⚡ Pokémon\n"
-            "🤖 Gundam\n"
-            "🐉 Dragon Ball Fusion World\n"
-            "🌀 Riftbound\n"
-            "🟢 Palworld\n"
-            "🍥 Naruto\n"
-            "🌃 Cyberpunk TCG\n"
-            "🔴 Azuki TCG\n"
-            "🔥 Hellbreak TCG"
-        ),
-        inline=False,
-    )
-
-    embed.set_footer(
-        text=(
-            "Lotus Tracker Bot • PonDeX Trackers"
-        )
-    )
-
-    await channel.send(
-        embed=embed,
-        view=(
-            PersistentGameSelectView()
-        ),
-    )
-
-    await interaction.followup.send(
-        (
-            f"✅ Selector posted in "
-            f"{channel.mention}."
-        ),
-        ephemeral=True,
-    )
 
 
 # =========================================================
@@ -938,19 +1056,17 @@ async def setupgames(
 
 @bot.tree.command(
     name="subscription",
-    description="View your PonDeX subscription."
+    description="View your PonDeX Trackers subscription.",
 )
 async def subscription(
     interaction: discord.Interaction,
 ):
 
-    member = (
-        interaction.user
-    )
+    member = interaction.user
 
     if not isinstance(
         member,
-        discord.Member
+        discord.Member,
     ):
 
         await interaction.response.send_message(
@@ -960,13 +1076,11 @@ async def subscription(
 
         return
 
-    tier = (
-        get_subscription(
-            member
-        )
+    tier = get_subscription(
+        member
     )
 
-    games = (
+    followed_games = (
         get_followed_games(
             member
         )
@@ -990,10 +1104,10 @@ async def subscription(
     games_text = (
         "\n".join(
             f"• {game}"
-            for game in games
+            for game in followed_games
         )
-        if games
-        else "No games selected"
+        if followed_games
+        else "No games selected yet."
     )
 
     tier_details = {
@@ -1053,9 +1167,12 @@ async def subscription(
     }
 
     icon, price, features = (
-        tier_details[
-            tier
-        ]
+        tier_details.get(
+            tier,
+            tier_details[
+                "Free"
+            ],
+        )
     )
 
     embed = discord.Embed(
@@ -1080,6 +1197,12 @@ async def subscription(
         inline=False,
     )
 
+    embed.set_footer(
+        text=(
+            "Lotus Tracker Bot • PonDeX Trackers"
+        )
+    )
+
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,
@@ -1092,19 +1215,17 @@ async def subscription(
 
 @bot.tree.command(
     name="settings",
-    description="View your saved Lotus settings."
+    description="View your persistent Lotus settings.",
 )
 async def settings(
     interaction: discord.Interaction,
 ):
 
-    member = (
-        interaction.user
-    )
+    member = interaction.user
 
     if not isinstance(
         member,
-        discord.Member
+        discord.Member,
     ):
 
         await interaction.response.send_message(
@@ -1139,13 +1260,11 @@ async def settings(
 
     if profile is None:
 
-        tier = (
-            get_subscription(
-                member
-            )
+        tier = get_subscription(
+            member
         )
 
-        games = (
+        followed_games = (
             get_followed_games(
                 member
             )
@@ -1153,58 +1272,54 @@ async def settings(
 
     else:
 
-        tier = (
-            profile[
-                "subscription"
-            ]
-        )
+        tier = profile[
+            "subscription"
+        ]
 
-        games = (
-            profile[
-                "games"
-            ]
-        )
+        followed_games = profile[
+            "games"
+        ]
 
     features = [
 
         (
             "Major Retailer Alerts",
-            "Free"
+            "Free",
         ),
 
         (
             "Preorder Alerts",
-            "Lite"
+            "Lite",
         ),
 
         (
             "Early Page Detection",
-            "Premium"
+            "Premium",
         ),
 
         (
             "Price Drops & Deals",
-            "Premium"
+            "Premium",
         ),
 
         (
             "International Alerts",
-            "Premium"
+            "Premium",
         ),
 
         (
             "Release Radar",
-            "Premium+"
+            "Premium+",
         ),
 
         (
             "Inventory Flicker ⚡",
-            "Premium+"
+            "Premium+",
         ),
 
         (
             "Cart Watch 🛒",
-            "Premium+"
+            "Premium+",
         ),
     ]
 
@@ -1212,14 +1327,12 @@ async def settings(
 
     for (
         feature_name,
-        required_tier
+        required_tier,
     ) in features:
 
-        unlocked = (
-            tier_allows(
-                tier,
-                required_tier
-            )
+        unlocked = tier_allows(
+            tier,
+            required_tier,
         )
 
         symbol = (
@@ -1235,9 +1348,9 @@ async def settings(
     games_text = (
         "\n".join(
             f"✅ {game}"
-            for game in games
+            for game in followed_games
         )
-        if games
+        if followed_games
         else "No games selected"
     )
 
@@ -1247,7 +1360,7 @@ async def settings(
         ),
         description=(
             f"**Subscription:** {tier}\n"
-            "**Storage:** PostgreSQL"
+            "**Settings Storage:** 💾 PostgreSQL"
         ),
     )
 
@@ -1267,6 +1380,20 @@ async def settings(
         inline=False,
     )
 
+    embed.add_field(
+        name="Change Games",
+        value=(
+            "Use `/games` or the selector in `#roles`."
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(
+        text=(
+            "Lotus Tracker Bot • Version 0.6"
+        )
+    )
+
     await interaction.followup.send(
         embed=embed,
         ephemeral=True,
@@ -1279,19 +1406,17 @@ async def settings(
 
 @bot.tree.command(
     name="dbme",
-    description="View your saved Lotus database profile."
+    description="Check your saved Lotus database profile.",
 )
 async def dbme(
     interaction: discord.Interaction,
 ):
 
-    member = (
-        interaction.user
-    )
+    member = interaction.user
 
     if not isinstance(
         member,
-        discord.Member
+        discord.Member,
     ):
 
         await interaction.response.send_message(
@@ -1308,7 +1433,7 @@ async def dbme(
     if not bot.database_ready:
 
         await interaction.followup.send(
-            "🔴 PostgreSQL is offline.",
+            "🔴 PostgreSQL is currently offline.",
             ephemeral=True,
         )
 
@@ -1334,11 +1459,9 @@ async def dbme(
                 )
             )
 
-        games = (
-            profile[
-                "games"
-            ]
-        )
+        games = profile[
+            "games"
+        ]
 
         games_text = (
             "\n".join(
@@ -1355,7 +1478,7 @@ async def dbme(
             ),
             description=(
                 "Your Discord account is "
-                "stored in PostgreSQL."
+                "successfully stored in PostgreSQL."
             ),
         )
 
@@ -1383,6 +1506,12 @@ async def dbme(
             inline=False,
         )
 
+        embed.set_footer(
+            text=(
+                "Lotus Tracker Bot • PostgreSQL"
+            )
+        )
+
         await interaction.followup.send(
             embed=embed,
             ephemeral=True,
@@ -1390,9 +1519,14 @@ async def dbme(
 
     except Exception as error:
 
+        print(
+            "DBME ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
         await interaction.followup.send(
             (
-                "❌ Database lookup failed.\n"
+                "❌ Database lookup failed.\n\n"
                 f"`{type(error).__name__}: {error}`"
             ),
             ephemeral=True,
@@ -1405,7 +1539,7 @@ async def dbme(
 
 @bot.tree.command(
     name="dbstatus",
-    description="Check PostgreSQL."
+    description="Check the Lotus PostgreSQL connection.",
 )
 async def dbstatus(
     interaction: discord.Interaction,
@@ -1420,7 +1554,7 @@ async def dbstatus(
         if SessionLocal is None:
 
             raise RuntimeError(
-                "Database not configured."
+                "DATABASE_URL is not configured."
             )
 
         async with SessionLocal() as session:
@@ -1435,8 +1569,14 @@ async def dbstatus(
 
         bot.database_ready = True
 
+        bot.database_error = None
+
         await interaction.followup.send(
-            "🟢 **PostgreSQL is online!**",
+            (
+                "🟢 **PostgreSQL is online!**\n\n"
+                "Lotus successfully connected "
+                "to the PonDeX database."
+            ),
             ephemeral=True,
         )
 
@@ -1444,10 +1584,14 @@ async def dbstatus(
 
         bot.database_ready = False
 
+        bot.database_error = (
+            f"{type(error).__name__}: {error}"
+        )
+
         await interaction.followup.send(
             (
-                "🔴 PostgreSQL failed.\n"
-                f"`{type(error).__name__}: {error}`"
+                "🔴 **PostgreSQL connection failed.**\n\n"
+                f"`{bot.database_error}`"
             ),
             ephemeral=True,
         )
@@ -1459,7 +1603,7 @@ async def dbstatus(
 
 @bot.tree.command(
     name="redisstatus",
-    description="Check Lotus Redis."
+    description="Check Lotus Redis.",
 )
 async def redisstatus(
     interaction: discord.Interaction,
@@ -1469,13 +1613,9 @@ async def redisstatus(
         ephemeral=True
     )
 
-    online = (
-        await check_redis()
-    )
+    online = await check_redis()
 
-    bot.redis_ready = (
-        online
-    )
+    bot.redis_ready = online
 
     if online:
 
@@ -1498,7 +1638,7 @@ async def redisstatus(
 
 @bot.tree.command(
     name="eventstatus",
-    description="View the Lotus event engine."
+    description="View the Lotus event engine status.",
 )
 async def eventstatus(
     interaction: discord.Interaction,
@@ -1509,7 +1649,8 @@ async def eventstatus(
     )
 
     worker_online = (
-        bot.event_worker_task is not None
+        bot.event_worker_task
+        is not None
         and not bot.event_worker_task.done()
     )
 
@@ -1560,7 +1701,7 @@ async def eventstatus(
 
 @bot.tree.command(
     name="simulateproduct",
-    description="Simulate a product lifecycle event."
+    description="Simulate a product lifecycle event.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -1568,96 +1709,118 @@ async def eventstatus(
 @app_commands.choices(
 
     game=[
+
         app_commands.Choice(
             name="One Piece",
-            value="One Piece"
+            value="One Piece",
         ),
+
         app_commands.Choice(
             name="Pokemon",
-            value="Pokemon"
+            value="Pokemon",
         ),
+
         app_commands.Choice(
             name="Gundam",
-            value="Gundam"
+            value="Gundam",
         ),
+
         app_commands.Choice(
             name="Dragon Ball Fusion World",
-            value="Dragon Ball Fusion World"
+            value="Dragon Ball Fusion World",
         ),
+
         app_commands.Choice(
             name="Riftbound",
-            value="Riftbound"
+            value="Riftbound",
         ),
+
         app_commands.Choice(
             name="Palworld",
-            value="Palworld"
+            value="Palworld",
         ),
+
         app_commands.Choice(
             name="Naruto",
-            value="Naruto"
+            value="Naruto",
         ),
+
         app_commands.Choice(
             name="Cyberpunk TCG",
-            value="Cyberpunk TCG"
+            value="Cyberpunk TCG",
         ),
+
         app_commands.Choice(
             name="Azuki TCG",
-            value="Azuki TCG"
+            value="Azuki TCG",
         ),
+
         app_commands.Choice(
             name="Hellbreak TCG",
-            value="Hellbreak TCG"
+            value="Hellbreak TCG",
         ),
     ],
 
     event=[
+
         app_commands.Choice(
             name="Discovered",
-            value="DISCOVERED"
+            value="DISCOVERED",
         ),
+
         app_commands.Choice(
             name="Page Live",
-            value="PAGE_LIVE"
+            value="PAGE_LIVE",
         ),
+
         app_commands.Choice(
             name="Coming Soon",
-            value="COMING_SOON"
+            value="COMING_SOON",
         ),
+
         app_commands.Choice(
             name="Preorder Live",
-            value="PREORDER_LIVE"
+            value="PREORDER_LIVE",
         ),
+
         app_commands.Choice(
             name="Stock Available",
-            value="STOCK_AVAILABLE"
+            value="STOCK_AVAILABLE",
         ),
+
         app_commands.Choice(
             name="Restock",
-            value="RESTOCK"
+            value="RESTOCK",
         ),
+
         app_commands.Choice(
             name="Sold Out",
-            value="SOLD_OUT"
+            value="SOLD_OUT",
         ),
+
         app_commands.Choice(
             name="Price Drop",
-            value="PRICE_DROP"
+            value="PRICE_DROP",
         ),
+
         app_commands.Choice(
             name="Price Increase",
-            value="PRICE_INCREASE"
+            value="PRICE_INCREASE",
         ),
+
         app_commands.Choice(
             name="Price Error",
-            value="PRICE_ERROR"
+            value="PRICE_ERROR",
         ),
+
         app_commands.Choice(
             name="Inventory Flicker",
-            value="INVENTORY_FLICKER"
+            value="INVENTORY_FLICKER",
         ),
+
         app_commands.Choice(
             name="Release Date Changed",
-            value="RELEASE_DATE_CHANGED"
+            value="RELEASE_DATE_CHANGED",
         ),
     ],
 )
@@ -1681,31 +1844,19 @@ async def simulateproduct(
 
         product_event = (
             ProductEvent(
-
-                event_type=(
-                    event_type
-                ),
-
-                game=(
-                    game.value
-                ),
-
+                event_type=event_type,
+                game=game.value,
                 product_name=(
                     f"{game.value} Test Booster Box"
                 ),
-
                 store_name=(
                     "Lotus Simulation Store"
                 ),
-
                 product_url=(
                     "https://example.com/test-product"
                 ),
-
                 price=119.99,
-
                 currency="USD",
-
                 in_stock=(
                     event.value
                     in [
@@ -1714,11 +1865,8 @@ async def simulateproduct(
                         "INVENTORY_FLICKER",
                     ]
                 ),
-
                 region="US",
-
                 language="English",
-
                 product_type=(
                     "Booster Box"
                 ),
@@ -1746,9 +1894,7 @@ async def simulateproduct(
 
         embed.add_field(
             name="Event",
-            value=(
-                event.value
-            ),
+            value=event.value,
             inline=True,
         )
 
@@ -1777,21 +1923,18 @@ async def simulateproduct(
         )
 
         embed.add_field(
-            name="Current Queue Depth",
-            value=(
-                str(
-                    queue_size
-                )
+            name="Queue Depth",
+            value=str(
+                queue_size
             ),
             inline=True,
         )
 
         embed.add_field(
-            name="Worker",
+            name="Automatic Routing",
             value=(
-                "The event worker should "
-                "automatically route this "
-                "event into Discord."
+                "The Lotus Event Worker will "
+                "automatically process this event."
             ),
             inline=False,
         )
@@ -1826,53 +1969,34 @@ def build_test_alert_embed(
     game,
 ):
 
-    if alert_type == "major_retailer":
+    titles = {
 
-        title = (
-            "🚨 MAJOR RETAILER DROP"
-        )
+        "major_retailer":
+            "🚨 MAJOR RETAILER DROP",
 
-    elif alert_type == "preorder":
+        "preorder":
+            "🟣 PREORDER LIVE",
 
-        title = (
-            "🟣 PREORDER LIVE"
-        )
+        "page_live":
+            "🔵 EARLY PAGE DETECTION",
 
-    elif alert_type == "page_live":
+        "deal":
+            "🔥 DEAL DETECTED",
 
-        title = (
-            "🔵 EARLY PAGE DETECTION"
-        )
+        "international":
+            "🌎 INTERNATIONAL EXCLUSIVE",
 
-    elif alert_type == "deal":
+        "inventory_flicker":
+            "⚡ INVENTORY FLICKER",
 
-        title = (
-            "🔥 DEAL DETECTED"
-        )
+        "release_radar":
+            "📡 RELEASE RADAR",
+    }
 
-    elif alert_type == "international":
-
-        title = (
-            "🌎 INTERNATIONAL EXCLUSIVE"
-        )
-
-    elif alert_type == "inventory_flicker":
-
-        title = (
-            "⚡ INVENTORY FLICKER"
-        )
-
-    elif alert_type == "release_radar":
-
-        title = (
-            "📡 RELEASE RADAR"
-        )
-
-    else:
-
-        title = (
-            "Lotus Test Alert"
-        )
+    title = titles.get(
+        alert_type,
+        "Lotus Test Alert",
+    )
 
     embed = discord.Embed(
         title=title,
@@ -1883,9 +2007,7 @@ def build_test_alert_embed(
 
     embed.add_field(
         name="Status",
-        value=(
-            "🧪 TEST ALERT"
-        ),
+        value="🧪 TEST ALERT",
         inline=False,
     )
 
@@ -1905,7 +2027,7 @@ def build_test_alert_embed(
 
 @bot.tree.command(
     name="testalert",
-    description="Send a simulated PonDeX alert."
+    description="Send a simulated PonDeX alert.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -1913,48 +2035,93 @@ def build_test_alert_embed(
 @app_commands.choices(
 
     game=[
+
         app_commands.Choice(
             name="One Piece",
-            value="One Piece"
+            value="One Piece",
         ),
+
         app_commands.Choice(
             name="Pokemon",
-            value="Pokemon"
+            value="Pokemon",
         ),
+
         app_commands.Choice(
             name="Gundam",
-            value="Gundam"
+            value="Gundam",
+        ),
+
+        app_commands.Choice(
+            name="Dragon Ball Fusion World",
+            value="Dragon Ball Fusion World",
+        ),
+
+        app_commands.Choice(
+            name="Riftbound",
+            value="Riftbound",
+        ),
+
+        app_commands.Choice(
+            name="Palworld",
+            value="Palworld",
+        ),
+
+        app_commands.Choice(
+            name="Naruto",
+            value="Naruto",
+        ),
+
+        app_commands.Choice(
+            name="Cyberpunk TCG",
+            value="Cyberpunk TCG",
+        ),
+
+        app_commands.Choice(
+            name="Azuki TCG",
+            value="Azuki TCG",
+        ),
+
+        app_commands.Choice(
+            name="Hellbreak TCG",
+            value="Hellbreak TCG",
         ),
     ],
 
     alert_type=[
+
         app_commands.Choice(
             name="Major Retailer",
-            value="major_retailer"
+            value="major_retailer",
         ),
+
         app_commands.Choice(
             name="Preorder",
-            value="preorder"
+            value="preorder",
         ),
+
         app_commands.Choice(
             name="Early Page Detection",
-            value="page_live"
+            value="page_live",
         ),
+
         app_commands.Choice(
             name="Deal",
-            value="deal"
+            value="deal",
         ),
+
         app_commands.Choice(
             name="International",
-            value="international"
+            value="international",
         ),
+
         app_commands.Choice(
             name="Inventory Flicker",
-            value="inventory_flicker"
+            value="inventory_flicker",
         ),
+
         app_commands.Choice(
             name="Release Radar",
-            value="release_radar"
+            value="release_radar",
         ),
     ],
 )
@@ -1970,12 +2137,15 @@ async def testalert(
 
     if interaction.guild is None:
 
+        await interaction.followup.send(
+            "❌ Use this inside the server.",
+            ephemeral=True,
+        )
+
         return
 
-    config = (
-        ALERT_ACCESS.get(
-            alert_type.value
-        )
+    config = ALERT_ACCESS.get(
+        alert_type.value
     )
 
     if not config:
@@ -2037,11 +2207,9 @@ async def testalert(
         else None
     )
 
-    embed = (
-        build_test_alert_embed(
-            alert_type.value,
-            game.value,
-        )
+    embed = build_test_alert_embed(
+        alert_type.value,
+        game.value,
     )
 
     mention_text = (
@@ -2072,12 +2240,305 @@ async def testalert(
 
 
 # =========================================================
+# /ADDSHOPIFYSTORE
+# =========================================================
+
+@bot.tree.command(
+    name="addshopifystore",
+    description="Add a Shopify store to Lotus monitoring.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def addshopifystore(
+    interaction: discord.Interaction,
+    name: str,
+    domain: str,
+    region: str = "US",
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    try:
+
+        store, created = (
+            await add_shopify_store(
+                name=name,
+                domain=domain,
+                region=region,
+            )
+        )
+
+        status_text = (
+            "✅ Added"
+            if created
+            else "✅ Updated"
+        )
+
+        embed = discord.Embed(
+            title=(
+                "🏪 Shopify Store"
+            ),
+            description=(
+                f"{status_text} **{store.name}**"
+            ),
+        )
+
+        embed.add_field(
+            name="Domain",
+            value=(
+                store.domain
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Region",
+            value=(
+                store.region
+                or "US"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Platform",
+            value="Shopify",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Initial Scan",
+            value=(
+                "The first successful scan establishes "
+                "a baseline and will not flood Discord "
+                "with every existing product."
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(
+            text=(
+                "Lotus Shopify Monitor • PonDeX Trackers"
+            )
+        )
+
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=True,
+        )
+
+    except Exception as error:
+
+        print(
+            "ADD SHOPIFY STORE ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        await interaction.followup.send(
+            (
+                "❌ Shopify store could not be added.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# /SCANSHOPIFY
+# =========================================================
+
+@bot.tree.command(
+    name="scanshopify",
+    description="Run a Shopify scan immediately.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def scanshopify(
+    interaction: discord.Interaction,
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    try:
+
+        results = (
+            await scan_all_shopify_stores()
+        )
+
+        if not results:
+
+            await interaction.followup.send(
+                (
+                    "⚠️ No active Shopify stores "
+                    "were successfully scanned."
+                ),
+                ephemeral=True,
+            )
+
+            return
+
+        lines = []
+
+        for result in results:
+
+            seed_text = (
+                "\n🌱 **Initial baseline created**"
+                if result[
+                    "initial_seed"
+                ]
+                else ""
+            )
+
+            lines.append(
+                (
+                    f"**{result['store']}**\n"
+                    f"TCG Products Seen: "
+                    f"{result['seen']}\n"
+                    f"New: "
+                    f"{result['new']}\n"
+                    f"Updated: "
+                    f"{result['updated']}\n"
+                    f"Events Generated: "
+                    f"{result['events']}"
+                    f"{seed_text}"
+                )
+            )
+
+        response_text = (
+            "\n\n".join(
+                lines
+            )
+        )
+
+        # Discord message limit protection
+        if len(
+            response_text
+        ) > 1900:
+
+            response_text = (
+                response_text[
+                    :1900
+                ]
+                + "\n\n..."
+            )
+
+        await interaction.followup.send(
+            response_text,
+            ephemeral=True,
+        )
+
+    except Exception as error:
+
+        print(
+            "SCAN SHOPIFY ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        await interaction.followup.send(
+            (
+                "❌ Shopify scan failed.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# /SHOPIFYSTATUS
+# =========================================================
+
+@bot.tree.command(
+    name="shopifystatus",
+    description="View the Shopify monitor status.",
+)
+async def shopifystatus(
+    interaction: discord.Interaction,
+):
+
+    status_data = (
+        get_shopify_monitor_status()
+    )
+
+    monitor_task_online = (
+        bot.shopify_monitor_task
+        is not None
+        and not bot.shopify_monitor_task.done()
+    )
+
+    embed = discord.Embed(
+        title=(
+            "🛍️ Lotus Shopify Monitor"
+        ),
+        description=(
+            f"**Worker:** "
+            f"{'✅ Online' if monitor_task_online else '❌ Offline'}\n"
+            f"**Running:** "
+            f"{'✅' if status_data['running'] else '❌'}\n"
+            f"**Stores Last Scanned:** "
+            f"{status_data['stores_scanned']}\n"
+            f"**TCG Products Seen:** "
+            f"{status_data['products_seen']}\n"
+            f"**Events Created:** "
+            f"{status_data['events_created']}"
+        ),
+    )
+
+    embed.add_field(
+        name="Last Scan",
+        value=(
+            status_data[
+                "last_scan"
+            ]
+            or "Not yet"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Last Error",
+        value=(
+            status_data[
+                "last_error"
+            ]
+            or "None ✅"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Pipeline",
+        value=(
+            "Shopify → PostgreSQL → Redis → "
+            "Event Worker → Affiliate Engine → Discord"
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(
+        text=(
+            "Lotus Tracker Bot • v0.6"
+        )
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True,
+    )
+
+
+# =========================================================
 # /STATUS
 # =========================================================
 
 @bot.tree.command(
     name="status",
-    description="Check Lotus system status."
+    description="Check Lotus Tracker Bot system status.",
 )
 async def status(
     interaction: discord.Interaction,
@@ -2092,8 +2553,15 @@ async def status(
     )
 
     worker_online = (
-        bot.event_worker_task is not None
+        bot.event_worker_task
+        is not None
         and not bot.event_worker_task.done()
+    )
+
+    shopify_online = (
+        bot.shopify_monitor_task
+        is not None
+        and not bot.shopify_monitor_task.done()
     )
 
     embed = discord.Embed(
@@ -2108,15 +2576,23 @@ async def status(
             f"{'Online ✅' if bot.redis_ready else 'Offline ⚠️'}\n"
             f"**Event Worker:** "
             f"{'Online ✅' if worker_online else 'Offline ⚠️'}\n"
+            f"**Shopify Monitor:** "
+            f"{'Online ✅' if shopify_online else 'Offline ⚠️'}\n"
             "**Persistent Users:** Online ✅\n"
             "**Product Event Engine:** Online ✅\n"
             "**Automatic Discord Routing:** Online ✅\n"
             "**Affiliate Link Pipeline:** Ready ✅\n"
-            f"**Queue Depth:** {queue_size}\n"
-            "**Real Store Monitoring:** Coming Next\n\n"
+            f"**Redis Queue Depth:** {queue_size}\n"
+            "**Major Retailer Monitoring:** Coming Soon\n\n"
             f"**Latency:** {latency}ms\n"
-            "**Version:** 0.5.1"
+            "**Version:** 0.6"
         ),
+    )
+
+    embed.set_footer(
+        text=(
+            "PonDeX Trackers"
+        )
     )
 
     await interaction.response.send_message(
@@ -2126,18 +2602,18 @@ async def status(
 
 
 # =========================================================
-# ADMIN ERROR HANDLER
+# ADMIN COMMAND ERROR HELPER
 # =========================================================
 
 async def send_admin_error(
-    interaction,
+    interaction: discord.Interaction,
     error,
-    command_name,
+    command_name: str,
 ):
 
     if isinstance(
         error,
-        app_commands.MissingPermissions
+        app_commands.MissingPermissions,
     ):
 
         message = (
@@ -2148,7 +2624,7 @@ async def send_admin_error(
     else:
 
         message = (
-            f"❌ `/{command_name}` failed.\n\n"
+            f"❌ `/{command_name}` encountered an error.\n\n"
             f"`{type(error).__name__}: {error}`"
         )
 
@@ -2167,9 +2643,13 @@ async def send_admin_error(
         )
 
 
+# =========================================================
+# ERROR HANDLERS
+# =========================================================
+
 @setupgames.error
 async def setupgames_error(
-    interaction,
+    interaction: discord.Interaction,
     error,
 ):
 
@@ -2182,7 +2662,7 @@ async def setupgames_error(
 
 @simulateproduct.error
 async def simulateproduct_error(
-    interaction,
+    interaction: discord.Interaction,
     error,
 ):
 
@@ -2195,7 +2675,7 @@ async def simulateproduct_error(
 
 @testalert.error
 async def testalert_error(
-    interaction,
+    interaction: discord.Interaction,
     error,
 ):
 
@@ -2206,6 +2686,32 @@ async def testalert_error(
     )
 
 
+@addshopifystore.error
+async def addshopifystore_error(
+    interaction: discord.Interaction,
+    error,
+):
+
+    await send_admin_error(
+        interaction,
+        error,
+        "addshopifystore",
+    )
+
+
+@scanshopify.error
+async def scanshopify_error(
+    interaction: discord.Interaction,
+    error,
+):
+
+    await send_admin_error(
+        interaction,
+        error,
+        "scanshopify",
+    )
+
+
 # =========================================================
 # START LOTUS
 # =========================================================
@@ -2213,7 +2719,7 @@ async def testalert_error(
 if not DISCORD_TOKEN:
 
     raise RuntimeError(
-        "DISCORD_TOKEN is missing."
+        "DISCORD_TOKEN environment variable is missing."
     )
 
 
