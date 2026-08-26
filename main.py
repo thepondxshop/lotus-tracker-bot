@@ -6,7 +6,7 @@ from discord.ext import commands
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 0.2
+# Version 0.2.1
 # =========================================================
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -75,7 +75,6 @@ def get_subscription(member: discord.Member):
         for role in member.roles
     }
 
-    # Highest tier wins
     tier_order = [
         "Premium+",
         "Premium",
@@ -92,8 +91,6 @@ def get_subscription(member: discord.Member):
         if role_id and role_id in member_role_ids:
             return tier
 
-    # If no explicit subscription role exists,
-    # treat the user as Free.
     return "Free"
 
 
@@ -114,57 +111,6 @@ def get_followed_games(member: discord.Member):
             followed.append(game_name)
 
     return followed
-
-
-# =========================================================
-# BOT CLASS
-# =========================================================
-
-class LotusTrackerBot(commands.Bot):
-
-    def __init__(self):
-
-        super().__init__(
-            command_prefix="!",
-            intents=intents
-        )
-
-    async def setup_hook(self):
-
-        # Register persistent game selector
-        self.add_view(
-            PersistentGameSelectView()
-        )
-
-        synced = await self.tree.sync()
-
-        print(
-            f"Synced {len(synced)} slash command(s)."
-        )
-
-
-bot = LotusTrackerBot()
-
-
-# =========================================================
-# READY EVENT
-# =========================================================
-
-@bot.event
-async def on_ready():
-
-    print("=" * 60)
-    print("Lotus Tracker Bot is ONLINE!")
-    print(f"Logged in as: {bot.user}")
-    print(f"Bot ID: {bot.user.id}")
-    print("=" * 60)
-
-    await bot.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.watching,
-            name="TCG drops worldwide 🌎"
-        )
-    )
 
 
 # =========================================================
@@ -226,134 +172,65 @@ GAME_DATA = [
 
 
 # =========================================================
-# SHARED ROLE UPDATE LOGIC
+# PERSISTENT GAME SELECTOR
 # =========================================================
 
-async def update_game_roles(
-    interaction: discord.Interaction,
-    selected_games
-):
+class PersistentGameSelect(discord.ui.Select):
 
-    member = interaction.user
+    def __init__(self):
 
-    if not isinstance(
-        member,
-        discord.Member
+        options = []
+
+        for game_name, emoji, description in GAME_DATA:
+
+            options.append(
+                discord.SelectOption(
+                    label=game_name,
+                    description=description,
+                    emoji=emoji,
+                    value=game_name
+                )
+            )
+
+        super().__init__(
+            custom_id="lotus_persistent_game_selector",
+            placeholder="Choose the TCGs you want alerts for...",
+            min_values=0,
+            max_values=len(options),
+            options=options
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
     ):
-        return (
-            False,
-            "❌ This feature must be used inside the server."
+
+        success, message = await update_game_roles(
+            interaction,
+            self.values
         )
 
-    selected_games = set(selected_games)
-
-    added_roles = []
-    removed_roles = []
-    errors = []
-
-    for game_name, role_id in GAME_ROLES.items():
-
-        role_id = safe_int(role_id)
-
-        if not role_id:
-            errors.append(
-                f"{game_name}: Role ID not configured"
-            )
-            continue
-
-        role = interaction.guild.get_role(
-            role_id
+        await interaction.response.send_message(
+            message,
+            ephemeral=True
         )
 
-        if role is None:
-            errors.append(
-                f"{game_name}: Role not found"
-            )
-            continue
 
-        # Add selected role
-        if game_name in selected_games:
+class PersistentGameSelectView(discord.ui.View):
 
-            if role not in member.roles:
+    def __init__(self):
 
-                try:
-                    await member.add_roles(
-                        role,
-                        reason="Lotus Tracker game selection"
-                    )
-
-                    added_roles.append(
-                        game_name
-                    )
-
-                except discord.Forbidden:
-                    errors.append(
-                        f"{game_name}: Cannot assign role"
-                    )
-
-        # Remove deselected role
-        else:
-
-            if role in member.roles:
-
-                try:
-                    await member.remove_roles(
-                        role,
-                        reason="Lotus Tracker game selection"
-                    )
-
-                    removed_roles.append(
-                        game_name
-                    )
-
-                except discord.Forbidden:
-                    errors.append(
-                        f"{game_name}: Cannot remove role"
-                    )
-
-    message = (
-        "✅ **Your game alert preferences were updated!**\n\n"
-    )
-
-    if selected_games:
-
-        message += "**You are following:**\n"
-
-        for game in sorted(selected_games):
-            message += f"• {game}\n"
-
-    else:
-
-        message += (
-            "**You are currently not following any games.**\n"
+        super().__init__(
+            timeout=None
         )
 
-    if added_roles:
-
-        message += "\n➕ **Roles added:**\n"
-
-        for game in added_roles:
-            message += f"• {game}\n"
-
-    if removed_roles:
-
-        message += "\n➖ **Roles removed:**\n"
-
-        for game in removed_roles:
-            message += f"• {game}\n"
-
-    if errors:
-
-        message += "\n⚠️ **Warnings:**\n"
-
-        for error in errors:
-            message += f"• {error}\n"
-
-    return True, message
+        self.add_item(
+            PersistentGameSelect()
+        )
 
 
 # =========================================================
-# NORMAL /GAMES SELECT MENU
+# NORMAL /GAMES SELECTOR
 # =========================================================
 
 class GameSelect(discord.ui.Select):
@@ -427,65 +304,182 @@ class GameSelectView(discord.ui.View):
 
 
 # =========================================================
-# PERSISTENT GAME SELECTOR
-#
-# This stays working after bot restarts.
+# SHARED GAME ROLE UPDATE LOGIC
 # =========================================================
 
-class PersistentGameSelect(discord.ui.Select):
+async def update_game_roles(
+    interaction: discord.Interaction,
+    selected_games
+):
 
-    def __init__(self):
+    member = interaction.user
 
-        options = []
-
-        for game_name, emoji, description in GAME_DATA:
-
-            options.append(
-                discord.SelectOption(
-                    label=game_name,
-                    description=description,
-                    emoji=emoji,
-                    value=game_name
-                )
-            )
-
-        super().__init__(
-            custom_id="lotus_persistent_game_selector",
-            placeholder="Choose the TCGs you want alerts for...",
-            min_values=0,
-            max_values=len(options),
-            options=options
-        )
-
-    async def callback(
-        self,
-        interaction: discord.Interaction
+    if not isinstance(
+        member,
+        discord.Member
     ):
-
-        success, message = await update_game_roles(
-            interaction,
-            self.values
+        return (
+            False,
+            "❌ This feature must be used inside the server."
         )
 
-        # Do NOT edit the public selector panel.
-        # Send private confirmation instead.
-        await interaction.response.send_message(
-            message,
-            ephemeral=True
+    selected_games = set(selected_games)
+
+    added_roles = []
+    removed_roles = []
+    errors = []
+
+    for game_name, role_id in GAME_ROLES.items():
+
+        role_id = safe_int(role_id)
+
+        if not role_id:
+            errors.append(
+                f"{game_name}: Role ID not configured"
+            )
+            continue
+
+        role = interaction.guild.get_role(
+            role_id
         )
 
+        if role is None:
+            errors.append(
+                f"{game_name}: Role not found"
+            )
+            continue
 
-class PersistentGameSelectView(discord.ui.View):
+        if game_name in selected_games:
+
+            if role not in member.roles:
+
+                try:
+
+                    await member.add_roles(
+                        role,
+                        reason="Lotus Tracker game selection"
+                    )
+
+                    added_roles.append(
+                        game_name
+                    )
+
+                except discord.Forbidden:
+
+                    errors.append(
+                        f"{game_name}: Cannot assign role"
+                    )
+
+        else:
+
+            if role in member.roles:
+
+                try:
+
+                    await member.remove_roles(
+                        role,
+                        reason="Lotus Tracker game selection"
+                    )
+
+                    removed_roles.append(
+                        game_name
+                    )
+
+                except discord.Forbidden:
+
+                    errors.append(
+                        f"{game_name}: Cannot remove role"
+                    )
+
+    message = (
+        "✅ **Your game alert preferences were updated!**\n\n"
+    )
+
+    if selected_games:
+
+        message += "**You are following:**\n"
+
+        for game in sorted(selected_games):
+            message += f"• {game}\n"
+
+    else:
+
+        message += (
+            "**You are currently not following any games.**\n"
+        )
+
+    if added_roles:
+
+        message += "\n➕ **Roles added:**\n"
+
+        for game in added_roles:
+            message += f"• {game}\n"
+
+    if removed_roles:
+
+        message += "\n➖ **Roles removed:**\n"
+
+        for game in removed_roles:
+            message += f"• {game}\n"
+
+    if errors:
+
+        message += "\n⚠️ **Warnings:**\n"
+
+        for error in errors:
+            message += f"• {error}\n"
+
+    return True, message
+
+
+# =========================================================
+# BOT CLASS
+# =========================================================
+
+class LotusTrackerBot(commands.Bot):
 
     def __init__(self):
 
         super().__init__(
-            timeout=None
+            command_prefix="!",
+            intents=intents
         )
 
-        self.add_item(
-            PersistentGameSelect()
+    async def setup_hook(self):
+
+        self.add_view(
+            PersistentGameSelectView()
         )
+
+        synced = await self.tree.sync()
+
+        print(
+            f"Synced {len(synced)} slash command(s)."
+        )
+
+
+bot = LotusTrackerBot()
+
+
+# =========================================================
+# READY EVENT
+# =========================================================
+
+@bot.event
+async def on_ready():
+
+    print("=" * 60)
+    print("Lotus Tracker Bot is ONLINE!")
+    print(f"Logged in as: {bot.user}")
+    print(f"Bot ID: {bot.user.id}")
+    print("=" * 60)
+
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name="TCG drops worldwide 🌎"
+        )
+    )
 
 
 # =========================================================
@@ -531,10 +525,12 @@ async def games(
         member,
         discord.Member
     ):
+
         await interaction.response.send_message(
             "❌ This command must be used inside the server.",
             ephemeral=True
         )
+
         return
 
     embed = discord.Embed(
@@ -579,8 +575,8 @@ async def games(
 # =========================================================
 # /SETUPGAMES
 #
-# Posts permanent role selector in #roles.
-# Administrator-only.
+# Posts permanent role selector in #roles
+# Administrator-only
 # =========================================================
 
 @bot.tree.command(
@@ -594,74 +590,222 @@ async def setupgames(
     interaction: discord.Interaction
 ):
 
-    channel_id = safe_int(
-        CHANNEL_ROLES
-    )
-
-    if not channel_id:
-
-        await interaction.response.send_message(
-            "❌ CHANNEL_ROLES is not configured in Railway.",
-            ephemeral=True
-        )
-        return
-
-    channel = interaction.guild.get_channel(
-        channel_id
-    )
-
-    if channel is None:
-
-        await interaction.response.send_message(
-            "❌ I could not find the configured #roles channel.",
-            ephemeral=True
-        )
-        return
-
-    embed = discord.Embed(
-        title="🎴 Choose Your Games",
-        description=(
-            "Choose the TCGs you want to receive alerts for.\n\n"
-            "You may select **as many games as you want**.\n\n"
-            "Your game roles control **which games you follow**.\n"
-            "Your subscription controls **which alert features you unlock**.\n\n"
-            "You can come back here anytime and change your selections."
-        )
-    )
-
-    embed.add_field(
-        name="Games",
-        value=(
-            "🏴‍☠️ **One Piece**\n"
-            "⚡ **Pokémon**\n"
-            "🤖 **Gundam**\n"
-            "🐉 **Dragon Ball Fusion World**\n"
-            "🌀 **Riftbound**\n"
-            "🟢 **Palworld**\n"
-            "🍥 **Naruto**\n"
-            "🌃 **Cyberpunk TCG**\n"
-            "🔴 **Azuki TCG**\n"
-            "🔥 **Hellbreak TCG**"
-        ),
-        inline=False
-    )
-
-    embed.set_footer(
-        text="Lotus Tracker Bot • PonDeX Trackers"
-    )
-
-    await channel.send(
-        embed=embed,
-        view=PersistentGameSelectView()
-    )
-
-    await interaction.response.send_message(
-        (
-            f"✅ Permanent game selector posted in "
-            f"{channel.mention}."
-        ),
+    # Immediately acknowledge command
+    # so Discord doesn't show "Application did not respond"
+    await interaction.response.defer(
         ephemeral=True
     )
+
+    try:
+
+        if interaction.guild is None:
+
+            await interaction.followup.send(
+                "❌ This command must be used inside the server.",
+                ephemeral=True
+            )
+
+            return
+
+
+        # -----------------------------------------
+        # CHECK CHANNEL ID
+        # -----------------------------------------
+
+        channel_id = safe_int(
+            CHANNEL_ROLES
+        )
+
+        if not channel_id:
+
+            await interaction.followup.send(
+                (
+                    "❌ `CHANNEL_ROLES` is missing or invalid in Railway.\n\n"
+                    "It should contain only the numeric Discord channel ID."
+                ),
+                ephemeral=True
+            )
+
+            return
+
+
+        # -----------------------------------------
+        # FIND CHANNEL
+        # -----------------------------------------
+
+        channel = interaction.guild.get_channel(
+            channel_id
+        )
+
+        if channel is None:
+
+            await interaction.followup.send(
+                (
+                    "❌ I could not find the configured `#roles` channel.\n\n"
+                    "Check that `CHANNEL_ROLES` contains the correct "
+                    "numeric Discord channel ID."
+                ),
+                ephemeral=True
+            )
+
+            return
+
+
+        # -----------------------------------------
+        # MAKE SURE IT IS A TEXT CHANNEL
+        # -----------------------------------------
+
+        if not isinstance(
+            channel,
+            discord.TextChannel
+        ):
+
+            await interaction.followup.send(
+                (
+                    "❌ `CHANNEL_ROLES` must point to a "
+                    "normal Discord text channel."
+                ),
+                ephemeral=True
+            )
+
+            return
+
+
+        # -----------------------------------------
+        # CHECK BOT PERMISSIONS
+        # -----------------------------------------
+
+        bot_member = interaction.guild.me
+
+        if bot_member is None:
+
+            await interaction.followup.send(
+                "❌ I could not determine my Discord server permissions.",
+                ephemeral=True
+            )
+
+            return
+
+
+        permissions = channel.permissions_for(
+            bot_member
+        )
+
+
+        if not permissions.view_channel:
+
+            await interaction.followup.send(
+                "❌ Lotus Tracker Bot cannot view `#roles`.",
+                ephemeral=True
+            )
+
+            return
+
+
+        if not permissions.send_messages:
+
+            await interaction.followup.send(
+                "❌ Lotus Tracker Bot cannot send messages in `#roles`.",
+                ephemeral=True
+            )
+
+            return
+
+
+        if not permissions.embed_links:
+
+            await interaction.followup.send(
+                (
+                    "❌ Lotus Tracker Bot needs the "
+                    "**Embed Links** permission in `#roles`."
+                ),
+                ephemeral=True
+            )
+
+            return
+
+
+        # -----------------------------------------
+        # BUILD PERMANENT ROLES PANEL
+        # -----------------------------------------
+
+        embed = discord.Embed(
+            title="🎴 Choose Your Games",
+            description=(
+                "Choose the TCGs you want to receive alerts for.\n\n"
+                "You may select **as many games as you want**.\n\n"
+                "Your game roles control **which games you follow**.\n"
+                "Your subscription controls **which alert features you unlock**.\n\n"
+                "You can come back here anytime and change your selections."
+            )
+        )
+
+
+        embed.add_field(
+            name="Games",
+            value=(
+                "🏴‍☠️ **One Piece**\n"
+                "⚡ **Pokémon**\n"
+                "🤖 **Gundam**\n"
+                "🐉 **Dragon Ball Fusion World**\n"
+                "🌀 **Riftbound**\n"
+                "🟢 **Palworld**\n"
+                "🍥 **Naruto**\n"
+                "🌃 **Cyberpunk TCG**\n"
+                "🔴 **Azuki TCG**\n"
+                "🔥 **Hellbreak TCG**"
+            ),
+            inline=False
+        )
+
+
+        embed.set_footer(
+            text="Lotus Tracker Bot • PonDeX Trackers"
+        )
+
+
+        # -----------------------------------------
+        # POST SELECTOR
+        # -----------------------------------------
+
+        await channel.send(
+            embed=embed,
+            view=PersistentGameSelectView()
+        )
+
+
+        await interaction.followup.send(
+            (
+                f"✅ Permanent game selector successfully posted in "
+                f"{channel.mention}."
+            ),
+            ephemeral=True
+        )
+
+
+    except Exception as error:
+
+        print(
+            f"SETUPGAMES ERROR: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        try:
+
+            await interaction.followup.send(
+                (
+                    "❌ Something went wrong while creating "
+                    "the game selector.\n\n"
+                    f"Error: `{type(error).__name__}: {error}`"
+                ),
+                ephemeral=True
+            )
+
+        except Exception:
+
+            print(
+                "Could not send setupgames error message to Discord."
+            )
 
 
 # =========================================================
@@ -682,30 +826,42 @@ async def subscription(
         member,
         discord.Member
     ):
+
         await interaction.response.send_message(
             "❌ This command must be used inside the server.",
             ephemeral=True
         )
+
         return
 
-    tier = get_subscription(member)
+
+    tier = get_subscription(
+        member
+    )
+
 
     followed_games = get_followed_games(
         member
     )
 
+
     if followed_games:
+
         games_text = "\n".join(
             f"• {game}"
             for game in followed_games
         )
+
     else:
+
         games_text = (
             "No games selected yet.\n"
-            "Use `/games` to choose them."
+            "Use `/games` or the selector in `#roles`."
         )
 
+
     tier_details = {
+
         "Free": (
             "⚪",
             "$0",
@@ -760,9 +916,11 @@ async def subscription(
         ),
     }
 
+
     icon, price, features = tier_details[
         tier
     ]
+
 
     embed = discord.Embed(
         title=(
@@ -774,11 +932,13 @@ async def subscription(
         )
     )
 
+
     embed.add_field(
         name="Your Access",
         value=features,
         inline=False
     )
+
 
     embed.add_field(
         name="Games You Follow",
@@ -786,9 +946,11 @@ async def subscription(
         inline=False
     )
 
+
     embed.set_footer(
         text="Lotus Tracker Bot • PonDeX Trackers"
     )
+
 
     await interaction.response.send_message(
         embed=embed,
@@ -812,6 +974,7 @@ async def status(
         bot.latency * 1000
     )
 
+
     embed = discord.Embed(
         title="🟢 Lotus Tracker Bot Status",
         description=(
@@ -823,13 +986,15 @@ async def status(
             "**Product Database:** Coming Soon\n"
             "**Alert Engine:** Coming Soon\n\n"
             f"**Latency:** {latency}ms\n"
-            "**Version:** 0.2"
+            "**Version:** 0.2.1"
         )
     )
+
 
     embed.set_footer(
         text="PonDeX Trackers"
     )
+
 
     await interaction.response.send_message(
         embed=embed,
@@ -838,7 +1003,7 @@ async def status(
 
 
 # =========================================================
-# ERROR HANDLER FOR /SETUPGAMES
+# /SETUPGAMES ERROR HANDLER
 # =========================================================
 
 @setupgames.error
@@ -847,19 +1012,51 @@ async def setupgames_error(
     error
 ):
 
+    print(
+        "SETUPGAMES COMMAND ERROR: "
+        f"{type(error).__name__}: {error}"
+    )
+
+
     if isinstance(
         error,
         discord.app_commands.MissingPermissions
     ):
 
-        await interaction.response.send_message(
-            "❌ Only server administrators can use `/setupgames`.",
-            ephemeral=True
+        message = (
+            "❌ Only server administrators can use `/setupgames`."
         )
 
-        return
+    else:
 
-    raise error
+        message = (
+            "❌ `/setupgames` encountered an error.\n\n"
+            f"`{type(error).__name__}: {error}`"
+        )
+
+
+    try:
+
+        if interaction.response.is_done():
+
+            await interaction.followup.send(
+                message,
+                ephemeral=True
+            )
+
+        else:
+
+            await interaction.response.send_message(
+                message,
+                ephemeral=True
+            )
+
+    except Exception as secondary_error:
+
+        print(
+            "SETUPGAMES ERROR HANDLER FAILED: "
+            f"{type(secondary_error).__name__}: {secondary_error}"
+        )
 
 
 # =========================================================
