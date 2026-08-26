@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 
 from sqlalchemy.orm import (
@@ -16,6 +17,13 @@ from sqlalchemy.orm import (
     Mapped,
     mapped_column,
 )
+
+
+# =========================================================
+# LOTUS TRACKER BOT DATABASE MODELS
+# PonDeX Trackers
+# Version 0.4.2
+# =========================================================
 
 
 # =========================================================
@@ -57,6 +65,13 @@ class User(Base):
         nullable=False,
     )
 
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
 
 # =========================================================
 # SUBSCRIPTIONS
@@ -73,6 +88,7 @@ class Subscription(Base):
 
     discord_user_id: Mapped[int] = mapped_column(
         BigInteger,
+        unique=True,
         index=True,
         nullable=False,
     )
@@ -102,6 +118,66 @@ class Subscription(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# USER GAME PREFERENCES
+# =========================================================
+
+class UserGamePreference(Base):
+    __tablename__ = "user_game_preferences"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "discord_user_id",
+            "game",
+            name="uq_user_game_preference",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    discord_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        index=True,
+        nullable=False,
+    )
+
+    game: Mapped[str] = mapped_column(
+        String(150),
+        index=True,
+        nullable=False,
+    )
+
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
         nullable=False,
     )
 
