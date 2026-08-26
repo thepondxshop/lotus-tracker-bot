@@ -1,4 +1,8 @@
+import asyncio
 import os
+
+from alembic import command
+from alembic.config import Config
 
 from sqlalchemy import (
     delete,
@@ -20,9 +24,9 @@ from app.models import (
 
 
 # =========================================================
-# LOTUS TRACKER DATABASE
+# LOTUS DATABASE
 # PonDeX Trackers
-# Version 0.4.2
+# Version 0.6.3
 # =========================================================
 
 
@@ -32,18 +36,21 @@ DATABASE_URL = os.getenv(
 
 
 # =========================================================
-# DATABASE URL NORMALIZATION
+# DATABASE URL
 # =========================================================
 
 def normalize_database_url(
-    url: str | None
+    url: str | None,
 ):
+
     if not url:
+
         return None
 
     if url.startswith(
         "postgresql://"
     ):
+
         return url.replace(
             "postgresql://",
             "postgresql+asyncpg://",
@@ -53,6 +60,7 @@ def normalize_database_url(
     if url.startswith(
         "postgres://"
     ):
+
         return url.replace(
             "postgres://",
             "postgresql+asyncpg://",
@@ -74,6 +82,7 @@ ASYNC_DATABASE_URL = (
 # =========================================================
 
 engine = None
+
 SessionLocal = None
 
 
@@ -94,6 +103,22 @@ if ASYNC_DATABASE_URL:
 
 
 # =========================================================
+# ALEMBIC
+# =========================================================
+
+def run_alembic_migrations():
+
+    config = Config(
+        "alembic.ini"
+    )
+
+    command.upgrade(
+        config,
+        "head",
+    )
+
+
+# =========================================================
 # INITIALIZE DATABASE
 # =========================================================
 
@@ -105,15 +130,31 @@ async def init_database():
             "DATABASE_URL is missing."
         )
 
+    # -----------------------------------------------------
+    # create_all still provides safe bootstrap behavior
+    # for brand-new tables.
+    #
+    # It does NOT alter existing columns.
+    # Alembic handles schema alterations.
+    # -----------------------------------------------------
+
     async with engine.begin() as connection:
 
         await connection.run_sync(
             Base.metadata.create_all
         )
 
+    # Run Alembic in its own thread so Alembic can manage
+    # its async migration event loop without conflicting
+    # with Discord's running loop.
+
+    await asyncio.to_thread(
+        run_alembic_migrations
+    )
+
 
 # =========================================================
-# SAVE USER + SUBSCRIPTION + GAME PREFERENCES
+# SAVE USER PREFERENCES
 # =========================================================
 
 async def save_user_preferences(
@@ -130,10 +171,6 @@ async def save_user_preferences(
         )
 
     async with SessionLocal() as session:
-
-        # -------------------------------------------------
-        # USER
-        # -------------------------------------------------
 
         user_result = await session.execute(
 
@@ -152,9 +189,7 @@ async def save_user_preferences(
         if user is None:
 
             user = User(
-                discord_user_id=(
-                    discord_user_id
-                ),
+                discord_user_id=discord_user_id,
                 username=username,
             )
 
@@ -166,32 +201,24 @@ async def save_user_preferences(
 
             user.username = username
 
-        # -------------------------------------------------
-        # SUBSCRIPTION
-        # -------------------------------------------------
+        subscription_result = await session.execute(
 
-        subscription_result = (
-            await session.execute(
-
-                select(
-                    Subscription
-                ).where(
-                    Subscription.discord_user_id
-                    == discord_user_id
-                )
+            select(
+                Subscription
+            ).where(
+                Subscription.discord_user_id
+                == discord_user_id
             )
         )
 
         subscription = (
-            subscription_result.scalar_one_or_none()
+            subscription_result.scalars().first()
         )
 
         if subscription is None:
 
             subscription = Subscription(
-                discord_user_id=(
-                    discord_user_id
-                ),
+                discord_user_id=discord_user_id,
                 tier=subscription_tier,
                 active=True,
             )
@@ -207,10 +234,6 @@ async def save_user_preferences(
             )
 
             subscription.active = True
-
-        # -------------------------------------------------
-        # REPLACE GAME PREFERENCES
-        # -------------------------------------------------
 
         await session.execute(
 
@@ -228,33 +251,24 @@ async def save_user_preferences(
             )
         ):
 
-            preference = (
+            session.add(
+
                 UserGamePreference(
-                    discord_user_id=(
-                        discord_user_id
-                    ),
+                    discord_user_id=discord_user_id,
                     game=game,
                     enabled=True,
                 )
             )
 
-            session.add(
-                preference
-            )
-
-        # -------------------------------------------------
-        # COMMIT
-        # -------------------------------------------------
-
         await session.commit()
 
 
 # =========================================================
-# LOAD USER SETTINGS
+# LOAD USER PREFERENCES
 # =========================================================
 
 async def load_user_preferences(
-    discord_user_id: int
+    discord_user_id: int,
 ):
 
     if SessionLocal is None:
@@ -264,10 +278,6 @@ async def load_user_preferences(
         )
 
     async with SessionLocal() as session:
-
-        # -------------------------------------------------
-        # USER
-        # -------------------------------------------------
 
         user_result = await session.execute(
 
@@ -287,29 +297,19 @@ async def load_user_preferences(
 
             return None
 
-        # -------------------------------------------------
-        # SUBSCRIPTION
-        # -------------------------------------------------
+        subscription_result = await session.execute(
 
-        subscription_result = (
-            await session.execute(
-
-                select(
-                    Subscription
-                ).where(
-                    Subscription.discord_user_id
-                    == discord_user_id
-                )
+            select(
+                Subscription
+            ).where(
+                Subscription.discord_user_id
+                == discord_user_id
             )
         )
 
         subscription = (
-            subscription_result.scalar_one_or_none()
+            subscription_result.scalars().first()
         )
-
-        # -------------------------------------------------
-        # GAMES
-        # -------------------------------------------------
 
         games_result = await session.execute(
 
@@ -324,36 +324,36 @@ async def load_user_preferences(
             )
         )
 
-        game_preferences = (
+        preferences = (
             games_result.scalars().all()
         )
 
-        games = [
-            preference.game
-            for preference
-            in game_preferences
-        ]
-
         return {
-            "discord_user_id": (
-                user.discord_user_id
-            ),
-            "username": (
-                user.username
-            ),
-            "subscription": (
-                subscription.tier
-                if subscription
-                else "Free"
-            ),
-            "games": sorted(
-                games
-            ),
+
+            "discord_user_id":
+                user.discord_user_id,
+
+            "username":
+                user.username,
+
+            "subscription":
+                (
+                    subscription.tier
+                    if subscription
+                    else "Free"
+                ),
+
+            "games":
+                sorted(
+                    preference.game
+                    for preference
+                    in preferences
+                ),
         }
 
 
 # =========================================================
-# SYNC DISCORD MEMBER TO DATABASE
+# SYNC DISCORD MEMBER
 # =========================================================
 
 async def sync_member_to_database(
@@ -363,11 +363,14 @@ async def sync_member_to_database(
 ):
 
     username = (
+
         member.name
+
         if hasattr(
             member,
-            "name"
+            "name",
         )
+
         else str(
             member
         )
