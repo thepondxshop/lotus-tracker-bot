@@ -1,97 +1,59 @@
 import asyncio
 import html as html_lib
+import os
 import re
 
 from datetime import datetime
-
-from urllib.parse import (
-    urljoin,
-    urlparse,
-)
+from urllib.parse import urlparse
 
 import aiohttp
 
-from sqlalchemy import (
-    select,
-)
+from sqlalchemy import select
 
-from app.database import (
-    SessionLocal,
-)
-
-from app.event_service import (
-    process_product_event,
-)
-
-from app.events import (
-    ProductEvent,
-    ProductEventType,
-)
-
-from app.models import (
-    PokemonCenterProduct,
-)
-
-from app.redis_client import (
-    get_redis,
-)
+from app.database import SessionLocal
+from app.event_service import process_product_event
+from app.events import ProductEvent, ProductEventType
+from app.models import PokemonCenterProduct
+from app.redis_client import get_redis
 
 
 # =========================================================
 # LOTUS POKEMON CENTER PRODUCT INTELLIGENCE
 # PonDeX Trackers
-# Version 0.7.3
+# Version 0.7.4
 #
-# Features:
-#
-# - Persistent product registry
-# - Multi-source public discovery
-# - Search/category discovery
-# - Known product monitoring
-# - Graceful 403 / 429 handling
-# - Queue-triggered burst monitoring
-# - Public preorder intelligence source
+# Persistent registry
+# Indexed discovery
+# Public-page discovery fallback
+# Product monitoring
+# Queue-triggered burst mode
+# Preorder intelligence
 # =========================================================
 
 
-# =========================================================
-# REGIONS
-# =========================================================
+SERPER_API_KEY = os.getenv(
+    "SERPER_API_KEY"
+)
+
+SERPER_ENDPOINT = (
+    "https://google.serper.dev/search"
+)
+
 
 REGIONS = {
-
-    "US":
-        "https://www.pokemoncenter.com/",
-
-    "CA":
-        "https://www.pokemoncenter.com/en-ca/",
-
-    "UK":
-        "https://www.pokemoncenter.com/en-gb/",
-
-    "DE":
-        "https://www.pokemoncenter.com/en-de/",
-
-    "AU":
-        "https://www.pokemoncenter.com/en-au/",
-
-    "NZ":
-        "https://www.pokemoncenter.com/en-nz/",
+    "US": "https://www.pokemoncenter.com/",
+    "CA": "https://www.pokemoncenter.com/en-ca/",
+    "UK": "https://www.pokemoncenter.com/en-gb/",
+    "DE": "https://www.pokemoncenter.com/en-de/",
+    "AU": "https://www.pokemoncenter.com/en-au/",
+    "NZ": "https://www.pokemoncenter.com/en-nz/",
 }
 
 
-# =========================================================
-# POLLING
-# =========================================================
-
 NORMAL_POLL_SECONDS = 90
-
 BURST_POLL_SECONDS = 15
-
 BURST_DURATION_SECONDS = 300
-
 DISCOVERY_EVERY_LOOPS = 10
-
 
 BURST_KEY_PREFIX = (
     "lotus:pokemon_center:burst:"
@@ -99,12 +61,60 @@ BURST_KEY_PREFIX = (
 
 
 # =========================================================
-# PUBLIC DISCOVERY PATHS
-#
-# These are discovery surfaces only.
-#
-# If Pokémon Center rejects one, Lotus simply moves on
-# instead of treating that as a fatal monitor error.
+# INDEX SEARCH QUERIES
+# =========================================================
+
+INDEX_QUERIES = [
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Pokemon TCG\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Pokémon TCG\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Elite Trainer Box\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Booster Bundle\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Booster Pack\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Premium Collection\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Special Collection\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Collector Chest\""
+    ),
+
+    (
+        "site:pokemoncenter.com/product "
+        "\"Mini Tin\""
+    ),
+]
+
+
+# =========================================================
+# PUBLIC DISCOVERY FALLBACKS
 # =========================================================
 
 DISCOVERY_PATHS = [
@@ -117,78 +127,11 @@ DISCOVERY_PATHS = [
 
     "/search/trading-card-game",
 
-    "/search/tcg",
-
     "/search/elite-trainer-box",
 
     "/search/booster-bundle",
 
-    "/search/booster-pack",
-
     "/search/premium-collection",
-
-    "/search/tin",
-
-    "/search/playmat",
-]
-
-
-# =========================================================
-# OFFICIAL PUBLIC RELEASE INTELLIGENCE
-# =========================================================
-
-PREORDER_RELEASE_URL = (
-    "https://support.pokemoncenter.com/"
-    "hc/en-us/articles/4407702295572-"
-    "Estimated-Preorder-Release-Dates"
-)
-
-
-# =========================================================
-# TCG RELEVANCE
-# =========================================================
-
-TCG_KEYWORDS = [
-
-    "pokemon tcg",
-
-    "pokémon tcg",
-
-    "trading card game",
-
-    "elite trainer box",
-
-    "booster bundle",
-
-    "booster pack",
-
-    "booster box",
-
-    "premium collection",
-
-    "special collection",
-
-    "collection box",
-
-    "battle deck",
-
-    "trainer toolkit",
-
-    "three-pack blister",
-
-    "3-pack blister",
-
-    "blister",
-
-    "mini tin",
-
-    "collector chest",
-
-    "playmat",
-
-    "deck box",
-
-    "card sleeves",
 ]
 
 
@@ -198,47 +141,37 @@ TCG_KEYWORDS = [
 
 MONITOR_STATUS = {
 
-    "running":
-        False,
+    "running": False,
 
-    "last_scan":
-        None,
+    "last_scan": None,
 
-    "last_discovery":
-        None,
+    "last_discovery": None,
 
-    "last_preorder_scan":
-        None,
+    "last_index_scan": None,
 
-    "known_products":
-        0,
+    "known_products": 0,
 
-    "products_checked":
-        0,
+    "products_checked": 0,
 
-    "products_discovered":
-        0,
+    "events_created": 0,
 
-    "discovery_pages_checked":
-        0,
+    "blocked_products": 0,
 
-    "discovery_pages_blocked":
-        0,
+    "products_discovered": 0,
 
-    "preorders_detected":
-        0,
+    "indexed_products_discovered": 0,
 
-    "events_created":
-        0,
+    "index_queries_run": 0,
 
-    "blocked_products":
-        0,
+    "index_results_seen": 0,
 
-    "burst_regions":
-        0,
+    "discovery_pages_checked": 0,
 
-    "last_error":
-        None,
+    "discovery_pages_blocked": 0,
+
+    "burst_regions": 0,
+
+    "last_error": None,
 }
 
 
@@ -260,10 +193,6 @@ def normalize_product_url(
         url.strip()
     )
 
-    # ---------------------------------------------
-    # Handle relative product URLs.
-    # ---------------------------------------------
-
     if url.startswith(
         "/"
     ):
@@ -281,9 +210,7 @@ def normalize_product_url(
 
         url = (
             "https://www.pokemoncenter.com/"
-            + url.lstrip(
-                "/"
-            )
+            + url.lstrip("/")
         )
 
         parsed = urlparse(
@@ -295,16 +222,13 @@ def normalize_product_url(
         or ""
     ).lower()
 
-    if (
-        hostname != "pokemoncenter.com"
-        and hostname != "www.pokemoncenter.com"
-    ):
+    if hostname not in {
+        "pokemoncenter.com",
+        "www.pokemoncenter.com",
+    }:
 
         raise ValueError(
-            (
-                "This does not appear to be "
-                "a Pokémon Center product URL."
-            )
+            "Not a Pokémon Center URL."
         )
 
     path = (
@@ -315,27 +239,14 @@ def normalize_product_url(
     if "/product/" not in path.lower():
 
         raise ValueError(
-            (
-                "This does not appear to be "
-                "a Pokémon Center product URL."
-            )
+            "Not a Pokémon Center product URL."
         )
-
-    # ---------------------------------------------
-    # Remove query strings / tracking parameters.
-    # ---------------------------------------------
 
     return (
         "https://www.pokemoncenter.com"
-        + path.rstrip(
-            "/"
-        )
+        + path.rstrip("/")
     )
 
-
-# =========================================================
-# PRODUCT CODE
-# =========================================================
 
 def extract_product_code(
     url: str,
@@ -352,334 +263,14 @@ def extract_product_code(
         return None
 
     return (
-        match.group(
-            1
-        )
+        match.group(1)
         .strip()
         .upper()
     )
 
 
 # =========================================================
-# HTML CLEANING
-# =========================================================
-
-def clean_html(
-    html: str,
-):
-
-    value = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        html,
-        flags=(
-            re.IGNORECASE
-            |
-            re.DOTALL
-        ),
-    )
-
-    value = re.sub(
-        r"<style\b[^>]*>.*?</style>",
-        " ",
-        value,
-        flags=(
-            re.IGNORECASE
-            |
-            re.DOTALL
-        ),
-    )
-
-    value = re.sub(
-        r"<[^>]+>",
-        " ",
-        value,
-    )
-
-    value = html_lib.unescape(
-        value
-    )
-
-    value = re.sub(
-        r"\s+",
-        " ",
-        value,
-    )
-
-    return value.strip()
-
-
-# =========================================================
-# TCG FILTER
-# =========================================================
-
-def looks_like_tcg(
-    value: str,
-):
-
-    lower = (
-        value.lower()
-    )
-
-    return any(
-        keyword in lower
-        for keyword in TCG_KEYWORDS
-    )
-
-
-# =========================================================
-# TITLE EXTRACTION
-# =========================================================
-
-def extract_title(
-    html: str,
-):
-
-    patterns = [
-
-        (
-            r'<meta[^>]+property=["\']og:title["\']'
-            r'[^>]+content=["\']([^"\']+)'
-        ),
-
-        (
-            r'<meta[^>]+content=["\']([^"\']+)["\']'
-            r'[^>]+property=["\']og:title["\']'
-        ),
-
-        r"<h1[^>]*>(.*?)</h1>",
-
-        r"<title[^>]*>(.*?)</title>",
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            html,
-            flags=(
-                re.IGNORECASE
-                |
-                re.DOTALL
-            ),
-        )
-
-        if not match:
-
-            continue
-
-        title = (
-            clean_html(
-                match.group(
-                    1
-                )
-            )
-        )
-
-        if title:
-
-            return title
-
-    return (
-        "Unknown Pokémon Center Product"
-    )
-
-
-# =========================================================
-# PRICE EXTRACTION
-# =========================================================
-
-def extract_price(
-    html: str,
-):
-
-    patterns = [
-
-        r'"price"\s*:\s*"([0-9]+(?:\.[0-9]+)?)"',
-
-        r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-        r'"currentPrice"\s*:\s*"([0-9]+(?:\.[0-9]+)?)"',
-
-        r'\$\s*([0-9]+(?:\.[0-9]{2})?)',
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            html,
-            flags=re.IGNORECASE,
-        )
-
-        if not match:
-
-            continue
-
-        try:
-
-            return float(
-                match.group(
-                    1
-                )
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            continue
-
-    return None
-
-
-# =========================================================
-# PRODUCT STATE
-# =========================================================
-
-def classify_product_state(
-    html: str,
-):
-
-    text = (
-        clean_html(
-            html
-        ).lower()
-    )
-
-    preorder = any(
-
-        phrase in text
-
-        for phrase in [
-
-            "preorder: add to cart",
-
-            "preorder: add to basket",
-
-            "pre-order: add to cart",
-
-            "pre-order: add to basket",
-
-            "preorder now",
-
-            "pre-order now",
-        ]
-    )
-
-    sold_out = any(
-
-        phrase in text
-
-        for phrase in [
-
-            "sold out",
-
-            "out of stock",
-
-            "currently unavailable",
-        ]
-    )
-
-    coming_soon = any(
-
-        phrase in text
-
-        for phrase in [
-
-            "coming soon",
-
-            "available soon",
-        ]
-    )
-
-    add_to_cart = any(
-
-        phrase in text
-
-        for phrase in [
-
-            "add to cart",
-
-            "add to basket",
-        ]
-    )
-
-    if preorder:
-
-        return (
-            "PREORDER_LIVE",
-            True,
-        )
-
-    if (
-        add_to_cart
-        and not sold_out
-    ):
-
-        return (
-            "STOCK_AVAILABLE",
-            True,
-        )
-
-    if coming_soon:
-
-        return (
-            "COMING_SOON",
-            False,
-        )
-
-    if sold_out:
-
-        return (
-            "SOLD_OUT",
-            False,
-        )
-
-    return (
-        "PAGE_LIVE",
-        False,
-    )
-
-
-# =========================================================
-# HTTP
-# =========================================================
-
-async def fetch_page(
-    session,
-    url,
-):
-
-    async with session.get(
-        url,
-        allow_redirects=True,
-    ) as response:
-
-        body = (
-            await response.text(
-                errors="ignore"
-            )
-        )
-
-        return {
-
-            "status":
-                response.status,
-
-            "url":
-                str(
-                    response.url
-                ),
-
-            "body":
-                body,
-        }
-
-
-# =========================================================
-# PRODUCT REGISTRY
+# REGISTRY
 # =========================================================
 
 async def add_pokemon_product(
@@ -693,17 +284,12 @@ async def add_pokemon_product(
             "Database unavailable."
         )
 
-    region = (
-        region.upper()
-    )
+    region = region.upper()
 
     if region not in REGIONS:
 
         raise ValueError(
-            (
-                "Unsupported region. "
-                "Use US, CA, UK, DE, AU or NZ."
-            )
+            "Unsupported region."
         )
 
     clean_url = (
@@ -712,7 +298,7 @@ async def add_pokemon_product(
         )
     )
 
-    product_code = (
+    code = (
         extract_product_code(
             clean_url
         )
@@ -760,7 +346,7 @@ async def add_pokemon_product(
 
                 url=clean_url,
 
-                product_code=product_code,
+                product_code=code,
 
                 active=True,
             )
@@ -898,84 +484,173 @@ async def restore_pokemon_product(
 
 
 # =========================================================
-# PRODUCT LINK EXTRACTION
+# INDEXED DISCOVERY
 # =========================================================
 
-def extract_product_links(
-    html: str,
-):
+async def indexed_product_discovery():
 
-    links = set()
+    if not SERPER_API_KEY:
 
-    patterns = [
+        return {
+            "enabled": False,
+            "queries": 0,
+            "results": 0,
+            "new": 0,
+        }
 
-        (
-            r'href=["\']'
-            r'([^"\']*?/product/[^"\']+)'
-            r'["\']'
-        ),
-
-        (
-            r'["\']'
-            r'(https://(?:www\.)?pokemoncenter\.com/'
-            r'product/[^"\']+)'
-            r'["\']'
-        ),
-
-        (
-            r'["\']'
-            r'(\/product\/[^"\']+)'
-            r'["\']'
-        ),
-    ]
-
-    for pattern in patterns:
-
-        matches = re.findall(
-            pattern,
-            html,
-            flags=re.IGNORECASE,
+    timeout = (
+        aiohttp.ClientTimeout(
+            total=20
         )
+    )
 
-        for match in matches:
+    headers = {
 
-            # ---------------------------------------------
-            # Remove escaped JSON slashes.
-            # ---------------------------------------------
+        "X-API-KEY":
+            SERPER_API_KEY,
 
-            match = (
-                match
-                .replace(
-                    "\\/",
-                    "/"
-                )
-                .replace(
-                    "\\u002F",
-                    "/"
-                )
-            )
+        "Content-Type":
+            "application/json",
+    }
+
+    new_count = 0
+    results_seen = 0
+    queries_run = 0
+
+    async with aiohttp.ClientSession(
+        timeout=timeout
+    ) as session:
+
+        for query in INDEX_QUERIES:
+
+            payload = {
+                "q": query,
+                "num": 20,
+            }
 
             try:
 
-                clean_url = (
-                    normalize_product_url(
-                        match
+                async with session.post(
+                    SERPER_ENDPOINT,
+                    json=payload,
+                    headers=headers,
+                ) as response:
+
+                    if response.status != 200:
+
+                        print(
+                            (
+                                "SERPER ERROR: "
+                                f"HTTP {response.status}"
+                            )
+                        )
+
+                        continue
+
+                    data = (
+                        await response.json()
+                    )
+
+                    queries_run += 1
+
+                    organic = (
+                        data.get(
+                            "organic",
+                            []
+                        )
+                    )
+
+                    for result in organic:
+
+                        link = (
+                            result.get(
+                                "link"
+                            )
+                        )
+
+                        if not link:
+
+                            continue
+
+                        results_seen += 1
+
+                        try:
+
+                            product, created = (
+                                await add_pokemon_product(
+                                    link,
+                                    "US",
+                                )
+                            )
+
+                            if created:
+
+                                new_count += 1
+
+                                print(
+                                    (
+                                        "INDEXED POKEMON PRODUCT: "
+                                        f"{product.product_code} | "
+                                        f"{product.url}"
+                                    )
+                                )
+
+                        except ValueError:
+
+                            continue
+
+                        except Exception as error:
+
+                            print(
+                                (
+                                    "INDEX SAVE ERROR: "
+                                    f"{type(error).__name__}: "
+                                    f"{error}"
+                                )
+                            )
+
+            except Exception as error:
+
+                print(
+                    (
+                        "INDEX QUERY ERROR: "
+                        f"{type(error).__name__}: "
+                        f"{error}"
                     )
                 )
 
-                links.add(
-                    clean_url
-                )
+            await asyncio.sleep(
+                0.25
+            )
 
-            except ValueError:
+    MONITOR_STATUS[
+        "last_index_scan"
+    ] = (
+        datetime.utcnow().isoformat()
+    )
 
-                continue
+    MONITOR_STATUS[
+        "indexed_products_discovered"
+    ] = new_count
 
-    return links
+    MONITOR_STATUS[
+        "index_queries_run"
+    ] = queries_run
+
+    MONITOR_STATUS[
+        "index_results_seen"
+    ] = results_seen
+
+    return {
+        "enabled": True,
+        "queries": queries_run,
+        "results": results_seen,
+        "new": new_count,
+    }
 
 
 # =========================================================
-# DISCOVERY
+# PUBLIC PAGE DISCOVERY
 # =========================================================
 
 async def discover_pokemon_products():
@@ -989,147 +664,112 @@ async def discover_pokemon_products():
     headers = {
 
         "Accept":
-            (
-                "text/html,"
-                "application/xhtml+xml,"
-                "application/json"
-            ),
+            "text/html,application/xhtml+xml",
 
         "Accept-Language":
             "en-US,en;q=0.9",
 
         "User-Agent":
-            "PonDeX-Trackers/0.7.3",
+            "PonDeX-Trackers/0.7.4",
     }
 
-    discovered_total = 0
-
     pages_checked = 0
-
     pages_blocked = 0
+    new_count = 0
 
     async with aiohttp.ClientSession(
         timeout=timeout,
         headers=headers,
     ) as session:
 
-        for (
-            region,
-            base_url,
-        ) in REGIONS.items():
+        for region, base_url in REGIONS.items():
 
             for path in DISCOVERY_PATHS:
 
-                discovery_url = (
-                    urljoin(
-                        base_url,
-                        path.lstrip(
-                            "/"
-                        )
-                    )
+                url = (
+                    base_url.rstrip("/")
+                    + path
                 )
 
                 try:
 
-                    response = (
-                        await fetch_page(
-                            session,
-                            discovery_url,
-                        )
-                    )
+                    async with session.get(
+                        url,
+                        allow_redirects=True,
+                    ) as response:
 
-                    pages_checked += 1
+                        pages_checked += 1
 
-                    status = (
-                        response[
-                            "status"
-                        ]
-                    )
+                        if response.status in (
+                            401,
+                            403,
+                            429,
+                        ):
 
-                    # -------------------------------------
-                    # Do NOT try to work around blocks.
-                    # -------------------------------------
+                            pages_blocked += 1
 
-                    if status in (
-                        401,
-                        403,
-                        429,
-                    ):
+                            continue
 
-                        pages_blocked += 1
+                        if response.status != 200:
 
-                        continue
+                            continue
 
-                    if status != 200:
-
-                        continue
-
-                    links = (
-                        extract_product_links(
-                            response[
-                                "body"
-                            ]
-                        )
-                    )
-
-                    for link in links:
-
-                        # ---------------------------------
-                        # Try to use discovery-page text
-                        # as a basic TCG relevance filter.
-                        #
-                        # Search/category pages can contain
-                        # accessories too, which is okay
-                        # because those are still useful
-                        # Pokémon Center signals.
-                        # ---------------------------------
-
-                        try:
-
-                            product, created = (
-                                await add_pokemon_product(
-                                    link,
-                                    region,
-                                )
+                        body = (
+                            await response.text(
+                                errors="ignore"
                             )
+                        )
 
-                            if created:
+                        links = re.findall(
+                            (
+                                r'https://www\.pokemoncenter\.com/'
+                                r'product/[^"\'<>\s]+'
+                            ),
+                            body,
+                            flags=re.IGNORECASE,
+                        )
 
-                                discovered_total += 1
+                        links += re.findall(
+                            (
+                                r'href=["\']'
+                                r'(/product/[^"\']+)'
+                                r'["\']'
+                            ),
+                            body,
+                            flags=re.IGNORECASE,
+                        )
 
-                                print(
-                                    (
-                                        "POKEMON PRODUCT DISCOVERED: "
-                                        f"{region} | "
-                                        f"{product.product_code} | "
-                                        f"{product.url}"
+                        for link in links:
+
+                            try:
+
+                                product, created = (
+                                    await add_pokemon_product(
+                                        link,
+                                        region,
                                     )
                                 )
 
-                        except Exception as error:
+                                if created:
 
-                            print(
-                                (
-                                    "POKEMON DISCOVERY SAVE ERROR: "
-                                    f"{type(error).__name__}: "
-                                    f"{error}"
-                                )
-                            )
+                                    new_count += 1
+
+                            except Exception:
+
+                                continue
 
                 except Exception as error:
 
                     print(
                         (
-                            "POKEMON DISCOVERY ERROR: "
-                            f"{region} | "
-                            f"{discovery_url} | "
+                            "PUBLIC DISCOVERY ERROR: "
                             f"{type(error).__name__}: "
                             f"{error}"
                         )
                     )
 
                 await asyncio.sleep(
-                    0.3
+                    0.25
                 )
 
     MONITOR_STATUS[
@@ -1140,127 +780,212 @@ async def discover_pokemon_products():
 
     MONITOR_STATUS[
         "products_discovered"
-    ] = (
-        discovered_total
-    )
+    ] = new_count
 
     MONITOR_STATUS[
         "discovery_pages_checked"
-    ] = (
-        pages_checked
-    )
+    ] = pages_checked
 
     MONITOR_STATUS[
         "discovery_pages_blocked"
-    ] = (
-        pages_blocked
+    ] = pages_blocked
+
+    indexed = (
+        await indexed_product_discovery()
     )
 
-    return discovered_total
+    return (
+        new_count
+        + indexed[
+            "new"
+        ]
+    )
 
 
 # =========================================================
-# OFFICIAL PREORDER RELEASE INTELLIGENCE
+# PRODUCT PAGE HELPERS
 # =========================================================
 
-async def scan_preorder_release_intelligence():
+def clean_html(
+    value: str,
+):
 
-    timeout = (
-        aiohttp.ClientTimeout(
-            total=20
+    value = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        value,
+        flags=(
+            re.IGNORECASE
+            |
+            re.DOTALL
+        ),
+    )
+
+    value = re.sub(
+        r"<style\b[^>]*>.*?</style>",
+        " ",
+        value,
+        flags=(
+            re.IGNORECASE
+            |
+            re.DOTALL
+        ),
+    )
+
+    value = re.sub(
+        r"<[^>]+>",
+        " ",
+        value,
+    )
+
+    value = html_lib.unescape(
+        value
+    )
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
+    )
+
+    return value.strip()
+
+
+def extract_title(
+    html: str,
+):
+
+    match = re.search(
+        r"<title[^>]*>(.*?)</title>",
+        html,
+        flags=(
+            re.IGNORECASE
+            |
+            re.DOTALL
+        ),
+    )
+
+    if not match:
+
+        return (
+            "Unknown Pokémon Center Product"
+        )
+
+    return clean_html(
+        match.group(
+            1
         )
     )
 
-    headers = {
 
-        "Accept":
-            "text/html,application/xhtml+xml",
+def extract_price(
+    html: str,
+):
 
-        "Accept-Language":
-            "en-US,en;q=0.9",
+    patterns = [
 
-        "User-Agent":
-            "PonDeX-Trackers/0.7.3",
-    }
+        r'"price"\s*:\s*"([0-9]+(?:\.[0-9]+)?)"',
 
-    preorder_count = 0
+        r'\$\s*([0-9]+(?:\.[0-9]{2})?)',
+    ]
 
-    try:
+    for pattern in patterns:
 
-        async with aiohttp.ClientSession(
-            timeout=timeout,
-            headers=headers,
-        ) as session:
-
-            response = await fetch_page(
-                session,
-                PREORDER_RELEASE_URL,
-            )
-
-            if response[
-                "status"
-            ] != 200:
-
-                MONITOR_STATUS[
-                    "last_preorder_scan"
-                ] = (
-                    datetime.utcnow().isoformat()
-                )
-
-                return 0
-
-            text = (
-                clean_html(
-                    response[
-                        "body"
-                    ]
-                )
-            )
-
-            # ---------------------------------------------
-            # This is intelligence only.
-            #
-            # We don't automatically invent product URLs
-            # from item names.
-            # ---------------------------------------------
-
-            lower = (
-                text.lower()
-            )
-
-            for keyword in TCG_KEYWORDS:
-
-                if keyword in lower:
-
-                    preorder_count += 1
-
-    except Exception as error:
-
-        print(
-            (
-                "POKEMON PREORDER INTELLIGENCE ERROR: "
-                f"{type(error).__name__}: "
-                f"{error}"
-            )
+        match = re.search(
+            pattern,
+            html,
+            flags=re.IGNORECASE,
         )
 
-    MONITOR_STATUS[
-        "last_preorder_scan"
-    ] = (
-        datetime.utcnow().isoformat()
+        if not match:
+
+            continue
+
+        try:
+
+            return float(
+                match.group(
+                    1
+                )
+            )
+
+        except Exception:
+
+            continue
+
+    return None
+
+
+def classify_product_state(
+    html: str,
+):
+
+    text = (
+        clean_html(
+            html
+        ).lower()
     )
 
-    MONITOR_STATUS[
-        "preorders_detected"
-    ] = (
-        preorder_count
-    )
+    if (
+        "preorder: add to cart"
+        in text
+        or
+        "preorder: add to basket"
+        in text
+    ):
 
-    return preorder_count
+        return (
+            "PREORDER_LIVE",
+            True,
+        )
+
+    if (
+        "add to cart"
+        in text
+        or
+        "add to basket"
+        in text
+    ):
+
+        return (
+            "STOCK_AVAILABLE",
+            True,
+        )
+
+    if (
+        "coming soon"
+        in text
+        or
+        "available soon"
+        in text
+    ):
+
+        return (
+            "COMING_SOON",
+            False,
+        )
+
+    if (
+        "sold out"
+        in text
+        or
+        "out of stock"
+        in text
+    ):
+
+        return (
+            "SOLD_OUT",
+            False,
+        )
+
+    return (
+        "PAGE_LIVE",
+        False,
+    )
 
 
 # =========================================================
-# EVENT CREATION
+# EVENT
 # =========================================================
 
 async def emit_product_event(
@@ -1271,39 +996,29 @@ async def emit_product_event(
     available,
 ):
 
-    event = (
-        ProductEvent(
+    event = ProductEvent(
 
-            event_type=event_type,
+        event_type=event_type,
 
-            game="Pokemon",
+        game="Pokemon",
 
-            product_name=title,
+        product_name=title,
 
-            store_name=(
-                "Pokémon Center"
-            ),
+        store_name="Pokémon Center",
 
-            product_url=(
-                product.url
-            ),
+        product_url=product.url,
 
-            price=price,
+        price=price,
 
-            currency="USD",
+        currency="USD",
 
-            in_stock=available,
+        in_stock=available,
 
-            region=(
-                product.region
-            ),
+        region=product.region,
 
-            language="English",
+        language="English",
 
-            product_type=(
-                "Pokémon TCG Product"
-            ),
-        )
+        product_type="Pokémon TCG Product",
     )
 
     return await process_product_event(
@@ -1312,47 +1027,7 @@ async def emit_product_event(
 
 
 # =========================================================
-# SAVE PRODUCT ERROR
-# =========================================================
-
-async def save_product_error(
-    product_id: int,
-    error_text: str,
-):
-
-    if SessionLocal is None:
-
-        return
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-
-            select(
-                PokemonCenterProduct
-            ).where(
-                PokemonCenterProduct.id
-                == product_id
-            )
-        )
-
-        product = (
-            result.scalar_one_or_none()
-        )
-
-        if product:
-
-            product.last_error = (
-                error_text[
-                    :2000
-                ]
-            )
-
-            await session.commit()
-
-
-# =========================================================
-# SCAN ONE KNOWN PRODUCT
+# PRODUCT MONITORING
 # =========================================================
 
 async def scan_registered_product(
@@ -1360,98 +1035,49 @@ async def scan_registered_product(
     product,
 ):
 
-    response = (
-        await fetch_page(
-            session,
-            product.url,
+    async with session.get(
+        product.url,
+        allow_redirects=True,
+    ) as response:
+
+        if response.status in (
+            401,
+            403,
+            429,
+        ):
+
+            return {
+                "success": False,
+                "blocked": True,
+                "events": 0,
+                "error": (
+                    f"HTTP {response.status}"
+                ),
+            }
+
+        if response.status != 200:
+
+            return {
+                "success": False,
+                "blocked": False,
+                "events": 0,
+                "error": (
+                    f"HTTP {response.status}"
+                ),
+            }
+
+        html = (
+            await response.text(
+                errors="ignore"
+            )
         )
+
+    title = extract_title(
+        html
     )
 
-    status = (
-        response[
-            "status"
-        ]
-    )
-
-    # =====================================================
-    # BLOCKED
-    # =====================================================
-
-    if status in (
-        401,
-        403,
-        429,
-    ):
-
-        return {
-
-            "success":
-                False,
-
-            "blocked":
-                True,
-
-            "events":
-                0,
-
-            "error":
-                f"HTTP {status}",
-        }
-
-    # =====================================================
-    # PAGE MISSING
-    # =====================================================
-
-    if status == 404:
-
-        return {
-
-            "success":
-                False,
-
-            "blocked":
-                False,
-
-            "events":
-                0,
-
-            "error":
-                "HTTP 404",
-        }
-
-    if status != 200:
-
-        return {
-
-            "success":
-                False,
-
-            "blocked":
-                False,
-
-            "events":
-                0,
-
-            "error":
-                f"HTTP {status}",
-        }
-
-    html = (
-        response[
-            "body"
-        ]
-    )
-
-    title = (
-        extract_title(
-            html
-        )
-    )
-
-    price = (
-        extract_price(
-            html
-        )
+    price = extract_price(
+        html
     )
 
     state, available = (
@@ -1460,7 +1086,7 @@ async def scan_registered_product(
         )
     )
 
-    events_created = 0
+    events = 0
 
     old_state = (
         product.last_state
@@ -1474,23 +1100,14 @@ async def scan_registered_product(
         product.last_price
     )
 
-    # =====================================================
-    # FIRST SUCCESSFUL SCAN
-    # =====================================================
-
     if old_state is None:
 
         result = (
             await emit_product_event(
-
                 product,
-
                 ProductEventType.DISCOVERED,
-
                 title,
-
                 price,
-
                 available,
             )
         )
@@ -1499,42 +1116,51 @@ async def scan_registered_product(
             "redis_saved"
         ]:
 
-            events_created += 1
+            events += 1
 
-        initial_event = {
+    else:
 
-            "PAGE_LIVE":
-                ProductEventType.PAGE_LIVE,
+        transition = None
 
-            "COMING_SOON":
-                ProductEventType.COMING_SOON,
-
-            "PREORDER_LIVE":
-                ProductEventType.PREORDER_LIVE,
-
-            "STOCK_AVAILABLE":
-                ProductEventType.STOCK_AVAILABLE,
-
-            "SOLD_OUT":
-                ProductEventType.SOLD_OUT,
-
-        }.get(
+        if (
             state
-        )
+            == "PREORDER_LIVE"
+        ):
 
-        if initial_event:
+            transition = (
+                ProductEventType.PREORDER_LIVE
+            )
+
+        elif (
+            not old_available
+            and available
+        ):
+
+            transition = (
+                ProductEventType.RESTOCK
+            )
+
+        elif (
+            old_available
+            and not available
+        ):
+
+            transition = (
+                ProductEventType.SOLD_OUT
+            )
+
+        if (
+            transition
+            and state
+            != old_state
+        ):
 
             result = (
                 await emit_product_event(
-
                     product,
-
-                    initial_event,
-
+                    transition,
                     title,
-
                     price,
-
                     available,
                 )
             )
@@ -1543,107 +1169,31 @@ async def scan_registered_product(
                 "redis_saved"
             ]:
 
-                events_created += 1
-
-    # =====================================================
-    # EXISTING PRODUCT
-    # =====================================================
-
-    else:
-
-        if state != old_state:
-
-            transition_event = None
-
-            if state == "PREORDER_LIVE":
-
-                transition_event = (
-                    ProductEventType.PREORDER_LIVE
-                )
-
-            elif (
-                not old_available
-                and available
-            ):
-
-                transition_event = (
-                    ProductEventType.RESTOCK
-                )
-
-            elif (
-                old_available
-                and not available
-            ):
-
-                transition_event = (
-                    ProductEventType.SOLD_OUT
-                )
-
-            elif state == "COMING_SOON":
-
-                transition_event = (
-                    ProductEventType.COMING_SOON
-                )
-
-            elif state == "PAGE_LIVE":
-
-                transition_event = (
-                    ProductEventType.PAGE_LIVE
-                )
-
-            if transition_event:
-
-                result = (
-                    await emit_product_event(
-
-                        product,
-
-                        transition_event,
-
-                        title,
-
-                        price,
-
-                        available,
-                    )
-                )
-
-                if result[
-                    "redis_saved"
-                ]:
-
-                    events_created += 1
-
-        # =================================================
-        # PRICE CHANGE
-        # =================================================
+                events += 1
 
         if (
             old_price is not None
             and price is not None
-            and old_price != price
+            and old_price
+            != price
         ):
 
-            price_event = (
+            event_type = (
 
                 ProductEventType.PRICE_DROP
 
-                if price < old_price
+                if price
+                < old_price
 
                 else ProductEventType.PRICE_INCREASE
             )
 
             result = (
                 await emit_product_event(
-
                     product,
-
-                    price_event,
-
+                    event_type,
                     title,
-
                     price,
-
                     available,
                 )
             )
@@ -1652,69 +1202,51 @@ async def scan_registered_product(
                 "redis_saved"
             ]:
 
-                events_created += 1
+                events += 1
 
-    # =====================================================
-    # SAVE CURRENT STATE
-    # =====================================================
+    async with SessionLocal() as db:
 
-    if SessionLocal is not None:
+        result = await db.execute(
 
-        async with SessionLocal() as db:
+            select(
+                PokemonCenterProduct
+            ).where(
+                PokemonCenterProduct.id
+                == product.id
+            )
+        )
 
-            result = await db.execute(
+        stored = (
+            result.scalar_one_or_none()
+        )
 
-                select(
-                    PokemonCenterProduct
-                ).where(
-                    PokemonCenterProduct.id
-                    == product.id
-                )
+        if stored:
+
+            stored.title = title
+
+            stored.last_state = state
+
+            stored.last_price = price
+
+            stored.last_available = (
+                available
             )
 
-            stored = (
-                result.scalar_one_or_none()
+            stored.last_seen_at = (
+                datetime.utcnow()
             )
 
-            if stored:
+            stored.last_error = None
 
-                stored.title = title
-
-                stored.last_state = state
-
-                stored.last_price = price
-
-                stored.last_available = (
-                    available
-                )
-
-                stored.last_seen_at = (
-                    datetime.utcnow()
-                )
-
-                stored.last_error = None
-
-                await db.commit()
+            await db.commit()
 
     return {
-
-        "success":
-            True,
-
-        "blocked":
-            False,
-
-        "events":
-            events_created,
-
-        "error":
-            None,
+        "success": True,
+        "blocked": False,
+        "events": events,
+        "error": None,
     }
 
-
-# =========================================================
-# SCAN ALL KNOWN PRODUCTS
-# =========================================================
 
 async def scan_pokemon_center_products():
 
@@ -1724,13 +1256,11 @@ async def scan_pokemon_center_products():
         )
     )
 
-    known_count = len(
-        products
-    )
-
     MONITOR_STATUS[
         "known_products"
-    ] = known_count
+    ] = len(
+        products
+    )
 
     timeout = (
         aiohttp.ClientTimeout(
@@ -1747,18 +1277,12 @@ async def scan_pokemon_center_products():
             "en-US,en;q=0.9",
 
         "User-Agent":
-            "PonDeX-Trackers/0.7.3",
+            "PonDeX-Trackers/0.7.4",
     }
 
     checked = 0
-
-    events = 0
-
     blocked = 0
-
-    MONITOR_STATUS[
-        "last_error"
-    ] = None
+    events = 0
 
     async with aiohttp.ClientSession(
         timeout=timeout,
@@ -1790,39 +1314,17 @@ async def scan_pokemon_center_products():
 
                     blocked += 1
 
-                if not result[
-                    "success"
-                ]:
-
-                    await save_product_error(
-                        product.id,
-                        result[
-                            "error"
-                        ],
-                    )
-
             except Exception as error:
-
-                checked += 1
-
-                error_text = (
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-
-                await save_product_error(
-                    product.id,
-                    error_text,
-                )
 
                 MONITOR_STATUS[
                     "last_error"
                 ] = (
-                    error_text
+                    f"{type(error).__name__}: "
+                    f"{error}"
                 )
 
             await asyncio.sleep(
-                0.3
+                0.25
             )
 
     MONITOR_STATUS[
@@ -1836,26 +1338,18 @@ async def scan_pokemon_center_products():
     ] = checked
 
     MONITOR_STATUS[
-        "events_created"
-    ] = events
-
-    MONITOR_STATUS[
         "blocked_products"
     ] = blocked
 
+    MONITOR_STATUS[
+        "events_created"
+    ] = events
+
     return {
-
-        "known":
-            known_count,
-
-        "checked":
-            checked,
-
-        "events":
-            events,
-
-        "blocked":
-            blocked,
+        "known": len(products),
+        "checked": checked,
+        "events": events,
+        "blocked": blocked,
     }
 
 
@@ -1874,9 +1368,7 @@ async def trigger_product_burst(
     if region not in REGIONS:
 
         raise ValueError(
-            (
-                "Unsupported Pokémon Center region."
-            )
+            "Unsupported region."
         )
 
     redis_client = (
@@ -1893,51 +1385,10 @@ async def trigger_product_burst(
             + region
         ),
         "1",
-        ex=(
-            BURST_DURATION_SECONDS
-        ),
-    )
-
-    print(
-        (
-            "POKEMON PRODUCT BURST ENABLED: "
-            f"{region}"
-        )
+        ex=BURST_DURATION_SECONDS,
     )
 
     return True
-
-
-async def trigger_all_product_bursts():
-
-    success_count = 0
-
-    for region in REGIONS:
-
-        try:
-
-            success = (
-                await trigger_product_burst(
-                    region
-                )
-            )
-
-            if success:
-
-                success_count += 1
-
-        except Exception as error:
-
-            print(
-                (
-                    "POKEMON BURST ERROR: "
-                    f"{region} | "
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-            )
-
-    return success_count
 
 
 async def any_burst_active():
@@ -1958,16 +1409,12 @@ async def any_burst_active():
 
     for region in REGIONS:
 
-        exists = (
-            await redis_client.exists(
-                (
-                    BURST_KEY_PREFIX
-                    + region
-                )
+        if await redis_client.exists(
+            (
+                BURST_KEY_PREFIX
+                + region
             )
-        )
-
-        if exists:
+        ):
 
             count += 1
 
@@ -1981,7 +1428,7 @@ async def any_burst_active():
 
 
 # =========================================================
-# BACKGROUND MONITOR
+# BACKGROUND LOOP
 # =========================================================
 
 async def run_pokemon_center_product_monitor():
@@ -1989,13 +1436,6 @@ async def run_pokemon_center_product_monitor():
     MONITOR_STATUS[
         "running"
     ] = True
-
-    print(
-        (
-            "Pokémon Center Product "
-            "Intelligence v0.7.3 started."
-        )
-    )
 
     await asyncio.sleep(
         20
@@ -2007,41 +1447,18 @@ async def run_pokemon_center_product_monitor():
 
         try:
 
-            burst_active = (
+            burst = (
                 await any_burst_active()
             )
 
-            # =================================================
-            # During burst mode we rediscover every loop.
-            #
-            # Under normal operation discovery is less
-            # frequent.
-            # =================================================
-
             if (
-                burst_active
+                burst
                 or loop_counter
                 % DISCOVERY_EVERY_LOOPS
                 == 0
             ):
 
                 await discover_pokemon_products()
-
-            # =================================================
-            # Official preorder/release intelligence.
-            # =================================================
-
-            if (
-                loop_counter
-                % DISCOVERY_EVERY_LOOPS
-                == 0
-            ):
-
-                await scan_preorder_release_intelligence()
-
-            # =================================================
-            # Known product state monitoring.
-            # =================================================
 
             await scan_pokemon_center_products()
 
@@ -2052,13 +1469,6 @@ async def run_pokemon_center_product_monitor():
             MONITOR_STATUS[
                 "running"
             ] = False
-
-            print(
-                (
-                    "Pokémon Center Product "
-                    "Monitor stopped."
-                )
-            )
 
             raise
 
@@ -2071,30 +1481,14 @@ async def run_pokemon_center_product_monitor():
                 f"{error}"
             )
 
-            print(
-                (
-                    "POKEMON PRODUCT MONITOR ERROR: "
-                    f"{MONITOR_STATUS['last_error']}"
-                )
-            )
-
-        burst_active = (
-            await any_burst_active()
-        )
-
         await asyncio.sleep(
-
-            BURST_POLL_SECONDS
-
-            if burst_active
-
-            else NORMAL_POLL_SECONDS
+            (
+                BURST_POLL_SECONDS
+                if await any_burst_active()
+                else NORMAL_POLL_SECONDS
+            )
         )
 
-
-# =========================================================
-# STATUS
-# =========================================================
 
 def get_pokemon_product_status():
 
