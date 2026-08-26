@@ -1,1 +1,368 @@
-j
+from datetime import datetime
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
+
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+)
+
+
+# =========================================================
+# BASE
+# =========================================================
+
+class Base(DeclarativeBase):
+    pass
+
+
+# =========================================================
+# USERS
+# =========================================================
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    discord_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+
+    username: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# SUBSCRIPTIONS
+# =========================================================
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    discord_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        index=True,
+        nullable=False,
+    )
+
+    tier: Mapped[str] = mapped_column(
+        String(50),
+        default="Free",
+        nullable=False,
+    )
+
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
+    stripe_customer_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    stripe_subscription_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# STORES
+# =========================================================
+
+class Store(Base):
+    __tablename__ = "stores"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    domain: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        unique=True,
+    )
+
+    platform: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    region: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
+    trust_score: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# PRODUCTS
+# =========================================================
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    game: Mapped[str] = mapped_column(
+        String(100),
+        index=True,
+        nullable=False,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+    )
+
+    canonical_name: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
+    product_type: Mapped[str | None] = mapped_column(
+        String(150),
+        nullable=True,
+    )
+
+    region: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    language: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    release_date: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# STORE PRODUCTS
+# =========================================================
+
+class StoreProduct(Base):
+    __tablename__ = "store_products"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    store_id: Mapped[int] = mapped_column(
+        ForeignKey("stores.id"),
+        nullable=False,
+        index=True,
+    )
+
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"),
+        nullable=False,
+        index=True,
+    )
+
+    url: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    sku: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    status: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    price: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    currency: Mapped[str] = mapped_column(
+        String(10),
+        default="USD",
+        nullable=False,
+    )
+
+    in_stock: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# ALERT HISTORY
+# =========================================================
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id"),
+        nullable=True,
+        index=True,
+    )
+
+    store_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stores.id"),
+        nullable=True,
+        index=True,
+    )
+
+    alert_type: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        index=True,
+    )
+
+    minimum_tier: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    discord_channel_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    discord_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# PRICE HISTORY
+# =========================================================
+
+class PriceHistory(Base):
+    __tablename__ = "price_history"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    store_product_id: Mapped[int] = mapped_column(
+        ForeignKey("store_products.id"),
+        nullable=False,
+        index=True,
+    )
+
+    price: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+    )
+
+    currency: Mapped[str] = mapped_column(
+        String(10),
+        default="USD",
+        nullable=False,
+    )
+
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
