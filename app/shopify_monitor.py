@@ -1214,4 +1214,4 @@ def get_shopify_monitor_status():
 
     return dict(
         MONITOR_STATUS
-    )
+    ) 
