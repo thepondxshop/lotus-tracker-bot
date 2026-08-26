@@ -561,4 +561,4 @@ class PriceHistory(Base):
         DateTime,
         default=datetime.utcnow,
         nullable=False,
-    )
+    ) 
