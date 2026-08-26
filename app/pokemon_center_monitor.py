@@ -1,0 +1,567 @@
+import asyncio
+from datetime import datetime
+
+import aiohttp
+
+from app.event_service import (
+    process_product_event,
+)
+
+from app.events import (
+    ProductEvent,
+    ProductEventType,
+)
+
+from app.redis_client import (
+    get_redis,
+)
+
+
+# =========================================================
+# POKEMON CENTER INTELLIGENCE
+# PonDeX Trackers
+# Version 0.7
+#
+# Public queue-state observation only.
+#
+# NO:
+# - queue bypass
+# - CAPTCHA solving
+# - queue token manipulation
+# - alternate-link bypasses
+# =========================================================
+
+
+POKEMON_CENTER_URLS = {
+
+    "US":
+        "https://www.pokemoncenter.com/",
+
+    "CA":
+        "https://www.pokemoncenter.com/en-ca",
+
+    "UK":
+        "https://www.pokemoncenter.com/en-gb",
+
+    "DE":
+        "https://www.pokemoncenter.com/en-de",
+
+    "AU":
+        "https://www.pokemoncenter.com/en-au",
+
+    "NZ":
+        "https://www.pokemoncenter.com/en-nz",
+}
+
+
+POLL_SECONDS = 30
+
+
+QUEUE_CACHE_PREFIX = (
+    "lotus:pokemon_center:queue:"
+)
+
+
+QUEUE_HOST_HINTS = (
+    "queue-it",
+    "queueit",
+    "waitingroom",
+    "waiting-room",
+)
+
+
+QUEUE_TEXT_HINTS = (
+    "virtual queue",
+    "waiting room",
+    "you are now in line",
+    "you are in line",
+    "estimated wait time",
+    "waiting to enter",
+)
+
+
+MONITOR_STATUS = {
+
+    "running":
+        False,
+
+    "last_scan":
+        None,
+
+    "regions_checked":
+        0,
+
+    "queues_active":
+        0,
+
+    "events_created":
+        0,
+
+    "last_error":
+        None,
+}
+
+
+# =========================================================
+# DETECT QUEUE FROM RESPONSE
+# =========================================================
+
+def response_looks_like_queue(
+    final_url: str,
+    body: str,
+):
+
+    final_url_lower = (
+        final_url.lower()
+    )
+
+    body_lower = (
+        body.lower()
+    )
+
+    # -----------------------------------------------------
+    # Redirected/served queue infrastructure
+    # -----------------------------------------------------
+
+    if any(
+        hint
+        in final_url_lower
+        for hint
+        in QUEUE_HOST_HINTS
+    ):
+
+        return True
+
+    # -----------------------------------------------------
+    # Public waiting-room text
+    # -----------------------------------------------------
+
+    if any(
+        hint
+        in body_lower
+        for hint
+        in QUEUE_TEXT_HINTS
+    ):
+
+        return True
+
+    return False
+
+
+# =========================================================
+# REDIS QUEUE STATE
+# =========================================================
+
+async def get_previous_queue_state(
+    region: str,
+):
+
+    redis_client = (
+        get_redis()
+    )
+
+    if redis_client is None:
+
+        return None
+
+    value = (
+        await redis_client.get(
+            (
+                QUEUE_CACHE_PREFIX
+                + region
+            )
+        )
+    )
+
+    if value is None:
+
+        return None
+
+    return (
+        value == "1"
+    )
+
+
+async def set_queue_state(
+    region: str,
+    active: bool,
+):
+
+    redis_client = (
+        get_redis()
+    )
+
+    if redis_client is None:
+
+        return
+
+    await redis_client.set(
+        (
+            QUEUE_CACHE_PREFIX
+            + region
+        ),
+        (
+            "1"
+            if active
+            else "0"
+        ),
+    )
+
+
+# =========================================================
+# CHECK ONE REGION
+# =========================================================
+
+async def check_region(
+    session,
+    region: str,
+    url: str,
+):
+
+    async with session.get(
+        url,
+        allow_redirects=True,
+    ) as response:
+
+        final_url = str(
+            response.url
+        )
+
+        body = await response.text(
+            errors="ignore"
+        )
+
+        queue_active = (
+            response_looks_like_queue(
+                final_url,
+                body,
+            )
+        )
+
+        return {
+            "region":
+                region,
+
+            "original_url":
+                url,
+
+            "final_url":
+                final_url,
+
+            "http_status":
+                response.status,
+
+            "queue_active":
+                queue_active,
+        }
+
+
+# =========================================================
+# CREATE QUEUE EVENT
+# =========================================================
+
+async def create_queue_event(
+    region: str,
+    event_type: ProductEventType,
+    url: str,
+):
+
+    event = ProductEvent(
+
+        event_type=event_type,
+
+        game="Pokemon",
+
+        product_name=(
+            f"Pokémon Center {region} "
+            "Virtual Queue"
+        ),
+
+        store_name="Pokémon Center",
+
+        product_url=url,
+
+        price=None,
+
+        currency="USD",
+
+        in_stock=False,
+
+        region=region,
+
+        language="English",
+
+        product_type=(
+            "Virtual Queue"
+        ),
+    )
+
+    return await process_product_event(
+        event
+    )
+
+
+# =========================================================
+# SCAN POKEMON CENTER
+# =========================================================
+
+async def scan_pokemon_center():
+
+    timeout = (
+        aiohttp.ClientTimeout(
+            total=20
+        )
+    )
+
+    headers = {
+        "Accept":
+            "text/html,application/xhtml+xml",
+
+        "User-Agent":
+            "PonDeX-Trackers/0.7",
+    }
+
+    results = []
+
+    events_created = 0
+
+    active_count = 0
+
+    MONITOR_STATUS[
+        "last_error"
+    ] = None
+
+    async with aiohttp.ClientSession(
+        timeout=timeout,
+        headers=headers,
+    ) as session:
+
+        for (
+            region,
+            url,
+        ) in POKEMON_CENTER_URLS.items():
+
+            try:
+
+                result = (
+                    await check_region(
+                        session,
+                        region,
+                        url,
+                    )
+                )
+
+                current = (
+                    result[
+                        "queue_active"
+                    ]
+                )
+
+                previous = (
+                    await get_previous_queue_state(
+                        region
+                    )
+                )
+
+                # -----------------------------------------
+                # FIRST OBSERVATION
+                # -----------------------------------------
+
+                if previous is None:
+
+                    await set_queue_state(
+                        region,
+                        current,
+                    )
+
+                    if current:
+
+                        event_result = (
+                            await create_queue_event(
+                                region,
+                                ProductEventType.QUEUE_DETECTED,
+                                result[
+                                    "final_url"
+                                ],
+                            )
+                        )
+
+                        if event_result[
+                            "redis_saved"
+                        ]:
+
+                            events_created += 1
+
+                # -----------------------------------------
+                # QUEUE BECAME ACTIVE
+                # -----------------------------------------
+
+                elif (
+                    previous is False
+                    and current is True
+                ):
+
+                    await set_queue_state(
+                        region,
+                        True,
+                    )
+
+                    event_result = (
+                        await create_queue_event(
+                            region,
+                            ProductEventType.QUEUE_ACTIVE,
+                            result[
+                                "final_url"
+                            ],
+                        )
+                    )
+
+                    if event_result[
+                        "redis_saved"
+                    ]:
+
+                        events_created += 1
+
+                # -----------------------------------------
+                # QUEUE CLEARED
+                # -----------------------------------------
+
+                elif (
+                    previous is True
+                    and current is False
+                ):
+
+                    await set_queue_state(
+                        region,
+                        False,
+                    )
+
+                    event_result = (
+                        await create_queue_event(
+                            region,
+                            ProductEventType.QUEUE_CLEARED,
+                            result[
+                                "original_url"
+                            ],
+                        )
+                    )
+
+                    if event_result[
+                        "redis_saved"
+                    ]:
+
+                        events_created += 1
+
+                if current:
+
+                    active_count += 1
+
+                results.append(
+                    result
+                )
+
+            except Exception as error:
+
+                error_text = (
+                    f"{region}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+
+                print(
+                    (
+                        "POKEMON CENTER "
+                        "MONITOR ERROR: "
+                        f"{error_text}"
+                    )
+                )
+
+                MONITOR_STATUS[
+                    "last_error"
+                ] = error_text
+
+    MONITOR_STATUS[
+        "last_scan"
+    ] = (
+        datetime.utcnow().isoformat()
+    )
+
+    MONITOR_STATUS[
+        "regions_checked"
+    ] = len(
+        results
+    )
+
+    MONITOR_STATUS[
+        "queues_active"
+    ] = active_count
+
+    MONITOR_STATUS[
+        "events_created"
+    ] = events_created
+
+    return results
+
+
+# =========================================================
+# BACKGROUND MONITOR
+# =========================================================
+
+async def run_pokemon_center_monitor():
+
+    MONITOR_STATUS[
+        "running"
+    ] = True
+
+    print(
+        "Pokémon Center Monitor started."
+    )
+
+    await asyncio.sleep(
+        15
+    )
+
+    while True:
+
+        try:
+
+            await scan_pokemon_center()
+
+        except asyncio.CancelledError:
+
+            MONITOR_STATUS[
+                "running"
+            ] = False
+
+            print(
+                "Pokémon Center Monitor stopped."
+            )
+
+            raise
+
+        except Exception as error:
+
+            MONITOR_STATUS[
+                "last_error"
+            ] = (
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+
+            print(
+                (
+                    "POKEMON CENTER LOOP ERROR: "
+                    f"{MONITOR_STATUS['last_error']}"
+                )
+            )
+
+        await asyncio.sleep(
+            POLL_SECONDS
+        )
+
+
+def get_pokemon_center_status():
+
+    return dict(
+        MONITOR_STATUS
+    )
