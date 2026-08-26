@@ -1,1 +1,85 @@
-t
+from dataclasses import dataclass
+
+from enum import Enum
+
+from datetime import datetime
+
+
+# =========================================================
+# LOTUS PRODUCT EVENT TYPES
+# PonDeX Trackers
+# Version 0.5
+# =========================================================
+
+
+class ProductEventType(
+    str,
+    Enum
+):
+
+    DISCOVERED = "DISCOVERED"
+
+    PAGE_LIVE = "PAGE_LIVE"
+
+    COMING_SOON = "COMING_SOON"
+
+    PREORDER_LIVE = "PREORDER_LIVE"
+
+    STOCK_AVAILABLE = "STOCK_AVAILABLE"
+
+    RESTOCK = "RESTOCK"
+
+    SOLD_OUT = "SOLD_OUT"
+
+    PRICE_DROP = "PRICE_DROP"
+
+    PRICE_INCREASE = "PRICE_INCREASE"
+
+    PRICE_ERROR = "PRICE_ERROR"
+
+    INVENTORY_FLICKER = "INVENTORY_FLICKER"
+
+    RELEASE_DATE_CHANGED = "RELEASE_DATE_CHANGED"
+
+
+# =========================================================
+# PRODUCT EVENT
+# =========================================================
+
+@dataclass
+class ProductEvent:
+
+    event_type: ProductEventType
+
+    game: str
+
+    product_name: str
+
+    store_name: str
+
+    product_url: str
+
+    price: float | None = None
+
+    currency: str = "USD"
+
+    in_stock: bool = False
+
+    region: str = "US"
+
+    language: str = "English"
+
+    product_type: str = "Unknown"
+
+    timestamp: datetime | None = None
+
+
+    def __post_init__(
+        self
+    ):
+
+        if self.timestamp is None:
+
+            self.timestamp = (
+                datetime.utcnow()
+            )
