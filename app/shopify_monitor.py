@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from datetime import datetime
 
@@ -36,29 +37,33 @@ from app.shopify_adapter import (
     normalize_shopify_domain,
 )
 
+from app.store_health import (
+    get_health_recovery_candidates,
+    manual_disable_store,
+    manual_enable_store,
+    mark_store_removed,
+    record_store_failure,
+    record_store_success,
+    restore_removed_store,
+)
+
 
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Version 0.6.2
-#
-# Features:
+# Version 0.6.3
 #
 # Shopify Monitoring
-# URL Cleanup
-# Store Management
-# New Product Detection
-# Page Live
-# Coming Soon
-# Preorders
-# Restocks
-# Sellouts
-# Price Changes
+# Product Intelligence
 # Inventory Flicker
+# Persistent Store Health
+# Automatic Recovery
 # =========================================================
 
 
 POLL_SECONDS = 60
+
+HEALTH_PROBE_SECONDS = 300
 
 
 MONITOR_STATUS = {
@@ -67,6 +72,9 @@ MONITOR_STATUS = {
         False,
 
     "last_scan":
+        None,
+
+    "last_health_probe":
         None,
 
     "stores_scanned":
@@ -81,13 +89,16 @@ MONITOR_STATUS = {
     "flickers_detected":
         0,
 
+    "stores_recovered":
+        0,
+
     "last_error":
         None,
 }
 
 
 # =========================================================
-# ADD / UPDATE SHOPIFY STORE
+# ADD STORE
 # =========================================================
 
 async def add_shopify_store(
@@ -136,6 +147,16 @@ async def add_shopify_store(
 
             existing.active = True
 
+            existing.health_status = (
+                "HEALTHY"
+            )
+
+            existing.disabled_reason = None
+
+            existing.consecutive_failures = 0
+
+            existing.last_error = None
+
             await session.commit()
 
             await session.refresh(
@@ -148,16 +169,13 @@ async def add_shopify_store(
             )
 
         store = Store(
-
             name=name,
-
             domain=domain,
-
             platform="shopify",
-
             region=region,
-
             active=True,
+            health_status="HEALTHY",
+            consecutive_failures=0,
         )
 
         session.add(
@@ -177,10 +195,12 @@ async def add_shopify_store(
 
 
 # =========================================================
-# LIST SHOPIFY STORES
+# LIST STORES
 # =========================================================
 
-async def list_shopify_stores():
+async def list_shopify_stores(
+    include_removed: bool = False,
+):
 
     if SessionLocal is None:
 
@@ -188,16 +208,35 @@ async def list_shopify_stores():
 
     async with SessionLocal() as session:
 
-        result = await session.execute(
-
+        query = (
             select(
                 Store
-            ).where(
+            )
+            .where(
                 Store.platform
                 == "shopify"
-            ).order_by(
+            )
+            .order_by(
                 Store.id.asc()
             )
+        )
+
+        if not include_removed:
+
+            query = query.where(
+                (
+                    Store.disabled_reason
+                    != "REMOVED"
+                )
+                |
+                (
+                    Store.disabled_reason
+                    == None
+                )
+            )
+
+        result = await session.execute(
+            query
         )
 
         return list(
@@ -206,7 +245,7 @@ async def list_shopify_stores():
 
 
 # =========================================================
-# GET ONE STORE
+# GET STORE
 # =========================================================
 
 async def get_shopify_store(
@@ -235,7 +274,7 @@ async def get_shopify_store(
 
 
 # =========================================================
-# ENABLE / DISABLE STORE
+# STORE MANAGEMENT WRAPPERS
 # =========================================================
 
 async def set_shopify_store_active(
@@ -243,63 +282,37 @@ async def set_shopify_store_active(
     active: bool,
 ):
 
-    if SessionLocal is None:
+    if active:
 
-        raise RuntimeError(
-            "Database is not configured."
+        return await manual_enable_store(
+            store_id
         )
 
-    async with SessionLocal() as session:
+    return await manual_disable_store(
+        store_id
+    )
 
-        result = await session.execute(
-
-            select(
-                Store
-            ).where(
-                Store.id
-                == store_id
-            )
-        )
-
-        store = (
-            result.scalar_one_or_none()
-        )
-
-        if store is None:
-
-            return None
-
-        store.active = active
-
-        await session.commit()
-
-        await session.refresh(
-            store
-        )
-
-        return store
-
-
-# =========================================================
-# REMOVE STORE FROM MONITORING
-#
-# We intentionally preserve database history.
-# =========================================================
 
 async def remove_shopify_store(
     store_id: int,
 ):
 
-    return await set_shopify_store_active(
+    return await mark_store_removed(
+        store_id
+    )
 
-        store_id=store_id,
 
-        active=False,
+async def restore_shopify_store(
+    store_id: int,
+):
+
+    return await restore_removed_store(
+        store_id
     )
 
 
 # =========================================================
-# GET ACTIVE SHOPIFY STORES
+# ACTIVE STORES
 # =========================================================
 
 async def get_shopify_stores():
@@ -331,7 +344,7 @@ async def get_shopify_stores():
 
 
 # =========================================================
-# CREATE PRODUCT EVENT
+# EVENT BUILDER
 # =========================================================
 
 def make_product_event(
@@ -343,58 +356,27 @@ def make_product_event(
 ):
 
     return ProductEvent(
-
         event_type=event_type,
-
-        game=(
-            item[
-                "game"
-            ]
-        ),
-
-        product_name=(
-            item[
-                "title"
-            ]
-        ),
-
-        store_name=(
-            store.name
-        ),
-
-        product_url=(
-            item[
-                "url"
-            ]
-        ),
-
-        price=(
-            item[
-                "price"
-            ]
-        ),
-
+        game=item["game"],
+        product_name=item["title"],
+        store_name=store.name,
+        product_url=item["url"],
+        price=item["price"],
         currency="USD",
-
         in_stock=in_stock,
-
         region=(
             store.region
             or "US"
         ),
-
         language="English",
-
-        product_type=(
-            item[
-                "product_type"
-            ]
-        ),
+        product_type=item[
+            "product_type"
+        ],
     )
 
 
 # =========================================================
-# NEW PRODUCT EVENT CLASSIFICATION
+# NEW PRODUCT EVENTS
 # =========================================================
 
 def add_new_product_events(
@@ -403,145 +385,77 @@ def add_new_product_events(
     store,
 ):
 
-    # -----------------------------------------------------
-    # Every genuinely new product gets DISCOVERED.
-    # -----------------------------------------------------
+    events_to_send.append(
+
+        make_product_event(
+            event_type=(
+                ProductEventType.DISCOVERED
+            ),
+            item=item,
+            store=store,
+            in_stock=item[
+                "available"
+            ],
+        )
+    )
+
+    product_state = item.get(
+        "product_state"
+    )
+
+    if product_state == "PAGE_LIVE":
+
+        event_type = (
+            ProductEventType.PAGE_LIVE
+        )
+
+        in_stock = False
+
+    elif product_state == "COMING_SOON":
+
+        event_type = (
+            ProductEventType.COMING_SOON
+        )
+
+        in_stock = False
+
+    elif product_state == "PREORDER_LIVE":
+
+        event_type = (
+            ProductEventType.PREORDER_LIVE
+        )
+
+        in_stock = True
+
+    elif product_state == "PREORDER_PAGE":
+
+        event_type = (
+            ProductEventType.PAGE_LIVE
+        )
+
+        in_stock = False
+
+    elif product_state == "STOCK_AVAILABLE":
+
+        event_type = (
+            ProductEventType.STOCK_AVAILABLE
+        )
+
+        in_stock = True
+
+    else:
+
+        return
 
     events_to_send.append(
 
         make_product_event(
-
-            event_type=(
-                ProductEventType.DISCOVERED
-            ),
-
+            event_type=event_type,
             item=item,
-
             store=store,
-
-            in_stock=(
-                item[
-                    "available"
-                ]
-            ),
+            in_stock=in_stock,
         )
     )
-
-    product_state = (
-        item.get(
-            "product_state"
-        )
-    )
-
-    # -----------------------------------------------------
-    # PRODUCT PAGE EXISTS BUT NOT BUYABLE
-    # -----------------------------------------------------
-
-    if product_state == "PAGE_LIVE":
-
-        events_to_send.append(
-
-            make_product_event(
-
-                event_type=(
-                    ProductEventType.PAGE_LIVE
-                ),
-
-                item=item,
-
-                store=store,
-
-                in_stock=False,
-            )
-        )
-
-    # -----------------------------------------------------
-    # COMING SOON
-    # -----------------------------------------------------
-
-    elif product_state == "COMING_SOON":
-
-        events_to_send.append(
-
-            make_product_event(
-
-                event_type=(
-                    ProductEventType.COMING_SOON
-                ),
-
-                item=item,
-
-                store=store,
-
-                in_stock=False,
-            )
-        )
-
-    # -----------------------------------------------------
-    # LIVE PREORDER
-    # -----------------------------------------------------
-
-    elif product_state == "PREORDER_LIVE":
-
-        events_to_send.append(
-
-            make_product_event(
-
-                event_type=(
-                    ProductEventType.PREORDER_LIVE
-                ),
-
-                item=item,
-
-                store=store,
-
-                in_stock=True,
-            )
-        )
-
-    # -----------------------------------------------------
-    # PREORDER PAGE EXISTS BUT ORDERING NOT LIVE
-    # -----------------------------------------------------
-
-    elif product_state == "PREORDER_PAGE":
-
-        events_to_send.append(
-
-            make_product_event(
-
-                event_type=(
-                    ProductEventType.PAGE_LIVE
-                ),
-
-                item=item,
-
-                store=store,
-
-                in_stock=False,
-            )
-        )
-
-    # -----------------------------------------------------
-    # NORMAL LIVE PRODUCT
-    # -----------------------------------------------------
-
-    elif product_state == "STOCK_AVAILABLE":
-
-        events_to_send.append(
-
-            make_product_event(
-
-                event_type=(
-                    ProductEventType.STOCK_AVAILABLE
-                ),
-
-                item=item,
-
-                store=store,
-
-                in_stock=True,
-            )
-        )
 
 
 # =========================================================
@@ -564,52 +478,41 @@ async def scan_shopify_store(
 
     normalized_products = []
 
-    # =====================================================
-    # NORMALIZE + FILTER TCG PRODUCTS
-    # =====================================================
-
     for raw_product in raw_products:
 
-        normalized = (
+        item = (
             adapter.normalize_product(
                 raw_product
             )
         )
 
-        if not normalized[
+        if not item[
             "game"
         ]:
 
             continue
 
         normalized_products.append(
-            normalized
+            item
         )
 
     events_to_send = []
 
     stats = {
-
         "store":
             store.name,
-
         "seen":
             len(
                 normalized_products
             ),
-
         "new":
             0,
-
         "updated":
             0,
-
         "events":
             0,
-
         "flickers":
             0,
-
         "initial_seed":
             False,
     }
@@ -622,26 +525,20 @@ async def scan_shopify_store(
 
     async with SessionLocal() as session:
 
-        # =================================================
-        # INITIAL BASELINE CHECK
-        # =================================================
+        count_result = await session.execute(
 
-        existing_count_result = (
-            await session.execute(
-
-                select(
-                    func.count(
-                        StoreProduct.id
-                    )
-                ).where(
-                    StoreProduct.store_id
-                    == store.id
+            select(
+                func.count(
+                    StoreProduct.id
                 )
+            ).where(
+                StoreProduct.store_id
+                == store.id
             )
         )
 
         existing_count = (
-            existing_count_result.scalar()
+            count_result.scalar()
             or 0
         )
 
@@ -654,17 +551,7 @@ async def scan_shopify_store(
             "initial_seed"
         ] = initial_seed
 
-        # =================================================
-        # PROCESS PRODUCTS
-        # =================================================
-
         for item in normalized_products:
-
-            product_url = (
-                item[
-                    "url"
-                ]
-            )
 
             result = await session.execute(
 
@@ -675,7 +562,9 @@ async def scan_shopify_store(
                     == store.id
                 ).where(
                     StoreProduct.url
-                    == product_url
+                    == item[
+                        "url"
+                    ]
                 )
             )
 
@@ -690,36 +579,22 @@ async def scan_shopify_store(
             if store_product is None:
 
                 product = Product(
-
-                    game=(
-                        item[
-                            "game"
-                        ]
-                    ),
-
-                    name=(
-                        item[
-                            "title"
-                        ]
-                    ),
-
-                    canonical_name=(
-                        item[
-                            "title"
-                        ]
-                    ),
-
-                    product_type=(
-                        item[
-                            "product_type"
-                        ]
-                    ),
-
+                    game=item[
+                        "game"
+                    ],
+                    name=item[
+                        "title"
+                    ],
+                    canonical_name=item[
+                        "title"
+                    ],
+                    product_type=item[
+                        "product_type"
+                    ],
                     region=(
                         store.region
                         or "US"
                     ),
-
                     language="English",
                 )
 
@@ -731,19 +606,11 @@ async def scan_shopify_store(
 
                 store_product = (
                     StoreProduct(
-
-                        store_id=(
-                            store.id
-                        ),
-
-                        product_id=(
-                            product.id
-                        ),
-
-                        url=(
-                            product_url
-                        ),
-
+                        store_id=store.id,
+                        product_id=product.id,
+                        url=item[
+                            "url"
+                        ],
                         status=(
                             "in_stock"
                             if item[
@@ -751,21 +618,13 @@ async def scan_shopify_store(
                             ]
                             else "sold_out"
                         ),
-
-                        price=(
-                            item[
-                                "price"
-                            ]
-                        ),
-
+                        price=item[
+                            "price"
+                        ],
                         currency="USD",
-
-                        in_stock=(
-                            item[
-                                "available"
-                            ]
-                        ),
-
+                        in_stock=item[
+                            "available"
+                        ],
                         last_seen_at=(
                             datetime.utcnow()
                         ),
@@ -782,21 +641,11 @@ async def scan_shopify_store(
                     "new"
                 ] += 1
 
-                # -----------------------------------------
-                # INITIAL BASELINE:
-                #
-                # Save everything,
-                # alert nothing.
-                # -----------------------------------------
-
                 if not initial_seed:
 
                     add_new_product_events(
-
                         events_to_send,
-
                         item,
-
                         store,
                     )
 
@@ -838,61 +687,39 @@ async def scan_shopify_store(
 
                 flicker_result = (
                     await record_stock_transition(
-
                         store_product_id=(
                             store_product.id
                         ),
-
-                        in_stock=(
-                            new_stock
-                        ),
+                        in_stock=new_stock,
                     )
                 )
 
-                # -----------------------------------------
-                # NORMAL STOCK EVENT
-                # -----------------------------------------
-
                 if (
-                    old_stock is False
-                    and new_stock is True
+                    not old_stock
+                    and new_stock
                 ):
 
-                    stock_event_type = (
+                    stock_event = (
                         ProductEventType.RESTOCK
                     )
 
                 else:
 
-                    stock_event_type = (
+                    stock_event = (
                         ProductEventType.SOLD_OUT
                     )
 
                 events_to_send.append(
 
                     make_product_event(
-
                         event_type=(
-                            stock_event_type
+                            stock_event
                         ),
-
                         item=item,
-
                         store=store,
-
-                        in_stock=(
-                            new_stock
-                        ),
+                        in_stock=new_stock,
                     )
                 )
-
-                # -----------------------------------------
-                # INVENTORY FLICKER
-                #
-                # Additional event.
-                # Never suppress the underlying
-                # RESTOCK / SOLD_OUT transition.
-                # -----------------------------------------
 
                 if flicker_result[
                     "flickering"
@@ -901,34 +728,18 @@ async def scan_shopify_store(
                     events_to_send.append(
 
                         make_product_event(
-
                             event_type=(
                                 ProductEventType.INVENTORY_FLICKER
                             ),
-
                             item=item,
-
                             store=store,
-
-                            in_stock=(
-                                new_stock
-                            ),
+                            in_stock=new_stock,
                         )
                     )
 
                     stats[
                         "flickers"
                     ] += 1
-
-                    print(
-                        (
-                            "INVENTORY FLICKER DETECTED: "
-                            f"{store.name} | "
-                            f"{item['title']} | "
-                            f"Transitions="
-                            f"{flicker_result['transition_count']}"
-                        )
-                    )
 
             # =================================================
             # PRICE CHANGE
@@ -937,7 +748,8 @@ async def scan_shopify_store(
             if (
                 old_price is not None
                 and new_price is not None
-                and old_price != new_price
+                and old_price
+                != new_price
             ):
 
                 changed = True
@@ -945,55 +757,35 @@ async def scan_shopify_store(
                 session.add(
 
                     PriceHistory(
-
                         store_product_id=(
                             store_product.id
                         ),
-
-                        price=(
-                            new_price
-                        ),
-
+                        price=new_price,
                         currency="USD",
                     )
                 )
 
-                if (
-                    new_price
-                    < old_price
-                ):
+                if new_price < old_price:
 
-                    price_event_type = (
+                    price_event = (
                         ProductEventType.PRICE_DROP
                     )
 
                 else:
 
-                    price_event_type = (
+                    price_event = (
                         ProductEventType.PRICE_INCREASE
                     )
 
                 events_to_send.append(
 
                     make_product_event(
-
-                        event_type=(
-                            price_event_type
-                        ),
-
+                        event_type=price_event,
                         item=item,
-
                         store=store,
-
-                        in_stock=(
-                            new_stock
-                        ),
+                        in_stock=new_stock,
                     )
                 )
-
-            # =================================================
-            # UPDATE CURRENT SNAPSHOT
-            # =================================================
 
             store_product.price = (
                 new_price
@@ -1019,15 +811,7 @@ async def scan_shopify_store(
                     "updated"
                 ] += 1
 
-        # =================================================
-        # COMMIT STORE STATE
-        # =================================================
-
         await session.commit()
-
-    # =====================================================
-    # PUSH EVENTS AFTER DATABASE COMMIT
-    # =====================================================
 
     for event in events_to_send:
 
@@ -1049,7 +833,7 @@ async def scan_shopify_store(
 
 
 # =========================================================
-# SCAN ALL STORES
+# SCAN ALL ACTIVE STORES
 # =========================================================
 
 async def scan_all_shopify_stores():
@@ -1080,6 +864,10 @@ async def scan_all_shopify_stores():
                 await scan_shopify_store(
                     store
                 )
+            )
+
+            await record_store_success(
+                store.id
             )
 
             results.append(
@@ -1115,8 +903,15 @@ async def scan_all_shopify_stores():
             )
 
             print(
-                "SHOPIFY SCAN ERROR: "
-                f"{error_text}"
+                (
+                    "SHOPIFY SCAN ERROR: "
+                    f"{error_text}"
+                )
+            )
+
+            await record_store_failure(
+                store.id,
+                error_text,
             )
 
             MONITOR_STATUS[
@@ -1149,7 +944,165 @@ async def scan_all_shopify_stores():
 
 
 # =========================================================
-# BACKGROUND SHOPIFY MONITOR
+# HEALTH PROBE
+# =========================================================
+
+async def probe_shopify_store(
+    store: Store,
+):
+
+    adapter = (
+        ShopifyAdapter(
+            store.domain
+        )
+    )
+
+    # Only one page is needed for health verification.
+
+    await adapter.fetch_products(
+        max_pages=1
+    )
+
+    recovered = (
+        await record_store_success(
+            store.id,
+            allow_health_reenable=True,
+        )
+    )
+
+    return recovered
+
+
+# =========================================================
+# RECOVERY PROBES
+# =========================================================
+
+async def run_health_recovery_probes():
+
+    stores = (
+        await get_health_recovery_candidates()
+    )
+
+    recovered_count = 0
+
+    for store in stores:
+
+        try:
+
+            await probe_shopify_store(
+                store
+            )
+
+            recovered_count += 1
+
+        except Exception as error:
+
+            error_text = (
+                f"{store.name}: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+
+            await record_store_failure(
+                store.id,
+                error_text,
+            )
+
+            print(
+                (
+                    "STORE RECOVERY PROBE FAILED: "
+                    f"{error_text}"
+                )
+            )
+
+    MONITOR_STATUS[
+        "last_health_probe"
+    ] = (
+        datetime.utcnow().isoformat()
+    )
+
+    MONITOR_STATUS[
+        "stores_recovered"
+    ] = recovered_count
+
+    return recovered_count
+
+
+# =========================================================
+# MANUAL RETRY
+# =========================================================
+
+async def retry_shopify_store(
+    store_id: int,
+):
+
+    store = (
+        await get_shopify_store(
+            store_id
+        )
+    )
+
+    if store is None:
+
+        return {
+            "success": False,
+            "reason": "NOT_FOUND",
+            "store": None,
+        }
+
+    if store.disabled_reason == "MANUAL":
+
+        return {
+            "success": False,
+            "reason": "MANUAL",
+            "store": store,
+        }
+
+    if store.disabled_reason == "REMOVED":
+
+        return {
+            "success": False,
+            "reason": "REMOVED",
+            "store": store,
+        }
+
+    try:
+
+        recovered = (
+            await probe_shopify_store(
+                store
+            )
+        )
+
+        return {
+            "success": True,
+            "reason": "ONLINE",
+            "store": recovered,
+        }
+
+    except Exception as error:
+
+        error_text = (
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        failed_store = (
+            await record_store_failure(
+                store.id,
+                error_text,
+            )
+        )
+
+        return {
+            "success": False,
+            "reason": error_text,
+            "store": failed_store,
+        }
+
+
+# =========================================================
+# BACKGROUND MONITOR
 # =========================================================
 
 async def run_shopify_monitor():
@@ -1162,18 +1115,29 @@ async def run_shopify_monitor():
         "Lotus Shopify Monitor started."
     )
 
-    # Give Discord, Redis and PostgreSQL
-    # time to initialize.
-
     await asyncio.sleep(
         10
     )
+
+    last_health_probe = 0.0
 
     while True:
 
         try:
 
             await scan_all_shopify_stores()
+
+            now = time.monotonic()
+
+            if (
+                now
+                - last_health_probe
+                >= HEALTH_PROBE_SECONDS
+            ):
+
+                await run_health_recovery_probes()
+
+                last_health_probe = now
 
         except asyncio.CancelledError:
 
@@ -1197,8 +1161,10 @@ async def run_shopify_monitor():
             )
 
             print(
-                "SHOPIFY MONITOR ERROR: "
-                f"{MONITOR_STATUS['last_error']}"
+                (
+                    "SHOPIFY MONITOR ERROR: "
+                    f"{MONITOR_STATUS['last_error']}"
+                )
             )
 
         await asyncio.sleep(
@@ -1207,11 +1173,11 @@ async def run_shopify_monitor():
 
 
 # =========================================================
-# MONITOR STATUS
+# STATUS
 # =========================================================
 
 def get_shopify_monitor_status():
 
     return dict(
         MONITOR_STATUS
-    ) 
+    )
