@@ -22,21 +22,22 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER BOT DATABASE MODELS
 # PonDeX Trackers
-# Version 0.4.2 PATCH
+# Version 0.5
 # =========================================================
 
 
-class Base(DeclarativeBase):
+class Base(
+    DeclarativeBase
+):
     pass
 
 
 # =========================================================
 # USERS
-#
-# Kept compatible with the table created in v0.4.1
 # =========================================================
 
 class User(Base):
+
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(
@@ -66,11 +67,10 @@ class User(Base):
 
 # =========================================================
 # SUBSCRIPTIONS
-#
-# Kept compatible with the table created in v0.4.1
 # =========================================================
 
 class Subscription(Base):
+
     __tablename__ = "subscriptions"
 
     id: Mapped[int] = mapped_column(
@@ -116,13 +116,13 @@ class Subscription(Base):
 
 # =========================================================
 # USER GAME PREFERENCES
-#
-# This table is new in v0.4.2.
-# PostgreSQL can create it normally.
 # =========================================================
 
 class UserGamePreference(Base):
-    __tablename__ = "user_game_preferences"
+
+    __tablename__ = (
+        "user_game_preferences"
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -162,19 +162,13 @@ class UserGamePreference(Base):
         nullable=False,
     )
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
-
 
 # =========================================================
 # STORES
 # =========================================================
 
 class Store(Base):
+
     __tablename__ = "stores"
 
     id: Mapped[int] = mapped_column(
@@ -227,6 +221,7 @@ class Store(Base):
 # =========================================================
 
 class Product(Base):
+
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(
@@ -283,6 +278,7 @@ class Product(Base):
 # =========================================================
 
 class StoreProduct(Base):
+
     __tablename__ = "store_products"
 
     id: Mapped[int] = mapped_column(
@@ -343,10 +339,11 @@ class StoreProduct(Base):
 
 
 # =========================================================
-# ALERTS
+# ALERT HISTORY
 # =========================================================
 
 class Alert(Base):
+
     __tablename__ = "alerts"
 
     id: Mapped[int] = mapped_column(
@@ -396,10 +393,96 @@ class Alert(Base):
 
 
 # =========================================================
+# PRODUCT EVENT HISTORY
+# =========================================================
+
+class ProductEventRecord(Base):
+
+    __tablename__ = (
+        "product_event_history"
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    game: Mapped[str] = mapped_column(
+        String(100),
+        index=True,
+        nullable=False,
+    )
+
+    product_name: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+    )
+
+    store_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    product_url: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    event_type: Mapped[str] = mapped_column(
+        String(100),
+        index=True,
+        nullable=False,
+    )
+
+    price: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    currency: Mapped[str] = mapped_column(
+        String(10),
+        default="USD",
+        nullable=False,
+    )
+
+    in_stock: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    region: Mapped[str] = mapped_column(
+        String(100),
+        default="US",
+        nullable=False,
+    )
+
+    language: Mapped[str] = mapped_column(
+        String(100),
+        default="English",
+        nullable=False,
+    )
+
+    product_type: Mapped[str] = mapped_column(
+        String(150),
+        default="Unknown",
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
 # PRICE HISTORY
 # =========================================================
 
 class PriceHistory(Base):
+
     __tablename__ = "price_history"
 
     id: Mapped[int] = mapped_column(
@@ -409,7 +492,9 @@ class PriceHistory(Base):
     )
 
     store_product_id: Mapped[int] = mapped_column(
-        ForeignKey("store_products.id"),
+        ForeignKey(
+            "store_products.id"
+        ),
         nullable=False,
         index=True,
     )
