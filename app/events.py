@@ -1,12 +1,14 @@
 from dataclasses import dataclass
+
 from datetime import datetime
+
 from enum import Enum
 
 
 # =========================================================
-# LOTUS PRODUCT EVENTS
+# LOTUS PRODUCT EVENT TYPES
 # PonDeX Trackers
-# Version 0.7
+# Version 0.7.1
 # =========================================================
 
 
@@ -38,10 +40,6 @@ class ProductEventType(
     INVENTORY_FLICKER = "INVENTORY_FLICKER"
 
     RELEASE_DATE_CHANGED = "RELEASE_DATE_CHANGED"
-
-    # =====================================================
-    # POKEMON CENTER EARLY INTELLIGENCE
-    # =====================================================
 
     QUEUE_DETECTED = "QUEUE_DETECTED"
 
