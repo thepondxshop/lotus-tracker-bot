@@ -22,13 +22,9 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER BOT DATABASE MODELS
 # PonDeX Trackers
-# Version 0.4.2
+# Version 0.4.2 PATCH
 # =========================================================
 
-
-# =========================================================
-# BASE
-# =========================================================
 
 class Base(DeclarativeBase):
     pass
@@ -36,6 +32,8 @@ class Base(DeclarativeBase):
 
 # =========================================================
 # USERS
+#
+# Kept compatible with the table created in v0.4.1
 # =========================================================
 
 class User(Base):
@@ -65,16 +63,11 @@ class User(Base):
         nullable=False,
     )
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
-
 
 # =========================================================
 # SUBSCRIPTIONS
+#
+# Kept compatible with the table created in v0.4.1
 # =========================================================
 
 class Subscription(Base):
@@ -88,7 +81,6 @@ class Subscription(Base):
 
     discord_user_id: Mapped[int] = mapped_column(
         BigInteger,
-        unique=True,
         index=True,
         nullable=False,
     )
@@ -121,16 +113,12 @@ class Subscription(Base):
         nullable=False,
     )
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
-
 
 # =========================================================
 # USER GAME PREFERENCES
+#
+# This table is new in v0.4.2.
+# PostgreSQL can create it normally.
 # =========================================================
 
 class UserGamePreference(Base):
@@ -355,7 +343,7 @@ class StoreProduct(Base):
 
 
 # =========================================================
-# ALERT HISTORY
+# ALERTS
 # =========================================================
 
 class Alert(Base):
