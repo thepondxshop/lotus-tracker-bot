@@ -20,9 +20,15 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT SERVICE
 # PonDeX Trackers
-# Version 0.9.0
+# Version 1.0.0
 #
-# Historical Pricing + Deal Score v1
+# Redis Event Queue
+# Product Event History
+# Historical Pricing
+# MSRP Intelligence
+# Scalper Protection
+# Deal Score
+# Smart Quick Cart
 # =========================================================
 
 
@@ -43,6 +49,7 @@ def enum_value(
         value,
         ProductEventType,
     ):
+
         return value.value
 
     return str(
@@ -51,7 +58,7 @@ def enum_value(
 
 
 # =========================================================
-# SERIALIZE EVENT
+# SERIALIZE PRODUCT EVENT
 # =========================================================
 
 def serialize_product_event(
@@ -59,6 +66,10 @@ def serialize_product_event(
 ):
 
     return {
+
+        # =================================================
+        # EVENT
+        # =================================================
 
         "event_type":
             enum_value(
@@ -77,103 +88,116 @@ def serialize_product_event(
         "product_url":
             event.product_url,
 
+
         # =================================================
-        # PRICE DATA
+        # CURRENT PRICE
         # =================================================
 
         "price":
             event.price,
 
         "old_price":
-            getattr(
-                event,
-                "old_price",
-                None,
-            ),
+            event.old_price,
 
         "currency":
             event.currency,
 
+
         # =================================================
-        # HISTORICAL PRICE INTELLIGENCE
+        # HISTORICAL PRICING
         # =================================================
 
         "price_window_days":
-            getattr(
-                event,
-                "price_window_days",
-                None,
-            ),
+            event.price_window_days,
 
         "price_30d_low":
-            getattr(
-                event,
-                "price_30d_low",
-                None,
-            ),
+            event.price_30d_low,
 
         "price_30d_average":
-            getattr(
-                event,
-                "price_30d_average",
-                None,
-            ),
+            event.price_30d_average,
 
         "price_30d_high":
-            getattr(
-                event,
-                "price_30d_high",
-                None,
-            ),
+            event.price_30d_high,
 
         "price_history_samples":
-            getattr(
-                event,
-                "price_history_samples",
-                None,
-            ),
+            event.price_history_samples,
 
         "price_vs_average_pct":
-            getattr(
-                event,
-                "price_vs_average_pct",
-                None,
-            ),
+            event.price_vs_average_pct,
 
         "price_vs_low_pct":
-            getattr(
-                event,
-                "price_vs_low_pct",
-                None,
-            ),
+            event.price_vs_low_pct,
 
         "price_drop_pct":
-            getattr(
-                event,
-                "price_drop_pct",
-                None,
-            ),
+            event.price_drop_pct,
+
+        "historical_deal_score":
+            event.historical_deal_score,
+
+
+        # =================================================
+        # MSRP / REFERENCE PRICE
+        #
+        # msrp:
+        # Converted comparison MSRP in current store
+        # currency.
+        #
+        # msrp_original:
+        # Original verified reference amount.
+        # =================================================
+
+        "msrp":
+            event.msrp,
+
+        "msrp_currency":
+            event.msrp_currency,
+
+        "msrp_source":
+            event.msrp_source,
+
+        "msrp_confidence":
+            event.msrp_confidence,
+
+        "msrp_original":
+            event.msrp_original,
+
+        "msrp_original_currency":
+            event.msrp_original_currency,
+
+        "msrp_conversion_used":
+            event.msrp_conversion_used,
+
+
+        # =================================================
+        # MSRP ANALYSIS
+        # =================================================
+
+        "price_vs_msrp_pct":
+            event.price_vs_msrp_pct,
+
+        "markup_amount":
+            event.markup_amount,
+
+        "msrp_price_state":
+            event.msrp_price_state,
+
+        "scalper_risk":
+            event.scalper_risk,
+
+
+        # =================================================
+        # DEAL INTELLIGENCE
+        # =================================================
 
         "deal_score":
-            getattr(
-                event,
-                "deal_score",
-                None,
-            ),
+            event.deal_score,
 
         "deal_label":
-            getattr(
-                event,
-                "deal_label",
-                None,
-            ),
+            event.deal_label,
 
         "deal_confidence":
-            getattr(
-                event,
-                "deal_confidence",
-                None,
-            ),
+            event.deal_confidence,
+
 
         # =================================================
         # INVENTORY
@@ -182,8 +206,9 @@ def serialize_product_event(
         "in_stock":
             event.in_stock,
 
+
         # =================================================
-        # PRODUCT METADATA
+        # PRODUCT
         # =================================================
 
         "region":
@@ -196,11 +221,8 @@ def serialize_product_event(
             event.product_type,
 
         "product_category":
-            getattr(
-                event,
-                "product_category",
-                "UNKNOWN",
-            ),
+            event.product_category,
+
 
         # =================================================
         # SOURCE
@@ -215,48 +237,38 @@ def serialize_product_event(
         "image_url":
             event.image_url,
 
+
         # =================================================
-        # SMART CART
+        # SMART QUICK CART
         # =================================================
 
         "variant_id":
-            getattr(
-                event,
-                "variant_id",
-                None,
-            ),
+            event.variant_id,
 
         "purchase_limit":
-            getattr(
-                event,
-                "purchase_limit",
-                None,
-            ),
+            event.purchase_limit,
 
         "cart_base_url":
-            getattr(
-                event,
-                "cart_base_url",
-                None,
-            ),
+            event.cart_base_url,
+
 
         # =================================================
-        # TIMESTAMP
+        # TIME
         # =================================================
 
         "timestamp": (
+
             event.timestamp.isoformat()
+
             if event.timestamp
+
             else None
         ),
     }
 
 
 # =========================================================
-# SAVE DATABASE EVENT
-#
-# Deal-intelligence metrics stay in the event payload for v1.
-# No ProductEventRecord migration is required.
+# SAVE EVENT HISTORY
 # =========================================================
 
 async def save_product_event(
@@ -264,68 +276,76 @@ async def save_product_event(
 ):
 
     if SessionLocal is None:
+
         return False
+
 
     try:
 
         async with SessionLocal() as session:
 
-            record = ProductEventRecord(
+            record = (
+                ProductEventRecord(
 
-                game=(
-                    event.game
-                ),
+                    game=(
+                        event.game
+                    ),
 
-                product_name=(
-                    event.product_name
-                ),
+                    product_name=(
+                        event.product_name
+                    ),
 
-                store_name=(
-                    event.store_name
-                ),
+                    store_name=(
+                        event.store_name
+                    ),
 
-                product_url=(
-                    event.product_url
-                ),
+                    product_url=(
+                        event.product_url
+                    ),
 
-                event_type=(
-                    enum_value(
-                        event.event_type
-                    )
-                ),
+                    event_type=(
+                        enum_value(
+                            event.event_type
+                        )
+                    ),
 
-                price=(
-                    event.price
-                ),
+                    price=(
+                        event.price
+                    ),
 
-                currency=(
-                    event.currency
-                ),
+                    currency=(
+                        event.currency
+                    ),
 
-                in_stock=(
-                    event.in_stock
-                ),
+                    in_stock=(
+                        event.in_stock
+                    ),
 
-                region=(
-                    event.region
-                ),
+                    region=(
+                        event.region
+                    ),
 
-                language=(
-                    event.language
-                ),
+                    language=(
+                        event.language
+                    ),
 
-                product_type=(
-                    event.product_type
-                ),
+                    product_type=(
+                        event.product_type
+                    ),
+                )
             )
+
 
             session.add(
                 record
             )
 
+
             await session.commit()
 
+
         return True
+
 
     except Exception as error:
 
@@ -337,11 +357,12 @@ async def save_product_event(
             )
         )
 
+
         return False
 
 
 # =========================================================
-# REDIS QUEUE
+# PUSH EVENT TO REDIS
 # =========================================================
 
 async def push_product_event(
@@ -352,6 +373,7 @@ async def push_product_event(
         get_redis()
     )
 
+
     if redis_client is None:
 
         print(
@@ -361,7 +383,9 @@ async def push_product_event(
             )
         )
 
+
         return False
+
 
     try:
 
@@ -370,6 +394,7 @@ async def push_product_event(
                 event
             )
         )
+
 
         await redis_client.rpush(
 
@@ -380,26 +405,45 @@ async def push_product_event(
             ),
         )
 
+
         print(
             (
                 "EVENT QUEUED | "
                 f"Event={payload['event_type']} | "
                 f"Game={payload['game']} | "
-                f"Source={payload['source_type']} | "
                 f"Store={payload['store_name']} | "
-                f"Category={payload['product_category']} | "
                 f"Price={payload['price']} | "
+                f"Currency={payload['currency']} | "
                 f"OldPrice={payload['old_price']} | "
-                f"DealScore={payload['deal_score']} | "
-                f"Confidence={payload['deal_confidence']} | "
-                f"Samples={payload['price_history_samples']} | "
-                f"Variant={payload['variant_id']} | "
-                f"Limit={payload['purchase_limit']} | "
-                f"Image={bool(payload['image_url'])}"
+                f"MSRP={payload['msrp']} | "
+                f"MSRPCurrency={payload['msrp_currency']} | "
+                f"OriginalMSRP={payload['msrp_original']} | "
+                f"OriginalMSRPCurrency="
+                f"{payload['msrp_original_currency']} | "
+                f"MSRPConverted="
+                f"{payload['msrp_conversion_used']} | "
+                f"VsMSRP="
+                f"{payload['price_vs_msrp_pct']} | "
+                f"ScalperRisk="
+                f"{payload['scalper_risk']} | "
+                f"DealScore="
+                f"{payload['deal_score']} | "
+                f"Confidence="
+                f"{payload['deal_confidence']} | "
+                f"Samples="
+                f"{payload['price_history_samples']} | "
+                f"Category="
+                f"{payload['product_category']} | "
+                f"Variant="
+                f"{payload['variant_id']} | "
+                f"Limit="
+                f"{payload['purchase_limit']}"
             )
         )
 
+
         return True
+
 
     except Exception as error:
 
@@ -411,11 +455,12 @@ async def push_product_event(
             )
         )
 
+
         return False
 
 
 # =========================================================
-# PROCESS EVENT
+# PROCESS PRODUCT EVENT
 # =========================================================
 
 async def process_product_event(
@@ -428,11 +473,13 @@ async def process_product_event(
         )
     )
 
+
     redis_saved = (
         await push_product_event(
             event
         )
     )
+
 
     return {
 
@@ -445,7 +492,7 @@ async def process_product_event(
 
 
 # =========================================================
-# POP EVENT
+# POP NEXT EVENT
 # =========================================================
 
 async def pop_next_event(
@@ -456,28 +503,38 @@ async def pop_next_event(
         get_redis()
     )
 
+
     if redis_client is None:
+
         return None
+
 
     result = (
         await redis_client.blpop(
+
             EVENT_QUEUE_KEY,
+
             timeout=timeout,
         )
     )
 
+
     if not result:
+
         return None
+
 
     _, raw_payload = (
         result
     )
+
 
     try:
 
         return json.loads(
             raw_payload
         )
+
 
     except Exception as error:
 
@@ -488,6 +545,7 @@ async def pop_next_event(
                 f"{error}"
             )
         )
+
 
         return None
 
@@ -502,16 +560,21 @@ async def get_queue_size():
         get_redis()
     )
 
+
     if redis_client is None:
+
         return 0
+
 
     try:
 
         return int(
+
             await redis_client.llen(
                 EVENT_QUEUE_KEY
             )
         )
+
 
     except Exception:
 
@@ -519,7 +582,13 @@ async def get_queue_size():
 
 
 # =========================================================
-# CLEAR ONLY LOTUS PRODUCT EVENT QUEUE
+# CLEAR EVENT QUEUE
+#
+# Only removes:
+#
+# lotus:product_events
+#
+# PostgreSQL history and other Redis keys remain untouched.
 # =========================================================
 
 async def clear_event_queue():
@@ -528,20 +597,26 @@ async def clear_event_queue():
         get_redis()
     )
 
+
     if redis_client is None:
+
         return 0
+
 
     try:
 
         existing = int(
+
             await redis_client.llen(
                 EVENT_QUEUE_KEY
             )
         )
 
+
         await redis_client.delete(
             EVENT_QUEUE_KEY
         )
+
 
         print(
             (
@@ -550,7 +625,9 @@ async def clear_event_queue():
             )
         )
 
+
         return existing
+
 
     except Exception as error:
 
@@ -562,11 +639,12 @@ async def clear_event_queue():
             )
         )
 
+
         return 0
 
 
 # =========================================================
-# SAVE ALERT DELIVERY
+# SAVE DISCORD ALERT DELIVERY
 # =========================================================
 
 async def save_alert_delivery(
@@ -578,42 +656,50 @@ async def save_alert_delivery(
 ):
 
     if SessionLocal is None:
+
         return False
+
 
     try:
 
         async with SessionLocal() as session:
 
-            record = Alert(
+            record = (
+                Alert(
 
-                product_id=None,
+                    product_id=None,
 
-                store_id=None,
+                    store_id=None,
 
-                alert_type=(
-                    alert_type
-                ),
+                    alert_type=(
+                        alert_type
+                    ),
 
-                minimum_tier=(
-                    minimum_tier
-                ),
+                    minimum_tier=(
+                        minimum_tier
+                    ),
 
-                discord_channel_id=(
-                    discord_channel_id
-                ),
+                    discord_channel_id=(
+                        discord_channel_id
+                    ),
 
-                discord_message_id=(
-                    discord_message_id
-                ),
+                    discord_message_id=(
+                        discord_message_id
+                    ),
+                )
             )
+
 
             session.add(
                 record
             )
 
+
             await session.commit()
 
+
         return True
+
 
     except Exception as error:
 
@@ -624,5 +710,6 @@ async def save_alert_delivery(
                 f"{error}"
             )
         )
+
 
         return False
