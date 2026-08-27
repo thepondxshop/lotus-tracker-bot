@@ -6,35 +6,87 @@ from urllib.parse import (
 
 import aiohttp
 
+from app.product_family import (
+    detect_product_family,
+)
+
 
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Version 0.7.8-hotfix
+# Version 1.0.2
 #
-# Strict Game Classification
-# Product Categories
+# Strict TCG Classification
+# Product Family Detection
+# Product Category Detection
 # Native Currency
-# Variant IDs
-# Purchase Limits
-# Images
+# Product Images
+# Smart Quick Cart Metadata
 # =========================================================
 
 
+# =========================================================
+# REGION CURRENCY FALLBACK
+# =========================================================
+
 REGION_CURRENCY = {
 
-    "US": "USD",
-    "CA": "CAD",
-    "UK": "GBP",
-    "GB": "GBP",
-    "EU": "EUR",
-    "DE": "EUR",
-    "FR": "EUR",
-    "IT": "EUR",
-    "ES": "EUR",
-    "JP": "JPY",
-    "AU": "AUD",
-    "NZ": "NZD",
+    "US":
+        "USD",
+
+    "CA":
+        "CAD",
+
+    "UK":
+        "GBP",
+
+    "GB":
+        "GBP",
+
+    "EU":
+        "EUR",
+
+    "DE":
+        "EUR",
+
+    "FR":
+        "EUR",
+
+    "IT":
+        "EUR",
+
+    "ES":
+        "EUR",
+
+    "NL":
+        "EUR",
+
+    "BE":
+        "EUR",
+
+    "AT":
+        "EUR",
+
+    "IE":
+        "EUR",
+
+    "PT":
+        "EUR",
+
+    "JP":
+        "JPY",
+
+    "KR":
+        "KRW",
+
+    "CN":
+        "CNY",
+
+    "AU":
+        "AUD",
+
+    "NZ":
+        "NZD",
 }
 
 
@@ -79,9 +131,9 @@ def normalize_shopify_domain(
         "www."
     ):
 
-        hostname = (
-            hostname[4:]
-        )
+        hostname = hostname[
+            4:
+        ]
 
     if not hostname:
 
@@ -93,286 +145,293 @@ def normalize_shopify_domain(
 
 
 # =========================================================
-# PRODUCT DESCRIPTION TEXT
-#
-# Used for purchase-limit detection only.
-# NOT used to classify which game a product belongs to.
+# TEXT NORMALIZATION
 # =========================================================
 
-def full_product_text(
+def normalize_text(
+    value,
+):
+
+    if value is None:
+        return ""
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+
+        value = " ".join(
+            str(item)
+            for item in value
+        )
+
+    value = str(
+        value
+    )
+
+    value = value.replace(
+        "é",
+        "e",
+    )
+
+    value = value.lower()
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
+    )
+
+    return value.strip()
+
+
+def build_product_text(
     product,
 ):
 
-    tags = (
-        product.get(
-            "tags",
-            ""
-        )
+    fields = (
+
+        "title",
+        "vendor",
+        "product_type",
+        "tags",
+        "handle",
+        "body_html",
     )
 
-    if isinstance(
-        tags,
-        list,
-    ):
+    parts = []
 
-        tags = " ".join(
-            str(tag)
-            for tag in tags
+    for field in fields:
+
+        value = product.get(
+            field
         )
 
-    return " ".join(
-        [
-            str(
-                product.get(
-                    "title",
-                    ""
-                )
-            ),
+        if value is None:
+            continue
 
-            str(
-                product.get(
-                    "product_type",
-                    ""
-                )
-            ),
+        if isinstance(
+            value,
+            list,
+        ):
 
-            str(
-                product.get(
-                    "vendor",
-                    ""
-                )
-            ),
+            parts.extend(
+                str(item)
+                for item in value
+            )
 
-            str(tags),
+        else:
 
-            str(
-                product.get(
-                    "body_html",
-                    ""
-                )
-            ),
-        ]
+            parts.append(
+                str(value)
+            )
+
+    return normalize_text(
+        " ".join(
+            parts
+        )
     )
 
 
 # =========================================================
-# GAME CLASSIFICATION
+# STRICT TCG CLASSIFICATION
 #
-# Conservative by design.
+# The goal here is precision over recall.
 #
-# If Lotus is not confident, return None.
+# We do NOT assign a game merely because a random word
+# appears in the title.
 # =========================================================
+
+SEALED_CONTEXT_PATTERN = re.compile(
+    r"\b("
+    r"booster\s*box|"
+    r"booster\s*bundle|"
+    r"booster\s*pack|"
+    r"display|"
+    r"starter\s*deck|"
+    r"structure\s*deck|"
+    r"deck|"
+    r"case|"
+    r"collection|"
+    r"gift\s*collection|"
+    r"double\s*pack|"
+    r"premium\s*collection|"
+    r"elite\s*trainer\s*box|"
+    r"etb|"
+    r"tin"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+ONE_PIECE_SET_PATTERN = re.compile(
+    r"\b("
+    r"op[-\s]?\d{1,2}|"
+    r"eb[-\s]?\d{1,2}|"
+    r"prb[-\s]?\d{1,2}|"
+    r"st[-\s]?\d{1,2}|"
+    r"ex[-\s]?\d{1,2}"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def classify_game(
     product,
 ):
 
-    title = str(
-        product.get(
-            "title",
-            ""
+    text = (
+        build_product_text(
+            product
         )
-    ).lower()
-
-    product_type = str(
-        product.get(
-            "product_type",
-            ""
-        )
-    ).lower()
-
-    vendor = str(
-        product.get(
-            "vendor",
-            ""
-        )
-    ).lower()
-
-    strong_text = (
-        f"{title} "
-        f"{product_type}"
     )
 
-
-    # =====================================================
-    # OBVIOUS NON-TARGET / COMPETING PRODUCT BLOCK
-    # =====================================================
-
-    excluded_terms = [
-
-        "warhammer",
-        "games workshop",
-        "warhammer 40k",
-        "warhammer 40000",
-
-        "star wars unlimited",
-
-        "magic the gathering",
-        "magic: the gathering",
-
-        "flesh and blood",
-
-        "yu-gi-oh",
-        "yugioh",
-
-        "lorcana",
-
-        "digimon",
-
-        "union arena",
-
-        "weiss schwarz",
-
-        "cyberpunk edgerunners",
-        "combat zone",
-
-        "mixlore",
-
-        "miniatures",
-
-        "board game",
-        "boardgame",
-    ]
-
-    for term in excluded_terms:
-
-        if term in strong_text:
-            return None
-
-
-    # =====================================================
-    # POKEMON
-    # =====================================================
-
-    pokemon_terms = [
-
-        "pokemon tcg",
-        "pokémon tcg",
-
-        "pokemon trading card",
-        "pokémon trading card",
-
-        "pokemon card game",
-        "pokémon card game",
-
-        "pokemon booster",
-        "pokémon booster",
-
-        "pokemon elite trainer box",
-        "pokémon elite trainer box",
-    ]
-
-    if any(
-        term in strong_text
-        for term in pokemon_terms
-    ):
-
-        return "Pokemon"
-
-
-    # Pokémon sealed titles sometimes omit "Pokemon"
-    # from product type but use very distinctive names.
-
-    if (
-        "elite trainer box"
-        in title
-        and
-        (
-            "pokemon"
-            in vendor
-            or
-            "pokémon"
-            in vendor
-            or
-            "pokemon"
-            in product_type
-            or
-            "pokémon"
-            in product_type
+    title = normalize_text(
+        product.get(
+            "title"
         )
-    ):
+    )
 
-        return "Pokemon"
+    if not text:
 
+        return None
 
     # =====================================================
     # ONE PIECE
     # =====================================================
 
-    one_piece_terms = [
+    if (
+        "one piece card game"
+        in text
 
-        "one piece card game",
-        "one piece tcg",
-        "one piece trading card",
-        "one piece booster",
-        "one piece starter deck",
-    ]
+        or
 
-    if any(
-        term in strong_text
-        for term in one_piece_terms
+        "one piece tcg"
+        in text
+
+        or
+
+        (
+            "one piece"
+            in text
+
+            and
+
+            SEALED_CONTEXT_PATTERN.search(
+                text
+            )
+        )
+
+        or
+
+        (
+            ONE_PIECE_SET_PATTERN.search(
+                title
+            )
+
+            and
+
+            SEALED_CONTEXT_PATTERN.search(
+                title
+            )
+        )
     ):
 
         return "One Piece"
 
+    # =====================================================
+    # POKEMON
+    # =====================================================
 
-    # One Piece codes are only trusted if they appear in
-    # the ACTUAL product title.
+    if (
+        "pokemon tcg"
+        in text
 
-    one_piece_patterns = [
+        or
 
-        r"(?<![a-z0-9])op-?\d{2}(?![a-z0-9])",
+        "pokemon trading card"
+        in text
 
-        r"(?<![a-z0-9])eb-?\d{2}(?![a-z0-9])",
+        or
 
-        r"(?<![a-z0-9])st-?\d{2}(?![a-z0-9])",
+        "pokemon card game"
+        in text
 
-        r"(?<![a-z0-9])p-\d{2,4}(?![a-z0-9])",
-    ]
+        or
 
-    for pattern in one_piece_patterns:
+        "pokémon tcg"
+        in text
 
-        if re.search(
-            pattern,
-            title,
-            flags=re.IGNORECASE,
-        ):
+        or
 
-            return "One Piece"
+        "pokémon trading card"
+        in text
 
+        or
+
+        (
+            (
+                "pokemon"
+                in text
+
+                or
+
+                "pokémon"
+                in text
+            )
+
+            and
+
+            SEALED_CONTEXT_PATTERN.search(
+                text
+            )
+        )
+    ):
+
+        return "Pokemon"
 
     # =====================================================
     # GUNDAM
     # =====================================================
 
-    if any(
-        term in strong_text
-        for term in [
-            "gundam card game",
-            "gundam tcg",
-        ]
+    if (
+        "gundam card game"
+        in text
+
+        or
+
+        "gundam tcg"
+        in text
     ):
 
         return "Gundam"
-
 
     # =====================================================
     # DRAGON BALL FUSION WORLD
     # =====================================================
 
-    if any(
-        term in strong_text
-        for term in [
-            "dragon ball fusion world",
-            "dragon ball super card game fusion world",
-            "fusion world tcg",
-        ]
+    if (
+        "dragon ball super card game fusion world"
+        in text
+
+        or
+
+        "dragon ball fusion world"
+        in text
+
+        or
+
+        "fusion world"
+        in text
     ):
 
         return (
             "Dragon Ball Fusion World"
         )
-
 
     # =====================================================
     # RIFTBOUND
@@ -380,344 +439,399 @@ def classify_game(
 
     if (
         "riftbound"
-        in strong_text
+        in text
     ):
 
         return "Riftbound"
-
 
     # =====================================================
     # PALWORLD
     # =====================================================
 
-    if any(
-        term in strong_text
-        for term in [
-            "palworld tcg",
-            "palworld card game",
-        ]
+    if (
+        "palworld card game"
+        in text
+
+        or
+
+        "palworld tcg"
+        in text
+
+        or
+
+        "palworld trading card"
+        in text
     ):
 
         return "Palworld"
-
 
     # =====================================================
     # NARUTO
     # =====================================================
 
-    if any(
-        term in strong_text
-        for term in [
-            "naruto tcg",
-            "naruto card game",
-        ]
+    if (
+        "naruto card game"
+        in text
+
+        or
+
+        "naruto tcg"
+        in text
+
+        or
+
+        "naruto trading card"
+        in text
     ):
 
         return "Naruto"
 
-
     # =====================================================
-    # CYBERPUNK TCG
+    # CYBERPUNK
     # =====================================================
 
-    if any(
-        term in strong_text
-        for term in [
-            "cyberpunk tcg",
-            "cyberpunk trading card game",
-        ]
+    if (
+        "cyberpunk tcg"
+        in text
+
+        or
+
+        "cyberpunk trading card"
+        in text
     ):
 
         return "Cyberpunk TCG"
-
 
     # =====================================================
     # AZUKI
     # =====================================================
 
-    if any(
-        term in strong_text
-        for term in [
-            "azuki tcg",
-            "azuki card game",
-        ]
+    if (
+        "azuki tcg"
+        in text
+
+        or
+
+        "azuki card game"
+        in text
     ):
 
         return "Azuki TCG"
-
 
     # =====================================================
     # HELLBREAK
     # =====================================================
 
-    if any(
-        term in strong_text
-        for term in [
-            "hellbreak tcg",
-            "hellbreak card game",
-        ]
+    if (
+        "hellbreak tcg"
+        in text
+
+        or
+
+        "hellbreak card game"
+        in text
     ):
 
         return "Hellbreak TCG"
-
-
-    # =====================================================
-    # NO CONFIDENT MATCH
-    # =====================================================
 
     return None
 
 
 # =========================================================
-# PRODUCT CATEGORY
-# =========================================================
-
-SEALED_KEYWORDS = [
-
-    "booster box",
-    "booster pack",
-    "booster bundle",
-    "elite trainer box",
-    "starter deck",
-    "structure deck",
-    "starter set",
-    "collection box",
-    "premium collection",
-    "special collection",
-    "collector chest",
-    "mini tin",
-    "display box",
-    "booster display",
-    "sealed case",
-    "case of",
-    "blister",
-]
-
-ACCESSORY_KEYWORDS = [
-
-    "playmat",
-    "play mat",
-    "card sleeve",
-    "card sleeves",
-    "sleeves",
-    "binder",
-    "deck box",
-    "storage box",
-    "card holder",
-    "dice",
-    "damage counter",
-    "damage counters",
-    "portfolio",
-    "accessory",
-    "accessories",
-]
-
-SINGLE_KEYWORDS = [
-
-    "single card",
-    "single",
-    "parallel",
-    "alt art",
-    "alternate art",
-    "secret rare",
-    "special rare",
-    "super rare",
-    "promo card",
-    "foil card",
-    "holo card",
-    "reverse holo",
-    "individual card",
-]
-
-
-def classify_product_category(
-    product,
-):
-
-    title = str(
-        product.get(
-            "title",
-            ""
-        )
-    )
-
-    raw_type = str(
-        product.get(
-            "product_type",
-            ""
-        )
-    ).lower()
-
-    tags = (
-        product.get(
-            "tags",
-            ""
-        )
-    )
-
-    if isinstance(
-        tags,
-        list,
-    ):
-
-        tags = " ".join(
-            str(tag)
-            for tag in tags
-        )
-
-    tags = str(
-        tags
-    ).lower()
-
-    combined = " ".join(
-        [
-            title.lower(),
-            raw_type,
-            tags,
-        ]
-    )
-
-
-    if (
-        "single"
-        in raw_type
-        or
-        "singles"
-        in raw_type
-        or
-        "single"
-        in tags
-        or
-        "singles"
-        in tags
-    ):
-
-        return "SINGLE"
-
-
-    if (
-        "accessory"
-        in raw_type
-        or
-        "accessories"
-        in raw_type
-    ):
-
-        return "ACCESSORY"
-
-
-    for keyword in ACCESSORY_KEYWORDS:
-
-        if keyword in combined:
-            return "ACCESSORY"
-
-
-    for keyword in SEALED_KEYWORDS:
-
-        if keyword in combined:
-            return "SEALED"
-
-
-    for keyword in SINGLE_KEYWORDS:
-
-        if keyword in combined:
-            return "SINGLE"
-
-
-    card_patterns = [
-
-        # Pokemon
-        r"\b\d{1,3}/\d{1,3}\b",
-
-        # One Piece
-        r"\bOP\d{2}-\d{2,4}\b",
-
-        # Promo
-        r"\bP-\d{2,4}\b",
-    ]
-
-    for pattern in card_patterns:
-
-        if re.search(
-            pattern,
-            title,
-            flags=re.IGNORECASE,
-        ):
-
-            return "SINGLE"
-
-
-    return "UNKNOWN"
-
-
-# =========================================================
-# DISPLAY TYPE
+# PRODUCT TYPE
 # =========================================================
 
 def infer_product_type(
     title,
-    raw_type,
+    raw_type=None,
 ):
 
-    lower = title.lower()
+    text = normalize_text(
+        title
+    )
 
     mappings = [
 
         (
-            "elite trainer box",
+            (
+                "elite trainer box",
+                " etb",
+            ),
             "Elite Trainer Box",
         ),
 
         (
-            "booster box",
+            (
+                "booster box",
+                "booster display",
+                "display box",
+            ),
             "Booster Box",
         ),
 
         (
-            "booster bundle",
+            (
+                "booster bundle",
+            ),
             "Booster Bundle",
         ),
 
         (
-            "booster pack",
+            (
+                "booster pack",
+                "sleeved booster",
+            ),
             "Booster Pack",
         ),
 
         (
-            "starter deck",
+            (
+                "double pack",
+                "double-pack",
+            ),
+            "Double Pack",
+        ),
+
+        (
+            (
+                "starter deck",
+            ),
             "Starter Deck",
         ),
 
         (
-            "structure deck",
+            (
+                "structure deck",
+            ),
             "Structure Deck",
         ),
 
         (
-            "collection",
+            (
+                "deck box",
+            ),
+            "Deck Box",
+        ),
+
+        (
+            (
+                "premium collection",
+            ),
+            "Premium Collection",
+        ),
+
+        (
+            (
+                "collection box",
+                "collection set",
+            ),
             "Collection",
         ),
 
         (
-            "tin",
+            (
+                "case",
+            ),
+            "Case",
+        ),
+
+        (
+            (
+                "tin",
+            ),
             "Tin",
         ),
 
         (
-            "case",
-            "Case",
+            (
+                "playmat",
+                "play mat",
+            ),
+            "Playmat",
+        ),
+
+        (
+            (
+                "sleeves",
+                "card sleeves",
+            ),
+            "Sleeves",
+        ),
+
+        (
+            (
+                "binder",
+                "portfolio",
+            ),
+            "Binder",
+        ),
+
+        (
+            (
+                "deck",
+            ),
+            "Deck",
         ),
     ]
 
-    for keyword, label in mappings:
+    for (
+        keywords,
+        label,
+    ) in mappings:
 
-        if keyword in lower:
-            return label
+        for keyword in keywords:
 
-    return (
-        raw_type
-        or "TCG Product"
+            if keyword in text:
+
+                return label
+
+    cleaned_raw_type = (
+        str(
+            raw_type
+            or ""
+        ).strip()
     )
+
+    if cleaned_raw_type:
+
+        return cleaned_raw_type
+
+    return "TCG Product"
+
+
+# =========================================================
+# PRODUCT CATEGORY
+#
+# SEALED
+# SINGLE
+# ACCESSORY
+# UNKNOWN
+# =========================================================
+
+SEALED_KEYWORDS = (
+
+    "booster box",
+    "booster display",
+    "booster bundle",
+    "booster pack",
+    "sleeved booster",
+    "elite trainer box",
+    "starter deck",
+    "structure deck",
+    "double pack",
+    "collection box",
+    "premium collection",
+    "gift collection",
+    "case",
+    "tin",
+    "blister",
+)
+
+
+ACCESSORY_KEYWORDS = (
+
+    "playmat",
+    "play mat",
+    "sleeves",
+    "card sleeves",
+    "deck box",
+    "binder",
+    "portfolio",
+    "storage box",
+    "card holder",
+    "card stand",
+    "accessory",
+    "accessories",
+)
+
+
+SINGLE_STRONG_KEYWORDS = (
+
+    "single card",
+    "tcg single",
+    "card single",
+    "singles",
+)
+
+
+def infer_product_category(
+    title,
+    raw_type=None,
+    tags=None,
+):
+
+    combined = normalize_text(
+        " ".join(
+            [
+                str(
+                    title
+                    or ""
+                ),
+                str(
+                    raw_type
+                    or ""
+                ),
+                str(
+                    tags
+                    or ""
+                ),
+            ]
+        )
+    )
+
+    # -----------------------------------------------------
+    # Sealed wins first.
+    # -----------------------------------------------------
+
+    if any(
+        keyword in combined
+        for keyword in SEALED_KEYWORDS
+    ):
+
+        return "SEALED"
+
+    # -----------------------------------------------------
+    # Accessories.
+    # -----------------------------------------------------
+
+    if any(
+        keyword in combined
+        for keyword in ACCESSORY_KEYWORDS
+    ):
+
+        return "ACCESSORY"
+
+    # -----------------------------------------------------
+    # Explicit singles.
+    # -----------------------------------------------------
+
+    if any(
+        keyword in combined
+        for keyword in SINGLE_STRONG_KEYWORDS
+    ):
+
+        return "SINGLE"
+
+    if (
+        raw_type
+
+        and
+
+        any(
+            phrase in normalize_text(
+                raw_type
+            )
+            for phrase in (
+                "single",
+                "singles",
+                "individual card",
+            )
+        )
+    ):
+
+        return "SINGLE"
+
+    return "UNKNOWN"
 
 
 # =========================================================
@@ -737,7 +851,9 @@ def extract_image_url(
 
     if images:
 
-        first = images[0]
+        first = images[
+            0
+        ]
 
         if isinstance(
             first,
@@ -755,11 +871,8 @@ def extract_image_url(
 
             return first
 
-
-    image = (
-        product.get(
-            "image"
-        )
+    image = product.get(
+        "image"
     )
 
     if isinstance(
@@ -785,38 +898,37 @@ def extract_image_url(
 # PURCHASE LIMIT
 # =========================================================
 
-def detect_purchase_limit(
+PURCHASE_LIMIT_PATTERNS = [
+
+    re.compile(
+        r"\blimit\s*(?:of\s*)?(\d{1,2})\b",
+        re.IGNORECASE,
+    ),
+
+    re.compile(
+        r"\bmax(?:imum)?\s*(?:of\s*)?(\d{1,2})\b",
+        re.IGNORECASE,
+    ),
+
+    re.compile(
+        r"\b(\d{1,2})\s*per\s*(?:customer|person|household)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
+def infer_purchase_limit(
     product,
 ):
 
-    text = (
-        full_product_text(
-            product
-        )
-        .lower()
-        .replace(
-            "&nbsp;",
-            " "
-        )
+    text = build_product_text(
+        product
     )
 
-    patterns = [
+    for pattern in PURCHASE_LIMIT_PATTERNS:
 
-        r"limit\s*(?:of)?\s*(\d{1,2})\s*(?:per|/)\s*(?:customer|person|order|household)",
-
-        r"maximum\s*(?:of)?\s*(\d{1,2})\s*(?:per|/)\s*(?:customer|person|order|household)",
-
-        r"max(?:imum)?\s*(?:qty|quantity)?\s*[:\-]?\s*(\d{1,2})",
-
-        r"(\d{1,2})\s*(?:per|/)\s*(?:customer|person|order|household)",
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            text,
-            flags=re.IGNORECASE,
+        match = pattern.search(
+            text
         )
 
         if not match:
@@ -824,51 +936,186 @@ def detect_purchase_limit(
 
         try:
 
-            limit = int(
+            value = int(
                 match.group(
                     1
                 )
             )
 
-        except Exception:
+        except (
+            TypeError,
+            ValueError,
+        ):
+
             continue
 
         if (
-            1
-            <= limit
-            <= 50
+            value >= 1
+            and value <= 100
         ):
 
-            return limit
-
+            return value
 
     return None
 
 
 # =========================================================
-# PRIMARY VARIANT
+# VARIANT HELPERS
 # =========================================================
 
-def select_primary_variant(
+def variant_price(
+    variant,
+):
+
+    raw_price = variant.get(
+        "price"
+    )
+
+    try:
+
+        if raw_price is None:
+            return None
+
+        return float(
+            raw_price
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+
+def choose_primary_variant(
     variants,
 ):
 
     if not variants:
+
         return None
 
-    for variant in variants:
+    # -----------------------------------------------------
+    # Prefer an available variant.
+    # -----------------------------------------------------
 
-        if variant.get(
-            "available"
-        ):
+    available_variants = [
 
-            return variant
+        variant
 
-    return variants[0]
+        for variant in variants
+
+        if bool(
+            variant.get(
+                "available"
+            )
+        )
+    ]
+
+    pool = (
+        available_variants
+        or variants
+    )
+
+    # -----------------------------------------------------
+    # Prefer lowest priced valid variant.
+    # -----------------------------------------------------
+
+    priced = []
+
+    for variant in pool:
+
+        price = variant_price(
+            variant
+        )
+
+        if price is None:
+            continue
+
+        priced.append(
+            (
+                price,
+                variant,
+            )
+        )
+
+    if priced:
+
+        priced.sort(
+            key=lambda item: item[
+                0
+            ]
+        )
+
+        return priced[
+            0
+        ][
+            1
+        ]
+
+    return pool[
+        0
+    ]
 
 
 # =========================================================
-# ADAPTER
+# TRUSTED DEFAULT PRODUCT FAMILY
+# =========================================================
+
+def default_family_for_store_region(
+    region,
+):
+
+    region = (
+        str(
+            region
+            or ""
+        )
+        .strip()
+        .upper()
+    )
+
+    # -----------------------------------------------------
+    # Stores in these regions normally sell the standard
+    # international/English product configuration unless
+    # the actual listing contains foreign/import markers.
+    #
+    # Foreign markers always override this default.
+    # -----------------------------------------------------
+
+    if region in {
+        "US",
+        "CA",
+        "UK",
+        "GB",
+        "EU",
+        "DE",
+        "FR",
+        "IT",
+        "ES",
+        "NL",
+        "BE",
+        "AT",
+        "IE",
+        "PT",
+        "AU",
+        "NZ",
+    }:
+
+        return "GLOBAL_STANDARD"
+
+    # -----------------------------------------------------
+    # A store being in Japan/Korea/China is NOT enough to
+    # classify every product. Adapter/product text should
+    # still provide evidence.
+    # -----------------------------------------------------
+
+    return None
+
+
+# =========================================================
+# SHOPIFY ADAPTER
 # =========================================================
 
 class ShopifyAdapter:
@@ -903,7 +1150,7 @@ class ShopifyAdapter:
 
 
     # =====================================================
-    # CURRENCY
+    # FETCH STORE CURRENCY
     # =====================================================
 
     async def fetch_store_currency(
@@ -914,10 +1161,8 @@ class ShopifyAdapter:
             f"{self.base_url}/cart.js"
         )
 
-        timeout = (
-            aiohttp.ClientTimeout(
-                total=10
-            )
+        timeout = aiohttp.ClientTimeout(
+            total=10
         )
 
         try:
@@ -936,7 +1181,7 @@ class ShopifyAdapter:
                             "application/json",
 
                         "User-Agent":
-                            "PonDeX-Trackers/0.7.8",
+                            "PonDeX-Trackers/1.0.2",
                     },
 
                 ) as response:
@@ -949,10 +1194,8 @@ class ShopifyAdapter:
                             )
                         )
 
-                        currency = (
-                            data.get(
-                                "currency"
-                            )
+                        currency = data.get(
+                            "currency"
                         )
 
                         if currency:
@@ -960,7 +1203,9 @@ class ShopifyAdapter:
                             self.currency = (
                                 str(
                                     currency
-                                ).upper()
+                                )
+                                .strip()
+                                .upper()
                             )
 
                             return self.currency
@@ -976,7 +1221,6 @@ class ShopifyAdapter:
                 )
             )
 
-
         return self.currency
 
 
@@ -991,10 +1235,8 @@ class ShopifyAdapter:
 
         products = []
 
-        timeout = (
-            aiohttp.ClientTimeout(
-                total=30
-            )
+        timeout = aiohttp.ClientTimeout(
+            total=30
         )
 
         headers = {
@@ -1003,12 +1245,13 @@ class ShopifyAdapter:
                 "application/json",
 
             "User-Agent":
-                "PonDeX-Trackers/0.7.8",
+                "PonDeX-Trackers/1.0.2",
         }
 
         async with aiohttp.ClientSession(
 
             timeout=timeout,
+
             headers=headers,
 
         ) as session:
@@ -1026,8 +1269,11 @@ class ShopifyAdapter:
                 )
 
                 async with session.get(
+
                     url,
+
                     allow_redirects=True,
+
                 ) as response:
 
                     if response.status != 200:
@@ -1065,14 +1311,13 @@ class ShopifyAdapter:
                         )
                         < 250
                     ):
-
                         break
 
         return products
 
 
     # =====================================================
-    # NORMALIZE
+    # NORMALIZE PRODUCT
     # =====================================================
 
     def normalize_product(
@@ -1094,14 +1339,20 @@ class ShopifyAdapter:
             or ""
         )
 
-        game = (
-            classify_game(
-                product
+        raw_type = (
+            product.get(
+                "product_type"
             )
         )
 
-        category = (
-            classify_product_category(
+        tags = (
+            product.get(
+                "tags"
+            )
+        )
+
+        game = (
+            classify_game(
                 product
             )
         )
@@ -1125,8 +1376,35 @@ class ShopifyAdapter:
             in variants
         )
 
+        prices = []
+
+        for variant in variants:
+
+            price = (
+                variant_price(
+                    variant
+                )
+            )
+
+            if price is not None:
+
+                prices.append(
+                    price
+                )
+
+        price = (
+
+            min(
+                prices
+            )
+
+            if prices
+
+            else None
+        )
+
         primary_variant = (
-            select_primary_variant(
+            choose_primary_variant(
                 variants
             )
         )
@@ -1136,63 +1414,29 @@ class ShopifyAdapter:
 
         if primary_variant:
 
-            if (
+            raw_variant_id = (
                 primary_variant.get(
                     "id"
                 )
-                is not None
-            ):
+            )
+
+            if raw_variant_id is not None:
 
                 variant_id = str(
-                    primary_variant[
-                        "id"
-                    ]
+                    raw_variant_id
                 )
 
-            sku = (
+            raw_sku = (
                 primary_variant.get(
                     "sku"
                 )
             )
 
+            if raw_sku:
 
-        prices = []
-
-        for variant in variants:
-
-            raw_price = (
-                variant.get(
-                    "price"
-                )
-            )
-
-            try:
-
-                if raw_price is not None:
-
-                    prices.append(
-                        float(
-                            raw_price
-                        )
-                    )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
-                continue
-
-
-        price = (
-
-            min(prices)
-
-            if prices
-
-            else None
-        )
-
+                sku = str(
+                    raw_sku
+                ).strip()
 
         url = (
 
@@ -1206,23 +1450,71 @@ class ShopifyAdapter:
             else self.base_url
         )
 
-
         product_type = (
             infer_product_type(
 
                 title,
 
-                product.get(
-                    "product_type"
+                raw_type,
+            )
+        )
+
+        product_category = (
+            infer_product_category(
+
+                title,
+
+                raw_type,
+
+                tags,
+            )
+        )
+
+        # =================================================
+        # PRODUCT FAMILY
+        #
+        # Detect foreign/import markers BEFORE using the
+        # store-region default.
+        #
+        # Currency is not used here.
+        # =================================================
+
+        family_probe = dict(
+            product
+        )
+
+        family_probe[
+            "sku"
+        ] = (
+            sku
+        )
+
+        product_family = (
+            detect_product_family(
+
+                family_probe,
+
+                default=(
+                    default_family_for_store_region(
+                        self.region
+                    )
                 ),
             )
         )
 
+        purchase_limit = (
+            infer_purchase_limit(
+                product
+            )
+        )
+
+        # =================================================
+        # PRODUCT STATE
+        # =================================================
 
         lower_title = (
             title.lower()
         )
-
 
         if (
             "preorder"
@@ -1231,6 +1523,11 @@ class ShopifyAdapter:
             or
 
             "pre-order"
+            in lower_title
+
+            or
+
+            "pre order"
             in lower_title
         ):
 
@@ -1254,7 +1551,6 @@ class ShopifyAdapter:
             product_state = (
                 "PAGE_LIVE"
             )
-
 
         return {
 
@@ -1288,7 +1584,10 @@ class ShopifyAdapter:
                 product_type,
 
             "product_category":
-                category,
+                product_category,
+
+            "product_family":
+                product_family,
 
             "product_state":
                 product_state,
@@ -1303,6 +1602,9 @@ class ShopifyAdapter:
                     "vendor"
                 ),
 
+            "tags":
+                tags,
+
             "handle":
                 handle,
 
@@ -1313,9 +1615,7 @@ class ShopifyAdapter:
                 variant_id,
 
             "purchase_limit":
-                detect_purchase_limit(
-                    product
-                ),
+                purchase_limit,
 
             "cart_base_url":
                 self.base_url,
