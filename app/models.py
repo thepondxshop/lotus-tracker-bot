@@ -22,7 +22,7 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 0.7.2
+# Version 0.7.5
 # =========================================================
 
 
@@ -238,8 +238,6 @@ class Store(Base):
         nullable=True,
     )
 
-    # Values:
-    #
     # None
     # MANUAL
     # HEALTH
@@ -321,6 +319,14 @@ class Product(Base):
 class StoreProduct(Base):
 
     __tablename__ = "store_products"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "store_id",
+            "url",
+            name="uq_store_products_store_url",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -608,6 +614,10 @@ class PokemonCenterProduct(Base):
         nullable=False,
     )
 
+    # =====================================================
+    # PRODUCT STATE
+    # =====================================================
+
     last_state: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
@@ -623,6 +633,46 @@ class PokemonCenterProduct(Base):
         default=False,
         nullable=False,
     )
+
+    # =====================================================
+    # SCAN DIAGNOSTICS
+    #
+    # NOT_SCANNED
+    # SUCCESS
+    # BLOCKED
+    # ERROR
+    # =====================================================
+
+    scan_status: Mapped[str] = mapped_column(
+        String(50),
+        default="NOT_SCANNED",
+        nullable=False,
+    )
+
+    last_http_status: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    last_scan_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    blocked_until: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    block_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    # =====================================================
+    # HISTORY
+    # =====================================================
 
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime,
