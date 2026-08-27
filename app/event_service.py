@@ -4,7 +4,10 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 
-from app.events import ProductEvent
+from app.events import (
+    ProductEvent,
+    ProductEventType,
+)
 
 from app.models import (
     Alert,
@@ -19,60 +22,202 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT SERVICE
 # PonDeX Trackers
-# Version 0.5.1
+# Version 0.7.6a
+#
+# PostgreSQL event history
+# Redis event queue
+# Source-aware event serialization
+# Product-image serialization
 # =========================================================
 
 
-REDIS_EVENT_QUEUE = (
+EVENT_QUEUE_KEY = (
     "lotus:product_events"
 )
 
 
 # =========================================================
-# SAVE PRODUCT EVENT TO POSTGRESQL
+# ENUM VALUE
 # =========================================================
 
-async def save_event_to_database(
-    event: ProductEvent
+def enum_value(
+    value,
+):
+
+    if isinstance(
+        value,
+        ProductEventType,
+    ):
+
+        return value.value
+
+    return str(
+        value
+    )
+
+
+# =========================================================
+# EVENT -> REDIS DICTIONARY
+# =========================================================
+
+def serialize_product_event(
+    event: ProductEvent,
+):
+
+    return {
+
+        "event_type":
+            enum_value(
+                event.event_type
+            ),
+
+        "game":
+            event.game,
+
+        "product_name":
+            event.product_name,
+
+        "store_name":
+            event.store_name,
+
+        "product_url":
+            event.product_url,
+
+        "price":
+            event.price,
+
+        "currency":
+            event.currency,
+
+        "in_stock":
+            event.in_stock,
+
+        "region":
+            event.region,
+
+        "language":
+            event.language,
+
+        "product_type":
+            event.product_type,
+
+        # =================================================
+        # v0.7.6 SOURCE ROUTING
+        # =================================================
+
+        "source_type":
+            event.source_type,
+
+        "retailer_key":
+            event.retailer_key,
+
+        # =================================================
+        # PRODUCT IMAGE
+        # =================================================
+
+        "image_url":
+            event.image_url,
+
+        "timestamp": (
+            event.timestamp.isoformat()
+
+            if event.timestamp
+
+            else None
+        ),
+    }
+
+
+# =========================================================
+# SAVE EVENT HISTORY
+# =========================================================
+
+async def save_product_event(
+    event: ProductEvent,
 ):
 
     if SessionLocal is None:
 
-        raise RuntimeError(
-            "Database not configured."
+        return False
+
+    try:
+
+        async with SessionLocal() as session:
+
+            record = (
+                ProductEventRecord(
+
+                    game=event.game,
+
+                    product_name=(
+                        event.product_name
+                    ),
+
+                    store_name=(
+                        event.store_name
+                    ),
+
+                    product_url=(
+                        event.product_url
+                    ),
+
+                    event_type=(
+                        enum_value(
+                            event.event_type
+                        )
+                    ),
+
+                    price=event.price,
+
+                    currency=(
+                        event.currency
+                    ),
+
+                    in_stock=(
+                        event.in_stock
+                    ),
+
+                    region=(
+                        event.region
+                    ),
+
+                    language=(
+                        event.language
+                    ),
+
+                    product_type=(
+                        event.product_type
+                    ),
+                )
+            )
+
+            session.add(
+                record
+            )
+
+            await session.commit()
+
+        return True
+
+    except Exception as error:
+
+        print(
+            (
+                "EVENT DATABASE SAVE ERROR | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
         )
 
-    async with SessionLocal() as session:
-
-        record = ProductEventRecord(
-            game=event.game,
-            product_name=event.product_name,
-            store_name=event.store_name,
-            product_url=event.product_url,
-            event_type=event.event_type.value,
-            price=event.price,
-            currency=event.currency,
-            in_stock=event.in_stock,
-            region=event.region,
-            language=event.language,
-            product_type=event.product_type,
-        )
-
-        session.add(
-            record
-        )
-
-        await session.commit()
-
-        return record
+        return False
 
 
 # =========================================================
-# PUSH PRODUCT EVENT INTO REDIS
+# PUSH EVENT TO REDIS
 # =========================================================
 
-async def push_event_to_redis(
-    event: ProductEvent
+async def push_product_event(
+    event: ProductEvent,
 ):
 
     redis_client = (
@@ -81,132 +226,85 @@ async def push_event_to_redis(
 
     if redis_client is None:
 
-        raise RuntimeError(
-            "Redis is not configured."
+        print(
+            "EVENT REDIS SAVE ERROR | Redis unavailable"
         )
 
-    payload = {
+        return False
 
-        "event_type": (
-            event.event_type.value
-        ),
+    try:
 
-        "game": (
-            event.game
-        ),
+        payload = (
+            serialize_product_event(
+                event
+            )
+        )
 
-        "product_name": (
-            event.product_name
-        ),
+        await redis_client.rpush(
+            EVENT_QUEUE_KEY,
+            json.dumps(
+                payload
+            ),
+        )
 
-        "store_name": (
-            event.store_name
-        ),
+        print(
+            (
+                "EVENT QUEUED | "
+                f"Event={payload['event_type']} | "
+                f"Source={payload['source_type']} | "
+                f"Store={payload['store_name']} | "
+                f"Image="
+                f"{bool(payload['image_url'])}"
+            )
+        )
 
-        "product_url": (
-            event.product_url
-        ),
+        return True
 
-        "price": (
-            event.price
-        ),
+    except Exception as error:
 
-        "currency": (
-            event.currency
-        ),
+        print(
+            (
+                "EVENT REDIS SAVE ERROR | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
 
-        "in_stock": (
-            event.in_stock
-        ),
-
-        "region": (
-            event.region
-        ),
-
-        "language": (
-            event.language
-        ),
-
-        "product_type": (
-            event.product_type
-        ),
-
-        "timestamp": (
-            event.timestamp.isoformat()
-        ),
-    }
-
-    await redis_client.rpush(
-        REDIS_EVENT_QUEUE,
-        json.dumps(
-            payload
-        ),
-    )
+        return False
 
 
 # =========================================================
-# PROCESS NEW PRODUCT EVENT
+# PROCESS EVENT
 # =========================================================
 
 async def process_product_event(
-    event: ProductEvent
+    event: ProductEvent,
 ):
 
-    database_saved = False
-    redis_saved = False
-
-    # -----------------------------------------------------
-    # SAVE HISTORY
-    # -----------------------------------------------------
-
-    try:
-
-        await save_event_to_database(
+    database_saved = (
+        await save_product_event(
             event
         )
+    )
 
-        database_saved = True
-
-    except Exception as error:
-
-        print(
-            "EVENT DATABASE ERROR: "
-            f"{type(error).__name__}: {error}"
-        )
-
-    # -----------------------------------------------------
-    # QUEUE EVENT
-    # -----------------------------------------------------
-
-    try:
-
-        await push_event_to_redis(
+    redis_saved = (
+        await push_product_event(
             event
         )
-
-        redis_saved = True
-
-    except Exception as error:
-
-        print(
-            "EVENT REDIS ERROR: "
-            f"{type(error).__name__}: {error}"
-        )
+    )
 
     return {
 
-        "database_saved": (
-            database_saved
-        ),
+        "database_saved":
+            database_saved,
 
-        "redis_saved": (
-            redis_saved
-        ),
+        "redis_saved":
+            redis_saved,
     }
 
 
 # =========================================================
-# POP NEXT EVENT FROM REDIS
+# POP NEXT EVENT
 # =========================================================
 
 async def pop_next_event(
@@ -221,33 +319,38 @@ async def pop_next_event(
 
         return None
 
-    result = (
-        await redis_client.blpop(
-            REDIS_EVENT_QUEUE,
-            timeout=timeout,
-        )
+    result = await redis_client.blpop(
+        EVENT_QUEUE_KEY,
+        timeout=timeout,
     )
 
     if not result:
 
         return None
 
-    _, payload = result
+    _, raw_payload = (
+        result
+    )
 
     try:
 
-        return json.loads(
-            payload
+        event = json.loads(
+            raw_payload
         )
 
-    except json.JSONDecodeError as error:
+    except Exception as error:
 
         print(
-            "INVALID REDIS EVENT: "
-            f"{error}"
+            (
+                "EVENT JSON DECODE ERROR | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
         )
 
         return None
+
+    return event
 
 
 # =========================================================
@@ -266,25 +369,23 @@ async def get_queue_size():
 
     try:
 
-        return await redis_client.llen(
-            REDIS_EVENT_QUEUE
+        return int(
+            await redis_client.llen(
+                EVENT_QUEUE_KEY
+            )
         )
 
-    except Exception as error:
-
-        print(
-            "REDIS QUEUE ERROR: "
-            f"{type(error).__name__}: {error}"
-        )
+    except Exception:
 
         return 0
 
 
 # =========================================================
-# SAVE DELIVERED DISCORD ALERT
+# ALERT DELIVERY RECORD
 # =========================================================
 
 async def save_alert_delivery(
+    *,
     alert_type: str,
     minimum_tier: str,
     discord_channel_id: int,
@@ -305,7 +406,9 @@ async def save_alert_delivery(
 
                 store_id=None,
 
-                alert_type=alert_type,
+                alert_type=(
+                    alert_type
+                ),
 
                 minimum_tier=(
                     minimum_tier
@@ -326,13 +429,16 @@ async def save_alert_delivery(
 
             await session.commit()
 
-            return True
+        return True
 
     except Exception as error:
 
         print(
-            "ALERT HISTORY ERROR: "
-            f"{type(error).__name__}: {error}"
+            (
+                "ALERT DELIVERY SAVE ERROR | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
         )
 
         return False
