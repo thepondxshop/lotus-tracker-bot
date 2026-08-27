@@ -22,7 +22,14 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 1.0.2
+# Version 1.0.4
+#
+# Universal Retailer Foundation
+# Product Family Preferences
+# Product Category Preferences
+# Dynamic Shopify Variant Support
+# Universal Retailer Product / Offer IDs
+# Hierarchical MSRP + Family Isolation
 # =========================================================
 
 
@@ -298,6 +305,15 @@ class UserProductFamilyPreference(Base):
 
 # =========================================================
 # STORES
+#
+# platform examples:
+#
+# shopify
+# woocommerce
+# bigcommerce
+# custom
+# pokemon_center
+# major_retailer
 # =========================================================
 
 class Store(Base):
@@ -324,6 +340,7 @@ class Store(Base):
     platform: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
+        index=True,
     )
 
     region: Mapped[str | None] = mapped_column(
@@ -335,6 +352,7 @@ class Store(Base):
         Boolean,
         default=True,
         nullable=False,
+        index=True,
     )
 
     trust_score: Mapped[float | None] = mapped_column(
@@ -346,6 +364,7 @@ class Store(Base):
         String(50),
         default="HEALTHY",
         nullable=False,
+        index=True,
     )
 
     consecutive_failures: Mapped[int] = mapped_column(
@@ -372,6 +391,7 @@ class Store(Base):
     disabled_reason: Mapped[str | None] = mapped_column(
         String(50),
         nullable=True,
+        index=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -414,6 +434,7 @@ class Product(Base):
     product_type: Mapped[str | None] = mapped_column(
         String(150),
         nullable=True,
+        index=True,
     )
 
     # SEALED / SINGLE / ACCESSORY / UNKNOWN
@@ -437,6 +458,7 @@ class Product(Base):
     region: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
+        index=True,
     )
 
     language: Mapped[str | None] = mapped_column(
@@ -458,6 +480,16 @@ class Product(Base):
 
 # =========================================================
 # STORE PRODUCTS
+#
+# Universal retailer product state.
+#
+# Shopify:
+#   variant_id
+#
+# Other retailers:
+#   external_product_id
+#   offer_id
+#   platform_data
 # =========================================================
 
 class StoreProduct(Base):
@@ -502,9 +534,14 @@ class StoreProduct(Base):
     sku: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
+        index=True,
     )
 
-    # Shopify variant used for Smart Quick Cart.
+    # =====================================================
+    # SHOPIFY VARIANT
+    #
+    # Dynamic Shopify variant selected for Smart Cart.
+    # =====================================================
 
     variant_id: Mapped[str | None] = mapped_column(
         String(255),
@@ -512,16 +549,68 @@ class StoreProduct(Base):
         index=True,
     )
 
-    # Retailer-advertised purchase restriction if known.
+    # =====================================================
+    # UNIVERSAL RETAILER PRODUCT ID
+    #
+    # Retailer's catalog/product identifier.
+    #
+    # Examples:
+    # WooCommerce product ID
+    # BigCommerce product ID
+    # custom retailer product ID
+    # =====================================================
+
+    external_product_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    # =====================================================
+    # UNIVERSAL RETAILER OFFER ID
+    #
+    # Purchasable offer / variation / offer identifier.
+    #
+    # This is separate from Shopify variant_id.
+    # =====================================================
+
+    offer_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    # =====================================================
+    # PLATFORM METADATA
+    #
+    # Optional serialized platform-specific metadata.
+    #
+    # This lets future retailer adapters retain useful
+    # identifiers without adding a new SQL column each time.
+    # =====================================================
+
+    platform_data: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # =====================================================
+    # RETAILER PURCHASE LIMIT
+    # =====================================================
 
     purchase_limit: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
     )
 
+    # =====================================================
+    # CURRENT RETAILER STATE
+    # =====================================================
+
     status: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
+        index=True,
     )
 
     price: Mapped[float | None] = mapped_column(
@@ -539,12 +628,14 @@ class StoreProduct(Base):
         Boolean,
         default=False,
         nullable=False,
+        index=True,
     )
 
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
         nullable=False,
+        index=True,
     )
 
 
@@ -726,6 +817,7 @@ class PriceHistory(Base):
         DateTime,
         default=datetime.utcnow,
         nullable=False,
+        index=True,
     )
 
 
@@ -745,6 +837,9 @@ class PriceHistory(Base):
 # KR
 # CN
 # UNKNOWN
+#
+# Unique scope includes product family so separate family
+# MSRP rules may coexist safely.
 # =========================================================
 
 class PricingReference(Base):
@@ -757,10 +852,9 @@ class PricingReference(Base):
             "normalized_name",
             "region",
             "kind",
-            name=(
-                "uq_pricing_reference_"
-                "product_region_kind"
-            ),
+            "scope_type",
+            "product_family",
+            name="uq_pricing_reference_scope_family",
         ),
     )
 
@@ -814,6 +908,7 @@ class PricingReference(Base):
         String(50),
         default="MSRP",
         nullable=False,
+        index=True,
     )
 
     region: Mapped[str] = mapped_column(
@@ -910,6 +1005,7 @@ class PokemonCenterProduct(Base):
         Boolean,
         default=True,
         nullable=False,
+        index=True,
     )
 
     last_state: Mapped[str | None] = mapped_column(
@@ -932,6 +1028,7 @@ class PokemonCenterProduct(Base):
         String(50),
         default="NOT_SCANNED",
         nullable=False,
+        index=True,
     )
 
     last_http_status: Mapped[int | None] = mapped_column(
