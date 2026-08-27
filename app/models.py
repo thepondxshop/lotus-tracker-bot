@@ -22,7 +22,7 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 1.0.1
+# Version 1.0.2
 # =========================================================
 
 
@@ -163,11 +163,6 @@ class UserGamePreference(Base):
 
 # =========================================================
 # PRODUCT-TYPE ALERT PREFERENCES
-#
-# SEALED
-# SINGLE
-# ACCESSORY
-# UNKNOWN
 # =========================================================
 
 class UserProductPreference(Base):
@@ -350,6 +345,15 @@ class Product(Base):
     product_category: Mapped[str] = mapped_column(
         String(50),
         default="UNKNOWN",
+        nullable=False,
+        index=True,
+    )
+
+    # GLOBAL_STANDARD / JP / KR / CN / UNKNOWN
+
+    product_family: Mapped[str] = mapped_column(
+        String(50),
+        default="GLOBAL_STANDARD",
         nullable=False,
         index=True,
     )
@@ -647,14 +651,6 @@ class PriceHistory(Base):
 
 # =========================================================
 # PRICING REFERENCES
-#
-# Scope hierarchy:
-#
-# EXACT_PRODUCT
-# PRODUCT_TYPE
-# GAME_DEFAULT
-#
-# normalized_name stores an internal scope-aware key.
 # =========================================================
 
 class PricingReference(Base):
@@ -743,6 +739,15 @@ class PricingReference(Base):
     match_value: Mapped[str | None] = mapped_column(
         String(500),
         nullable=True,
+        index=True,
+    )
+
+    # GLOBAL_STANDARD / JP / KR / CN / UNKNOWN
+
+    product_family: Mapped[str] = mapped_column(
+        String(50),
+        default="GLOBAL_STANDARD",
+        nullable=False,
         index=True,
     )
 
