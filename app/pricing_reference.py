@@ -6,21 +6,37 @@ from sqlalchemy import select
 
 from app.models import PricingReference
 
+from app.product_family import (
+    allows_global_msrp_fallback,
+    detect_product_family,
+    normalize_product_family,
+)
+
 
 # =========================================================
 # LOTUS PRICING REFERENCE
 # PonDeX Trackers
-# Version 1.0.1
+# Version 1.0.2
 #
-# MSRP Hierarchy
+# MSRP hierarchy:
 #
-# 1. Adapter-provided verified MSRP
-# 2. Exact product MSRP
-# 3. Product-type MSRP
-# 4. Game-default MSRP
-# 5. No MSRP
+# Adapter Verified MSRP
 #
-# Shopify compare_at_price is NOT trusted as MSRP.
+# then:
+#
+# Exact Product
+# Product Type
+# Game Default
+#
+# Product-family isolation:
+#
+# GLOBAL_STANDARD
+# JP
+# KR
+# CN
+# UNKNOWN
+#
+# JP / KR / CN never fall back to GLOBAL_STANDARD MSRP.
 # =========================================================
 
 
@@ -42,6 +58,8 @@ class ReferencePrice:
     scope_type: str = "EXACT_PRODUCT"
 
     match_value: str | None = None
+
+    product_family: str = "GLOBAL_STANDARD"
 
 
 # =========================================================
@@ -173,6 +191,7 @@ def normalize_scope_type(
         .upper()
     )
 
+
     aliases = {
 
         "EXACT":
@@ -194,12 +213,14 @@ def normalize_scope_type(
             "GAME_DEFAULT",
     }
 
+
     value = (
         aliases.get(
             value,
             value,
         )
     )
+
 
     if value not in {
         "EXACT_PRODUCT",
@@ -215,6 +236,7 @@ def normalize_scope_type(
             )
         )
 
+
     return value
 
 
@@ -226,11 +248,13 @@ def _safe_positive_float(
 
         return None
 
+
     try:
 
         result = float(
             value
         )
+
 
     except (
         TypeError,
@@ -239,24 +263,61 @@ def _safe_positive_float(
 
         return None
 
+
     if result <= 0:
 
         return None
+
 
     return result
 
 
 # =========================================================
+# FAMILY
+# =========================================================
+
+def require_product_family(
+    value,
+):
+
+    family = (
+        normalize_product_family(
+            value
+        )
+    )
+
+
+    if family is None:
+
+        raise ValueError(
+            (
+                "Invalid product family. "
+                "Use GLOBAL_STANDARD, JP, KR, CN, "
+                "or UNKNOWN."
+            )
+        )
+
+
+    return family
+
+
+# =========================================================
 # INTERNAL STORAGE KEY
 #
-# normalized_name remains the unique lookup key so we do
-# not need to replace the existing pricing-reference table.
+# Family is included in normalized_name so separate
+# references can safely exist for:
+#
+# GLOBAL_STANDARD Booster Box
+# JP Booster Box
+# KR Booster Box
+# CN Booster Box
 # =========================================================
 
 def build_reference_key(
     *,
     scope_type,
     match_value=None,
+    product_family="GLOBAL_STANDARD",
 ):
 
     scope = (
@@ -265,20 +326,36 @@ def build_reference_key(
         )
     )
 
+
+    family = (
+        require_product_family(
+            product_family
+        )
+    )
+
+
+    family_key = (
+        family.lower()
+    )
+
+
     if (
         scope
         == "GAME_DEFAULT"
     ):
 
         return (
+            f"family {family_key} "
             "scope game default"
         )
+
 
     normalized_match = (
         normalize_reference_text(
             match_value
         )
     )
+
 
     if not normalized_match:
 
@@ -289,17 +366,21 @@ def build_reference_key(
             )
         )
 
+
     if (
         scope
         == "PRODUCT_TYPE"
     ):
 
         return (
+            f"family {family_key} "
             "scope product type "
             + normalized_match
         )
 
+
     return (
+        f"family {family_key} "
         "scope exact product "
         + normalized_match
     )
@@ -314,6 +395,7 @@ def build_display_name(
     scope_type,
     match_value,
     game,
+    product_family,
 ):
 
     scope = (
@@ -322,14 +404,23 @@ def build_display_name(
         )
     )
 
+
+    family = (
+        require_product_family(
+            product_family
+        )
+    )
+
+
     if (
         scope
         == "GAME_DEFAULT"
     ):
 
         return (
-            f"{game} Default MSRP"
+            f"{game} {family} Default MSRP"
         )
+
 
     return (
         str(
@@ -340,7 +431,7 @@ def build_display_name(
 
 
 # =========================================================
-# SET / UPDATE REFERENCE
+# SET REFERENCE
 # =========================================================
 
 async def set_pricing_reference(
@@ -355,6 +446,7 @@ async def set_pricing_reference(
     confidence="HIGH",
     kind="MSRP",
     region="GLOBAL",
+    product_family="GLOBAL_STANDARD",
 ):
 
     parsed_amount = (
@@ -363,11 +455,13 @@ async def set_pricing_reference(
         )
     )
 
+
     if parsed_amount is None:
 
         raise ValueError(
             "Reference amount must be greater than 0."
         )
+
 
     game_value = (
         str(
@@ -376,17 +470,27 @@ async def set_pricing_reference(
         ).strip()
     )
 
+
     if not game_value:
 
         raise ValueError(
             "Game is required."
         )
 
+
     scope_value = (
         normalize_scope_type(
             scope_type
         )
     )
+
+
+    family_value = (
+        require_product_family(
+            product_family
+        )
+    )
+
 
     normalized_key = (
         build_reference_key(
@@ -398,8 +502,13 @@ async def set_pricing_reference(
             match_value=(
                 match_value
             ),
+
+            product_family=(
+                family_value
+            ),
         )
     )
+
 
     display_name = (
         build_display_name(
@@ -415,8 +524,13 @@ async def set_pricing_reference(
             game=(
                 game_value
             ),
+
+            product_family=(
+                family_value
+            ),
         )
     )
+
 
     region_value = (
         normalize_region(
@@ -424,11 +538,13 @@ async def set_pricing_reference(
         )
     )
 
+
     kind_value = (
         normalize_kind(
             kind
         )
     )
+
 
     result = (
         await session.execute(
@@ -455,88 +571,100 @@ async def set_pricing_reference(
         )
     )
 
+
     row = (
         result.scalars().first()
     )
 
+
     created = False
+
 
     if row is None:
 
-        row = PricingReference(
+        row = (
+            PricingReference(
 
-            game=(
-                game_value
-            ),
+                game=(
+                    game_value
+                ),
 
-            product_name=(
-                display_name
-            ),
+                product_name=(
+                    display_name
+                ),
 
-            normalized_name=(
-                normalized_key
-            ),
+                normalized_name=(
+                    normalized_key
+                ),
 
-            amount=(
-                parsed_amount
-            ),
+                amount=(
+                    parsed_amount
+                ),
 
-            currency=(
-                normalize_currency(
-                    currency
-                )
-            ),
+                currency=(
+                    normalize_currency(
+                        currency
+                    )
+                ),
 
-            source=(
-                str(
-                    source
-                    or "Verified MSRP"
-                ).strip()
-            ),
-
-            confidence=(
-                normalize_confidence(
-                    confidence
-                )
-            ),
-
-            kind=(
-                kind_value
-            ),
-
-            region=(
-                region_value
-            ),
-
-            scope_type=(
-                scope_value
-            ),
-
-            match_value=(
-
-                None
-
-                if (
-                    scope_value
-                    == "GAME_DEFAULT"
-                )
-
-                else (
+                source=(
                     str(
-                        match_value
-                        or ""
+                        source
+                        or "Verified MSRP"
                     ).strip()
-                )
-            ),
+                ),
 
-            active=True,
+                confidence=(
+                    normalize_confidence(
+                        confidence
+                    )
+                ),
+
+                kind=(
+                    kind_value
+                ),
+
+                region=(
+                    region_value
+                ),
+
+                scope_type=(
+                    scope_value
+                ),
+
+                match_value=(
+
+                    None
+
+                    if (
+                        scope_value
+                        == "GAME_DEFAULT"
+                    )
+
+                    else (
+                        str(
+                            match_value
+                            or ""
+                        ).strip()
+                    )
+                ),
+
+                product_family=(
+                    family_value
+                ),
+
+                active=True,
+            )
         )
+
 
         session.add(
             row
         )
 
+
         created = True
+
 
     else:
 
@@ -544,15 +672,18 @@ async def set_pricing_reference(
             display_name
         )
 
+
         row.amount = (
             parsed_amount
         )
+
 
         row.currency = (
             normalize_currency(
                 currency
             )
         )
+
 
         row.source = (
             str(
@@ -561,15 +692,18 @@ async def set_pricing_reference(
             ).strip()
         )
 
+
         row.confidence = (
             normalize_confidence(
                 confidence
             )
         )
 
+
         row.scope_type = (
             scope_value
         )
+
 
         row.match_value = (
 
@@ -588,17 +722,29 @@ async def set_pricing_reference(
             )
         )
 
-        row.active = True
+
+        row.product_family = (
+            family_value
+        )
+
+
+        row.active = (
+            True
+        )
+
 
         row.updated_at = (
             datetime.utcnow()
         )
 
+
     await session.commit()
+
 
     await session.refresh(
         row
     )
+
 
     return (
         row,
@@ -651,6 +797,7 @@ async def _get_reference_by_key(
         )
     )
 
+
     return (
         result.scalars().first()
     )
@@ -668,6 +815,7 @@ async def get_pricing_reference(
     match_value=None,
     region="GLOBAL",
     kind="MSRP",
+    product_family="GLOBAL_STANDARD",
 ):
 
     game_value = (
@@ -677,9 +825,18 @@ async def get_pricing_reference(
         ).strip()
     )
 
+
     if not game_value:
 
         return None
+
+
+    family_value = (
+        require_product_family(
+            product_family
+        )
+    )
+
 
     normalized_key = (
         build_reference_key(
@@ -691,8 +848,13 @@ async def get_pricing_reference(
             match_value=(
                 match_value
             ),
+
+            product_family=(
+                family_value
+            ),
         )
     )
+
 
     region_value = (
         normalize_region(
@@ -700,11 +862,13 @@ async def get_pricing_reference(
         )
     )
 
+
     kind_value = (
         normalize_kind(
             kind
         )
     )
+
 
     row = (
         await _get_reference_by_key(
@@ -729,10 +893,22 @@ async def get_pricing_reference(
         )
     )
 
-    # -----------------------------------------------------
-    # Region-specific rule missing:
-    # fall back to GLOBAL.
-    # -----------------------------------------------------
+
+    # =====================================================
+    # SAME PRODUCT FAMILY, GLOBAL REGION FALLBACK
+    #
+    # This is NOT a product-family fallback.
+    #
+    # Example:
+    #
+    # JP + US region lookup
+    #
+    # may fall back to:
+    #
+    # JP + GLOBAL region
+    #
+    # but NEVER to GLOBAL_STANDARD.
+    # =====================================================
 
     if (
         row is None
@@ -760,13 +936,12 @@ async def get_pricing_reference(
             )
         )
 
+
     return row
 
 
 # =========================================================
 # REMOVE REFERENCE
-#
-# Soft delete preserves history.
 # =========================================================
 
 async def remove_pricing_reference(
@@ -777,6 +952,7 @@ async def remove_pricing_reference(
     match_value=None,
     region="GLOBAL",
     kind="MSRP",
+    product_family="GLOBAL_STANDARD",
 ):
 
     row = (
@@ -803,32 +979,42 @@ async def remove_pricing_reference(
             kind=(
                 kind
             ),
+
+            product_family=(
+                product_family
+            ),
         )
     )
+
 
     if row is None:
 
         return None
 
+
     row.active = (
         False
     )
+
 
     row.updated_at = (
         datetime.utcnow()
     )
 
+
     await session.commit()
+
 
     await session.refresh(
         row
     )
 
+
     return row
 
 
 # =========================================================
-# DATABASE ROW -> REFERENCE PRICE
+# ROW -> REFERENCE
 # =========================================================
 
 def _row_to_reference(
@@ -838,6 +1024,7 @@ def _row_to_reference(
     if row is None:
 
         return None
+
 
     return ReferencePrice(
 
@@ -886,11 +1073,19 @@ def _row_to_reference(
         match_value=(
             row.match_value
         ),
+
+        product_family=(
+            require_product_family(
+
+                row.product_family
+                or "GLOBAL_STANDARD"
+            )
+        ),
     )
 
 
 # =========================================================
-# RESOLVE REFERENCE PRICE
+# RESOLVE REFERENCE
 # =========================================================
 
 async def resolve_reference_price(
@@ -899,17 +1094,18 @@ async def resolve_reference_price(
     *,
     game=None,
     region=None,
+    product_family=None,
 ):
 
     """
-    Resolution order:
+    Product-family-safe MSRP resolution.
 
-    1. Verified adapter MSRP
-    2. Exact product MSRP
-    3. Product-type MSRP
-    4. Game-default MSRP
-    5. None
+    Product family is determined from the actual item.
+
+    JP / KR / CN / UNKNOWN never inherit
+    GLOBAL_STANDARD rules.
     """
+
 
     if item is None:
 
@@ -917,7 +1113,29 @@ async def resolve_reference_price(
 
 
     # =====================================================
-    # 1. ADAPTER-PROVIDED VERIFIED MSRP
+    # PRODUCT FAMILY
+    # =====================================================
+
+    family_value = (
+
+        normalize_product_family(
+            product_family
+        )
+
+        or
+
+        detect_product_family(
+            item
+        )
+
+        or
+
+        "UNKNOWN"
+    )
+
+
+    # =====================================================
+    # VERIFIED ADAPTER MSRP
     # =====================================================
 
     explicit_msrp = (
@@ -928,7 +1146,21 @@ async def resolve_reference_price(
         )
     )
 
+
     if explicit_msrp is not None:
+
+        explicit_family = (
+
+            normalize_product_family(
+
+                item.get(
+                    "msrp_product_family"
+                )
+            )
+
+            or family_value
+        )
+
 
         return ReferencePrice(
 
@@ -988,14 +1220,16 @@ async def resolve_reference_price(
                 )
             ),
 
-            scope_type=(
-                "EXACT_PRODUCT"
-            ),
+            scope_type="EXACT_PRODUCT",
 
             match_value=(
                 item.get(
                     "title"
                 )
+            ),
+
+            product_family=(
+                explicit_family
             ),
         )
 
@@ -1017,6 +1251,7 @@ async def resolve_reference_price(
         or ""
     )
 
+
     product_type = (
 
         item.get(
@@ -1025,6 +1260,7 @@ async def resolve_reference_price(
 
         or ""
     )
+
 
     game_value = (
 
@@ -1036,6 +1272,7 @@ async def resolve_reference_price(
 
         or ""
     )
+
 
     region_value = (
 
@@ -1049,11 +1286,159 @@ async def resolve_reference_price(
     )
 
 
+    if not game_value:
+
+        return None
+
+
     # =====================================================
-    # 2. EXACT PRODUCT
+    # SAFE FAMILY RESOLUTION
     # =====================================================
 
-    if product_name:
+    lookup_families = [
+        family_value
+    ]
+
+
+    # GLOBAL_STANDARD is already its own family.
+    #
+    # JP/KR/CN/UNKNOWN intentionally receive no additional
+    # family fallback.
+
+    if (
+        family_value
+        == "GLOBAL_STANDARD"
+
+        and
+
+        allows_global_msrp_fallback(
+            family_value
+        )
+    ):
+
+        lookup_families = [
+            "GLOBAL_STANDARD"
+        ]
+
+
+    # =====================================================
+    # EACH PERMITTED FAMILY
+    # =====================================================
+
+    for lookup_family in lookup_families:
+
+
+        # =================================================
+        # 1. EXACT PRODUCT
+        # =================================================
+
+        if product_name:
+
+            row = (
+                await get_pricing_reference(
+
+                    session,
+
+                    game=(
+                        game_value
+                    ),
+
+                    scope_type="EXACT_PRODUCT",
+
+                    match_value=(
+                        product_name
+                    ),
+
+                    region=(
+                        region_value
+                    ),
+
+                    kind="MSRP",
+
+                    product_family=(
+                        lookup_family
+                    ),
+                )
+            )
+
+
+            if row is not None:
+
+                print(
+                    (
+                        "MSRP MATCH | "
+                        "Scope=EXACT_PRODUCT | "
+                        f"Family={lookup_family} | "
+                        f"Game={game_value} | "
+                        f"Product={product_name}"
+                    )
+                )
+
+
+                return (
+                    _row_to_reference(
+                        row
+                    )
+                )
+
+
+        # =================================================
+        # 2. PRODUCT TYPE
+        # =================================================
+
+        if product_type:
+
+            row = (
+                await get_pricing_reference(
+
+                    session,
+
+                    game=(
+                        game_value
+                    ),
+
+                    scope_type="PRODUCT_TYPE",
+
+                    match_value=(
+                        product_type
+                    ),
+
+                    region=(
+                        region_value
+                    ),
+
+                    kind="MSRP",
+
+                    product_family=(
+                        lookup_family
+                    ),
+                )
+            )
+
+
+            if row is not None:
+
+                print(
+                    (
+                        "MSRP MATCH | "
+                        "Scope=PRODUCT_TYPE | "
+                        f"Family={lookup_family} | "
+                        f"Game={game_value} | "
+                        f"Type={product_type}"
+                    )
+                )
+
+
+                return (
+                    _row_to_reference(
+                        row
+                    )
+                )
+
+
+        # =================================================
+        # 3. GAME DEFAULT
+        # =================================================
 
         row = (
             await get_pricing_reference(
@@ -1064,32 +1449,34 @@ async def resolve_reference_price(
                     game_value
                 ),
 
-                scope_type=(
-                    "EXACT_PRODUCT"
-                ),
+                scope_type="GAME_DEFAULT",
 
-                match_value=(
-                    product_name
-                ),
+                match_value=None,
 
                 region=(
                     region_value
                 ),
 
                 kind="MSRP",
+
+                product_family=(
+                    lookup_family
+                ),
             )
         )
+
 
         if row is not None:
 
             print(
                 (
                     "MSRP MATCH | "
-                    "Scope=EXACT_PRODUCT | "
-                    f"Game={game_value} | "
-                    f"Product={product_name}"
+                    "Scope=GAME_DEFAULT | "
+                    f"Family={lookup_family} | "
+                    f"Game={game_value}"
                 )
             )
+
 
             return (
                 _row_to_reference(
@@ -1099,100 +1486,18 @@ async def resolve_reference_price(
 
 
     # =====================================================
-    # 3. PRODUCT TYPE
+    # NO SAFE REFERENCE
     # =====================================================
 
-    if product_type:
-
-        row = (
-            await get_pricing_reference(
-
-                session,
-
-                game=(
-                    game_value
-                ),
-
-                scope_type=(
-                    "PRODUCT_TYPE"
-                ),
-
-                match_value=(
-                    product_type
-                ),
-
-                region=(
-                    region_value
-                ),
-
-                kind="MSRP",
-            )
-        )
-
-        if row is not None:
-
-            print(
-                (
-                    "MSRP MATCH | "
-                    "Scope=PRODUCT_TYPE | "
-                    f"Game={game_value} | "
-                    f"Type={product_type}"
-                )
-            )
-
-            return (
-                _row_to_reference(
-                    row
-                )
-            )
-
-
-    # =====================================================
-    # 4. GAME DEFAULT
-    # =====================================================
-
-    row = (
-        await get_pricing_reference(
-
-            session,
-
-            game=(
-                game_value
-            ),
-
-            scope_type=(
-                "GAME_DEFAULT"
-            ),
-
-            match_value=None,
-
-            region=(
-                region_value
-            ),
-
-            kind="MSRP",
+    print(
+        (
+            "MSRP NO SAFE MATCH | "
+            f"Family={family_value} | "
+            f"Game={game_value} | "
+            f"Product={product_name} | "
+            f"Type={product_type}"
         )
     )
 
-    if row is not None:
-
-        print(
-            (
-                "MSRP MATCH | "
-                "Scope=GAME_DEFAULT | "
-                f"Game={game_value}"
-            )
-        )
-
-        return (
-            _row_to_reference(
-                row
-            )
-        )
-
-
-    # =====================================================
-    # NO TRUSTED REFERENCE
-    # =====================================================
 
     return None
