@@ -1,14 +1,12 @@
 from dataclasses import dataclass
-
 from datetime import datetime
-
 from enum import Enum
 
 
 # =========================================================
-# LOTUS PRODUCT EVENT TYPES
+# LOTUS PRODUCT EVENTS
 # PonDeX Trackers
-# Version 0.7.1
+# Version 0.7.6
 # =========================================================
 
 
@@ -72,6 +70,26 @@ class ProductEvent:
     language: str = "English"
 
     product_type: str = "Unknown"
+
+    # =====================================================
+    # SOURCE ROUTING
+    #
+    # shopify
+    # major_retailer
+    # pokemon_center
+    # queue
+    # simulation
+    # =====================================================
+
+    source_type: str = "unknown"
+
+    retailer_key: str | None = None
+
+    # =====================================================
+    # PRODUCT IMAGE
+    # =====================================================
+
+    image_url: str | None = None
 
     timestamp: datetime | None = None
 
