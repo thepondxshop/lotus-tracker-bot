@@ -5,458 +5,864 @@ from urllib.parse import urlparse
 # =========================================================
 # LOTUS SMART CART
 # PonDeX Trackers
-# Smart Cart v1
+# Version 1.0.3
 #
-# Current scope:
-# - Shopify cart permalinks
-# - Quantity-aware cart links
-# - Retailer-limit-aware buttons
-# - Safe product-page fallback
+# Shopify Smart Cart v1
 #
-# Shopify cart permalink format:
-# https://store.example/cart/{variant_id}:{quantity}
+# Features:
+#
+# - Shopify variant cart URLs
+# - Product-page fallback
+# - Purchase-limit protection
+# - Quantity options
+# - Safe URL validation
+# - Ready for Discord buttons
 # =========================================================
 
 
-@dataclass
-class SmartCartAction:
-    label: str
-    url: str
-    quantity: int | None = None
-    kind: str = "cart"
+DEFAULT_QUANTITIES = (
+    1,
+    2,
+    3,
+    4,
+    5,
+    10,
+)
 
+
+MAX_SAFE_QUANTITY = 25
+
+
+# =========================================================
+# SMART CART RESULT
+# =========================================================
 
 @dataclass
 class SmartCartResult:
+
     supported: bool
-    provider: str
-    status_text: str
-    actions: list[SmartCartAction]
+
+    product_url: str | None
+
+    cart_base_url: str | None
+
+    variant_id: str | None
+
+    purchase_limit: int | None
+
+    quantities: list[int]
+
+    cart_links: dict[int, str]
+
+    primary_quantity: int | None
+
+    primary_cart_url: str | None
+
+    reason: str | None = None
 
 
-def _clean_numeric_variant_id(
-    variant_id,
+# =========================================================
+# SAFE INTEGER
+# =========================================================
+
+def safe_positive_int(
+    value,
 ):
-    """
-    Shopify cart permalinks require the numeric variant ID.
 
-    Supports:
-    - 123456789
-    - "123456789"
-    - "gid://shopify/ProductVariant/123456789"
-    """
+    if value is None:
 
-    if variant_id is None:
+        return None
+
+    try:
+
+        parsed = int(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    if parsed <= 0:
+
+        return None
+
+    return parsed
+
+
+# =========================================================
+# NORMALIZE VARIANT ID
+# =========================================================
+
+def normalize_variant_id(
+    value,
+):
+
+    if value is None:
+
         return None
 
     value = str(
-        variant_id
+        value
     ).strip()
 
     if not value:
+
         return None
 
-    # GraphQL/GID format.
-    if "/" in value:
-        value = (
-            value
-            .rstrip("/")
-            .split("/")[-1]
-        )
-
-    # Defensive cleanup for accidental query/fragment suffixes.
-    value = (
-        value
-        .split("?")[0]
-        .split("#")[0]
-        .strip()
-    )
+    # Shopify variant IDs are numeric.
+    #
+    # Keeping this strict prevents malformed cart paths.
 
     if not value.isdigit():
+
         return None
 
     return value
 
 
-def _normalize_store_base_url(
-    *,
-    cart_base_url=None,
-    product_url=None,
+# =========================================================
+# NORMALIZE URL
+# =========================================================
+
+def normalize_base_url(
+    value,
 ):
-    """
-    Returns scheme + host only.
 
-    Examples:
-    https://example.com/products/card
-        -> https://example.com
+    if not value:
 
-    example.com/cart
-        -> https://example.com
-    """
-
-    candidate = (
-        cart_base_url
-        or product_url
-        or ""
-    )
-
-    candidate = str(
-        candidate
-    ).strip()
-
-    if not candidate:
         return None
 
-    if not candidate.startswith(
+    value = str(
+        value
+    ).strip()
+
+    if not value:
+
+        return None
+
+    if not value.startswith(
         (
             "http://",
             "https://",
         )
     ):
-        candidate = (
+
+        value = (
             "https://"
-            + candidate
+            + value
         )
 
     try:
+
         parsed = urlparse(
-            candidate
-        )
-
-        if not parsed.netloc:
-            return None
-
-        scheme = (
-            parsed.scheme
-            or "https"
-        )
-
-        return (
-            f"{scheme}://"
-            f"{parsed.netloc}"
+            value
         )
 
     except Exception:
+
         return None
 
+    if not parsed.hostname:
 
-def _safe_purchase_limit(
-    purchase_limit,
+        return None
+
+    scheme = (
+        parsed.scheme
+        or "https"
+    )
+
+    hostname = (
+        parsed.hostname
+        .lower()
+    )
+
+    # Preserve non-standard port if one exists.
+
+    netloc = hostname
+
+    if parsed.port:
+
+        netloc = (
+            f"{hostname}:{parsed.port}"
+        )
+
+    return (
+        f"{scheme}://{netloc}"
+    )
+
+
+# =========================================================
+# NORMALIZE PRODUCT URL
+# =========================================================
+
+def normalize_product_url(
+    value,
 ):
-    """
-    Convert purchase limit to a positive int.
-    Returns None when no reliable limit is available.
-    """
 
-    if purchase_limit is None:
+    if not value:
+
+        return None
+
+    value = str(
+        value
+    ).strip()
+
+    if not value:
+
+        return None
+
+    if not value.startswith(
+        (
+            "http://",
+            "https://",
+        )
+    ):
+
         return None
 
     try:
-        value = int(
-            purchase_limit
+
+        parsed = urlparse(
+            value
         )
 
-    except (
-        TypeError,
-        ValueError,
-    ):
+    except Exception:
+
         return None
 
-    if value <= 0:
+    if not parsed.hostname:
+
         return None
 
     return value
 
 
+# =========================================================
+# PURCHASE LIMIT
+# =========================================================
+
+def normalize_purchase_limit(
+    value,
+):
+
+    parsed = (
+        safe_positive_int(
+            value
+        )
+    )
+
+    if parsed is None:
+
+        return None
+
+    # Protect against bad scraper/parser values.
+    #
+    # Example:
+    # "limit 9999" should not create an absurd cart URL.
+
+    return min(
+        parsed,
+        MAX_SAFE_QUANTITY,
+    )
+
+
+# =========================================================
+# QUANTITY OPTIONS
+# =========================================================
+
+def build_quantity_options(
+    purchase_limit=None,
+    requested_quantities=None,
+):
+
+    limit = (
+        normalize_purchase_limit(
+            purchase_limit
+        )
+    )
+
+    quantities = (
+        requested_quantities
+        or DEFAULT_QUANTITIES
+    )
+
+    output = []
+
+    for quantity in quantities:
+
+        parsed = (
+            safe_positive_int(
+                quantity
+            )
+        )
+
+        if parsed is None:
+
+            continue
+
+        if parsed > MAX_SAFE_QUANTITY:
+
+            continue
+
+        if (
+            limit is not None
+            and parsed > limit
+        ):
+
+            continue
+
+        output.append(
+            parsed
+        )
+
+    # =====================================================
+    # ALWAYS INCLUDE LIMIT ITSELF
+    #
+    # Example:
+    #
+    # Normal buttons:
+    # 1,2,3,4,5,10
+    #
+    # Retailer limit:
+    # 6
+    #
+    # Result:
+    # 1,2,3,4,5,6
+    # =====================================================
+
+    if (
+        limit is not None
+        and limit not in output
+    ):
+
+        output.append(
+            limit
+        )
+
+    # =====================================================
+    # ENSURE x1 EXISTS
+    # =====================================================
+
+    if (
+        limit is None
+        or limit >= 1
+    ):
+
+        if 1 not in output:
+
+            output.append(
+                1
+            )
+
+    return sorted(
+        set(
+            output
+        )
+    )
+
+
+# =========================================================
+# BUILD SHOPIFY CART URL
+# =========================================================
+
 def build_shopify_cart_url(
     *,
+    cart_base_url,
     variant_id,
     quantity=1,
-    cart_base_url=None,
-    product_url=None,
+    purchase_limit=None,
 ):
-    """
-    Build a Shopify cart permalink.
 
-    Example:
-    https://example.com/cart/123456789:2
-    """
+    base = (
+        normalize_base_url(
+            cart_base_url
+        )
+    )
 
-    numeric_variant_id = (
-        _clean_numeric_variant_id(
+    variant = (
+        normalize_variant_id(
             variant_id
         )
     )
 
-    if numeric_variant_id is None:
-        return None
-
-    base_url = (
-        _normalize_store_base_url(
-            cart_base_url=(
-                cart_base_url
-            ),
-            product_url=(
-                product_url
-            ),
-        )
-    )
-
-    if base_url is None:
-        return None
-
-    try:
-        quantity = int(
+    qty = (
+        safe_positive_int(
             quantity
         )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-        quantity = 1
-
-    quantity = max(
-        1,
-        quantity,
     )
+
+    limit = (
+        normalize_purchase_limit(
+            purchase_limit
+        )
+    )
+
+    if base is None:
+
+        return None
+
+    if variant is None:
+
+        return None
+
+    if qty is None:
+
+        return None
+
+    if qty > MAX_SAFE_QUANTITY:
+
+        return None
+
+    if (
+        limit is not None
+        and qty > limit
+    ):
+
+        return None
+
+    # Shopify cart permalink format:
+    #
+    # https://store.com/cart/VARIANT_ID:QTY
 
     return (
-        f"{base_url}/cart/"
-        f"{numeric_variant_id}:"
-        f"{quantity}"
+        f"{base}/cart/"
+        f"{variant}:{qty}"
     )
 
 
-def build_smart_cart(
-    event,
+# =========================================================
+# BUILD ALL CART LINKS
+# =========================================================
+
+def build_shopify_cart_links(
     *,
-    product_url=None,
+    cart_base_url,
+    variant_id,
+    purchase_limit=None,
+    requested_quantities=None,
 ):
-    """
-    Build Smart Cart actions for an event.
 
-    Smart Cart v1 intentionally avoids pretending a purchase
-    limit exists when the monitor did not detect one.
+    quantities = (
+        build_quantity_options(
 
-    Behavior:
-    - Limit 1 -> Add 1
-    - Limit 2+ -> Add 1 + Add up to detected limit
-    - Unknown limit -> Add 1 only
-    - Missing Shopify variant/base -> product-page fallback
-    - Sold-out alerts do not show an add-to-cart action
-    """
-
-    source_type = (
-        event.get(
-            "source_type"
-        )
-        or ""
-    ).lower()
-
-    event_type = (
-        event.get(
-            "event_type"
-        )
-        or ""
-    ).upper()
-
-    variant_id = (
-        event.get(
-            "variant_id"
-        )
-    )
-
-    purchase_limit = (
-        _safe_purchase_limit(
-            event.get(
-                "purchase_limit"
-            )
-        )
-    )
-
-    cart_base_url = (
-        event.get(
-            "cart_base_url"
-        )
-    )
-
-    effective_product_url = (
-        product_url
-        or event.get(
-            "product_url"
-        )
-        or ""
-    )
-
-    # =====================================================
-    # SOLD OUT
-    # =====================================================
-
-    if event_type == "SOLD_OUT":
-        actions = []
-
-        if effective_product_url:
-            actions.append(
-                SmartCartAction(
-                    label="Open Product",
-                    url=(
-                        effective_product_url
-                    ),
-                    kind="product",
-                )
-            )
-
-        return SmartCartResult(
-            supported=False,
-            provider=(
-                source_type
-                or "unknown"
+            purchase_limit=(
+                purchase_limit
             ),
-            status_text=(
-                "Currently sold out â¢ "
-                "product page available"
+
+            requested_quantities=(
+                requested_quantities
             ),
-            actions=actions,
         )
+    )
 
-    # =====================================================
-    # SHOPIFY
-    # =====================================================
+    links = {}
 
-    if source_type == "shopify":
-        add_one_url = (
+    for quantity in quantities:
+
+        url = (
             build_shopify_cart_url(
-                variant_id=(
-                    variant_id
-                ),
-                quantity=1,
+
                 cart_base_url=(
                     cart_base_url
                 ),
-                product_url=(
-                    effective_product_url
+
+                variant_id=(
+                    variant_id
+                ),
+
+                quantity=(
+                    quantity
+                ),
+
+                purchase_limit=(
+                    purchase_limit
                 ),
             )
         )
 
-        if add_one_url:
-            actions = [
-                SmartCartAction(
-                    label="Add 1 to Cart",
-                    url=add_one_url,
-                    quantity=1,
-                    kind="cart",
-                )
-            ]
+        if url:
 
-            # If a retailer limit is detected, provide a
-            # second button for that quantity.
-            #
-            # We cap this display button at 5 in v1 to avoid
-            # extreme quantities and clutter. Add 1 is always
-            # available as the conservative choice.
-            if (
-                purchase_limit is not None
-                and purchase_limit >= 2
-            ):
-                secondary_quantity = min(
-                    purchase_limit,
-                    5,
-                )
-
-                secondary_url = (
-                    build_shopify_cart_url(
-                        variant_id=(
-                            variant_id
-                        ),
-                        quantity=(
-                            secondary_quantity
-                        ),
-                        cart_base_url=(
-                            cart_base_url
-                        ),
-                        product_url=(
-                            effective_product_url
-                        ),
-                    )
-                )
-
-                if secondary_url:
-                    actions.append(
-                        SmartCartAction(
-                            label=(
-                                "Add "
-                                f"{secondary_quantity} "
-                                "to Cart"
-                            ),
-                            url=(
-                                secondary_url
-                            ),
-                            quantity=(
-                                secondary_quantity
-                            ),
-                            kind="cart",
-                        )
-                    )
-
-            if effective_product_url:
-                actions.append(
-                    SmartCartAction(
-                        label="Open Product",
-                        url=(
-                            effective_product_url
-                        ),
-                        kind="product",
-                    )
-                )
-
-            if purchase_limit is not None:
-                status_text = (
-                    "â Retailer limit detected: "
-                    f"**{purchase_limit}**"
-                )
-            else:
-                status_text = (
-                    "â ï¸ Limit not detected â¢ "
-                    "Add 1 is the safe default"
-                )
-
-            return SmartCartResult(
-                supported=True,
-                provider="shopify",
-                status_text=(
-                    status_text
-                ),
-                actions=actions,
+            links[
+                quantity
+            ] = (
+                url
             )
 
-    # =====================================================
-    # FALLBACK
-    # =====================================================
+    return links
 
-    actions = []
 
-    if effective_product_url:
-        actions.append(
-            SmartCartAction(
-                label="Open Product",
-                url=(
-                    effective_product_url
-                ),
-                kind="product",
-            )
+# =========================================================
+# PRIMARY QUANTITY
+# =========================================================
+
+def choose_primary_quantity(
+    quantities,
+    purchase_limit=None,
+):
+
+    if not quantities:
+
+        return None
+
+    limit = (
+        normalize_purchase_limit(
+            purchase_limit
         )
+    )
+
+    # =====================================================
+    # DEFAULT PRIMARY BUTTON
+    #
+    # Use x1 by default.
+    #
+    # We do NOT automatically use the purchase maximum
+    # because that could cause someone to accidentally add
+    # several expensive products to cart.
+    # =====================================================
+
+    if 1 in quantities:
+
+        return 1
+
+    # Defensive fallback.
+
+    if limit is not None:
+
+        allowed = [
+
+            quantity
+
+            for quantity in quantities
+
+            if quantity <= limit
+        ]
+
+        if allowed:
+
+            return min(
+                allowed
+            )
+
+    return min(
+        quantities
+    )
+
+
+# =========================================================
+# BUILD SMART CART
+# =========================================================
+
+def build_smart_cart(
+    *,
+    product_url=None,
+    cart_base_url=None,
+    variant_id=None,
+    purchase_limit=None,
+    requested_quantities=None,
+):
+
+    product_url = (
+        normalize_product_url(
+            product_url
+        )
+    )
+
+    base_url = (
+        normalize_base_url(
+            cart_base_url
+        )
+    )
+
+    variant = (
+        normalize_variant_id(
+            variant_id
+        )
+    )
+
+    limit = (
+        normalize_purchase_limit(
+            purchase_limit
+        )
+    )
+
+    # =====================================================
+    # PRODUCT PAGE ONLY
+    # =====================================================
+
+    if base_url is None:
+
+        return SmartCartResult(
+
+            supported=False,
+
+            product_url=(
+                product_url
+            ),
+
+            cart_base_url=None,
+
+            variant_id=(
+                variant
+            ),
+
+            purchase_limit=(
+                limit
+            ),
+
+            quantities=[],
+
+            cart_links={},
+
+            primary_quantity=None,
+
+            primary_cart_url=None,
+
+            reason=(
+                "CART_BASE_URL_MISSING"
+            ),
+        )
+
+    if variant is None:
+
+        return SmartCartResult(
+
+            supported=False,
+
+            product_url=(
+                product_url
+            ),
+
+            cart_base_url=(
+                base_url
+            ),
+
+            variant_id=None,
+
+            purchase_limit=(
+                limit
+            ),
+
+            quantities=[],
+
+            cart_links={},
+
+            primary_quantity=None,
+
+            primary_cart_url=None,
+
+            reason=(
+                "VARIANT_ID_MISSING"
+            ),
+        )
+
+    # =====================================================
+    # CART LINKS
+    # =====================================================
+
+    cart_links = (
+        build_shopify_cart_links(
+
+            cart_base_url=(
+                base_url
+            ),
+
+            variant_id=(
+                variant
+            ),
+
+            purchase_limit=(
+                limit
+            ),
+
+            requested_quantities=(
+                requested_quantities
+            ),
+        )
+    )
+
+    quantities = sorted(
+        cart_links.keys()
+    )
+
+    if not quantities:
+
+        return SmartCartResult(
+
+            supported=False,
+
+            product_url=(
+                product_url
+            ),
+
+            cart_base_url=(
+                base_url
+            ),
+
+            variant_id=(
+                variant
+            ),
+
+            purchase_limit=(
+                limit
+            ),
+
+            quantities=[],
+
+            cart_links={},
+
+            primary_quantity=None,
+
+            primary_cart_url=None,
+
+            reason=(
+                "NO_SAFE_QUANTITIES"
+            ),
+        )
+
+    primary_quantity = (
+        choose_primary_quantity(
+
+            quantities,
+
+            purchase_limit=(
+                limit
+            ),
+        )
+    )
+
+    primary_cart_url = (
+        cart_links.get(
+            primary_quantity
+        )
+    )
 
     return SmartCartResult(
-        supported=False,
-        provider=(
-            source_type
-            or "unknown"
+
+        supported=True,
+
+        product_url=(
+            product_url
         ),
-        status_text=(
-            "Direct cart unavailable â¢ "
-            "use product page"
+
+        cart_base_url=(
+            base_url
         ),
-        actions=actions,
+
+        variant_id=(
+            variant
+        ),
+
+        purchase_limit=(
+            limit
+        ),
+
+        quantities=(
+            quantities
+        ),
+
+        cart_links=(
+            cart_links
+        ),
+
+        primary_quantity=(
+            primary_quantity
+        ),
+
+        primary_cart_url=(
+            primary_cart_url
+        ),
+
+        reason=None,
+    )
+
+
+# =========================================================
+# EVENT -> SMART CART
+# =========================================================
+
+def build_smart_cart_from_event(
+    event,
+):
+
+    if not event:
+
+        return SmartCartResult(
+
+            supported=False,
+
+            product_url=None,
+
+            cart_base_url=None,
+
+            variant_id=None,
+
+            purchase_limit=None,
+
+            quantities=[],
+
+            cart_links={},
+
+            primary_quantity=None,
+
+            primary_cart_url=None,
+
+            reason="EVENT_MISSING",
+        )
+
+    return (
+        build_smart_cart(
+
+            product_url=(
+                event.get(
+                    "product_url"
+                )
+            ),
+
+            cart_base_url=(
+                event.get(
+                    "cart_base_url"
+                )
+            ),
+
+            variant_id=(
+                event.get(
+                    "variant_id"
+                )
+            ),
+
+            purchase_limit=(
+                event.get(
+                    "purchase_limit"
+                )
+            ),
+        )
+    )
+
+
+# =========================================================
+# DEBUG SUMMARY
+# =========================================================
+
+def smart_cart_debug_summary(
+    result,
+):
+
+    if result is None:
+
+        return (
+            "SmartCart(None)"
+        )
+
+    return (
+        "SmartCart("
+        f"supported={result.supported}, "
+        f"variant={result.variant_id}, "
+        f"limit={result.purchase_limit}, "
+        f"quantities={result.quantities}, "
+        f"reason={result.reason}"
+        ")"
     )
