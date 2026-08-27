@@ -1,22 +1,21 @@
-from urllib.parse import urlparse
+import re
+
+from urllib.parse import (
+    urlparse,
+)
 
 import aiohttp
-
-from app.product_intelligence import (
-    classify_product_state,
-)
 
 
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Version 0.6.2
+# Version 0.7.6
 #
-# Features:
-# - URL cleanup
-# - Shopify catalog retrieval
-# - TCG classification
-# - Product-state intelligence
+# Shopify Products API
+# TCG classification
+# Product images
+# Product URL normalization
 # =========================================================
 
 
@@ -26,33 +25,17 @@ from app.product_intelligence import (
 
 def normalize_shopify_domain(
     value: str,
-) -> str:
-
-    value = value.strip()
+):
 
     if not value:
 
         raise ValueError(
-            "Store domain cannot be empty."
+            "Shopify domain is empty."
         )
 
-    # -----------------------------------------------------
-    # Users may paste:
-    #
-    # sagaconcepts.com
-    #
-    # https://sagaconcepts.com
-    #
-    # https://www.sagaconcepts.com/
-    #
-    # https://sagaconcepts.com/?tracking=123
-    #
-    # https://sagaconcepts.com/products/item
-    #
-    # Lotus always saves:
-    #
-    # sagaconcepts.com
-    # -----------------------------------------------------
+    value = (
+        value.strip()
+    )
 
     if not value.startswith(
         (
@@ -66,8 +49,10 @@ def normalize_shopify_domain(
             + value
         )
 
-    parsed = urlparse(
-        value
+    parsed = (
+        urlparse(
+            value
+        )
     )
 
     hostname = (
@@ -85,154 +70,348 @@ def normalize_shopify_domain(
             ]
         )
 
-    hostname = hostname.strip(
-        "."
-    )
-
     if not hostname:
 
         raise ValueError(
-            (
-                "Could not determine "
-                "a valid store domain."
-            )
+            "Invalid Shopify domain."
         )
 
     return hostname
 
 
 # =========================================================
+# GAME KEYWORDS
+# =========================================================
+
+GAME_KEYWORDS = {
+
+    "One Piece": [
+
+        "one piece card game",
+
+        "one piece tcg",
+
+        "op-",
+
+        "op01",
+
+        "op02",
+
+        "op03",
+
+        "op04",
+
+        "op05",
+
+        "op06",
+
+        "op07",
+
+        "op08",
+
+        "op09",
+
+        "op10",
+
+        "op11",
+
+        "op12",
+
+        "op13",
+
+        "op14",
+
+        "eb01",
+
+        "eb02",
+
+        "st-",
+    ],
+
+    "Pokemon": [
+
+        "pokemon tcg",
+
+        "pokémon tcg",
+
+        "pokemon trading card",
+
+        "pokémon trading card",
+
+        "elite trainer box",
+
+        "booster bundle",
+
+        "pokemon booster",
+
+        "pokémon booster",
+    ],
+
+    "Gundam": [
+
+        "gundam card game",
+
+        "gundam tcg",
+    ],
+
+    "Dragon Ball Fusion World": [
+
+        "dragon ball super card game fusion world",
+
+        "fusion world",
+    ],
+
+    "Riftbound": [
+
+        "riftbound",
+    ],
+
+    "Palworld": [
+
+        "palworld card",
+
+        "palworld tcg",
+    ],
+
+    "Naruto": [
+
+        "naruto card game",
+
+        "naruto tcg",
+    ],
+
+    "Cyberpunk TCG": [
+
+        "cyberpunk tcg",
+
+        "cyberpunk trading card",
+    ],
+
+    "Azuki TCG": [
+
+        "azuki tcg",
+
+        "azuki card game",
+    ],
+
+    "Hellbreak TCG": [
+
+        "hellbreak tcg",
+
+        "hellbreak card",
+    ],
+}
+
+
+# =========================================================
 # GAME CLASSIFICATION
 # =========================================================
 
-def classify_shopify_game(
+def classify_game(
     product: dict,
 ):
 
-    searchable = " ".join(
+    combined = " ".join(
+
         [
+
             str(
                 product.get(
                     "title",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 product.get(
                     "vendor",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 product.get(
                     "product_type",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 product.get(
                     "tags",
-                    "",
-                )
-            ),
-            str(
-                product.get(
-                    "body_html",
-                    "",
+                    ""
                 )
             ),
         ]
     ).lower()
 
-    rules = [
-
-        (
-            "One Piece",
-            [
-                "one piece",
-                "onepiece",
-                "one piece card game",
-            ],
-        ),
-
-        (
-            "Pokemon",
-            [
-                "pokemon",
-                "pokémon",
-                "pokemon tcg",
-            ],
-        ),
-
-        (
-            "Gundam",
-            [
-                "gundam",
-                "gundam card game",
-            ],
-        ),
-
-        (
-            "Dragon Ball Fusion World",
-            [
-                "dragon ball fusion world",
-                "fusion world",
-            ],
-        ),
-
-        (
-            "Riftbound",
-            [
-                "riftbound",
-                "league of legends tcg",
-            ],
-        ),
-
-        (
-            "Palworld",
-            [
-                "palworld",
-            ],
-        ),
-
-        (
-            "Naruto",
-            [
-                "naruto",
-            ],
-        ),
-
-        (
-            "Cyberpunk TCG",
-            [
-                "cyberpunk tcg",
-                "cyberpunk trading card",
-            ],
-        ),
-
-        (
-            "Azuki TCG",
-            [
-                "azuki tcg",
-                "azuki trading card",
-            ],
-        ),
-
-        (
-            "Hellbreak TCG",
-            [
-                "hellbreak",
-            ],
-        ),
-    ]
-
-    for game, keywords in rules:
+    for (
+        game,
+        keywords,
+    ) in GAME_KEYWORDS.items():
 
         for keyword in keywords:
 
-            if keyword in searchable:
+            if (
+                keyword.lower()
+                in combined
+            ):
 
                 return game
+
+    return None
+
+
+# =========================================================
+# PRODUCT TYPE
+# =========================================================
+
+def infer_product_type(
+    title: str,
+    raw_type: str | None,
+):
+
+    lower = (
+        title.lower()
+    )
+
+    mappings = [
+
+        (
+            "elite trainer box",
+            "Elite Trainer Box",
+        ),
+
+        (
+            "booster box",
+            "Booster Box",
+        ),
+
+        (
+            "booster bundle",
+            "Booster Bundle",
+        ),
+
+        (
+            "booster pack",
+            "Booster Pack",
+        ),
+
+        (
+            "starter deck",
+            "Starter Deck",
+        ),
+
+        (
+            "structure deck",
+            "Structure Deck",
+        ),
+
+        (
+            "collection",
+            "Collection",
+        ),
+
+        (
+            "tin",
+            "Tin",
+        ),
+
+        (
+            "case",
+            "Case",
+        ),
+    ]
+
+    for (
+        keyword,
+        label,
+    ) in mappings:
+
+        if keyword in lower:
+
+            return label
+
+    return (
+        raw_type
+        or "TCG Product"
+    )
+
+
+# =========================================================
+# IMAGE
+# =========================================================
+
+def extract_image_url(
+    product: dict,
+):
+
+    # Shopify usually exposes:
+    #
+    # images: [
+    #   {"src": "..."}
+    # ]
+
+    images = (
+        product.get(
+            "images"
+        )
+        or []
+    )
+
+    if images:
+
+        first = (
+            images[
+                0
+            ]
+        )
+
+        if isinstance(
+            first,
+            dict,
+        ):
+
+            src = (
+                first.get(
+                    "src"
+                )
+            )
+
+            if src:
+
+                return src
+
+        elif isinstance(
+            first,
+            str,
+        ):
+
+            return first
+
+    image = (
+        product.get(
+            "image"
+        )
+    )
+
+    if isinstance(
+        image,
+        dict,
+    ):
+
+        return (
+            image.get(
+                "src"
+            )
+        )
+
+    if isinstance(
+        image,
+        str,
+    ):
+
+        return image
 
     return None
 
@@ -265,8 +444,10 @@ class ShopifyAdapter:
 
     async def fetch_products(
         self,
-        max_pages: int = 10,
+        max_pages: int = 20,
     ):
+
+        products = []
 
         timeout = (
             aiohttp.ClientTimeout(
@@ -280,12 +461,8 @@ class ShopifyAdapter:
                 "application/json",
 
             "User-Agent":
-                "PonDeX-Trackers/0.6.2",
+                "PonDeX-Trackers/0.7.6",
         }
-
-        all_products = []
-
-        seen_product_ids = set()
 
         async with aiohttp.ClientSession(
             timeout=timeout,
@@ -300,124 +477,55 @@ class ShopifyAdapter:
                 url = (
                     f"{self.base_url}"
                     f"/products.json"
-                    f"?limit=250&page={page}"
+                    f"?limit=250"
+                    f"&page={page}"
                 )
 
                 async with session.get(
-                    url
+                    url,
+                    allow_redirects=True,
                 ) as response:
 
-                    if response.status == 429:
-
-                        raise RuntimeError(
-                            (
-                                "Shopify store returned "
-                                "HTTP 429 rate limit."
-                            )
-                        )
-
-                    if response.status in (
-                        401,
-                        403,
+                    if (
+                        response.status
+                        != 200
                     ):
 
                         raise RuntimeError(
                             (
-                                "Shopify product endpoint "
-                                f"not accessible: "
-                                f"HTTP {response.status}"
+                                f"Shopify HTTP "
+                                f"{response.status}"
                             )
                         )
 
-                    if response.status == 404:
-
-                        raise RuntimeError(
-                            (
-                                "Shopify products endpoint "
-                                "was not found."
-                            )
+                    data = (
+                        await response.json(
+                            content_type=None
                         )
+                    )
 
-                    if response.status != 200:
-
-                        raise RuntimeError(
-                            (
-                                "Shopify request failed: "
-                                f"HTTP {response.status}"
-                            )
-                        )
-
-                    try:
-
-                        data = (
-                            await response.json()
-                        )
-
-                    except Exception as error:
-
-                        raise RuntimeError(
-                            (
-                                "Shopify returned invalid "
-                                "product JSON: "
-                                f"{type(error).__name__}: "
-                                f"{error}"
-                            )
-                        )
-
-                    products = (
+                    page_products = (
                         data.get(
                             "products",
                             []
                         )
                     )
 
-                    if not products:
+                    if not page_products:
 
                         break
 
-                    new_products_found = 0
-
-                    for product in products:
-
-                        product_id = (
-                            product.get(
-                                "id"
-                            )
-                        )
-
-                        if (
-                            product_id
-                            in seen_product_ids
-                        ):
-
-                            continue
-
-                        seen_product_ids.add(
-                            product_id
-                        )
-
-                        all_products.append(
-                            product
-                        )
-
-                        new_products_found += 1
-
-                    # -------------------------------------
-                    # Some Shopify stores may return the
-                    # same page repeatedly.
-                    # -------------------------------------
-
-                    if new_products_found == 0:
-
-                        break
+                    products.extend(
+                        page_products
+                    )
 
                     if len(
-                        products
+                        page_products
                     ) < 250:
 
                         break
 
-        return all_products
+        return products
 
 
     # =====================================================
@@ -429,6 +537,26 @@ class ShopifyAdapter:
         product: dict,
     ):
 
+        title = (
+            product.get(
+                "title"
+            )
+            or "Unknown Product"
+        )
+
+        handle = (
+            product.get(
+                "handle"
+            )
+            or ""
+        )
+
+        game = (
+            classify_game(
+                product
+            )
+        )
+
         variants = (
             product.get(
                 "variants"
@@ -436,21 +564,16 @@ class ShopifyAdapter:
             or []
         )
 
-        # -------------------------------------------------
-        # AVAILABILITY
-        # -------------------------------------------------
-
         available = any(
-            variant.get(
-                "available",
-                False,
+
+            bool(
+                variant.get(
+                    "available"
+                )
             )
+
             for variant in variants
         )
-
-        # -------------------------------------------------
-        # PRICE
-        # -------------------------------------------------
 
         prices = []
 
@@ -462,17 +585,15 @@ class ShopifyAdapter:
                 )
             )
 
-            if raw_price is None:
-
-                continue
-
             try:
 
-                prices.append(
-                    float(
-                        raw_price
+                if raw_price is not None:
+
+                    prices.append(
+                        float(
+                            raw_price
+                        )
                     )
-                )
 
             except (
                 TypeError,
@@ -482,24 +603,17 @@ class ShopifyAdapter:
                 continue
 
         price = (
+
             min(
                 prices
             )
+
             if prices
+
             else None
         )
 
-        # -------------------------------------------------
-        # PRODUCT URL
-        # -------------------------------------------------
-
-        handle = (
-            product.get(
-                "handle"
-            )
-        )
-
-        product_url = (
+        url = (
 
             (
                 f"{self.base_url}"
@@ -511,74 +625,97 @@ class ShopifyAdapter:
             else self.base_url
         )
 
-        # -------------------------------------------------
-        # GAME
-        # -------------------------------------------------
+        raw_type = (
+            product.get(
+                "product_type"
+            )
+        )
 
-        game = (
-            classify_shopify_game(
+        product_type = (
+            infer_product_type(
+                title,
+                raw_type,
+            )
+        )
+
+        image_url = (
+            extract_image_url(
                 product
             )
         )
 
-        # -------------------------------------------------
-        # PRODUCT INTELLIGENCE
-        # -------------------------------------------------
-
-        product_state = (
-            classify_product_state(
-                product,
-                available,
-            )
+        lower_title = (
+            title.lower()
         )
 
-        # -------------------------------------------------
-        # RESULT
-        # -------------------------------------------------
+        if (
+            "preorder"
+            in lower_title
+            or
+            "pre-order"
+            in lower_title
+        ):
+
+            product_state = (
+
+                "PREORDER_LIVE"
+
+                if available
+
+                else "PREORDER_PAGE"
+            )
+
+        elif available:
+
+            product_state = (
+                "STOCK_AVAILABLE"
+            )
+
+        else:
+
+            product_state = (
+                "PAGE_LIVE"
+            )
 
         return {
 
-            "shopify_id":
-                product.get(
-                    "id"
+            "external_id":
+                str(
+                    product.get(
+                        "id",
+                        ""
+                    )
                 ),
 
             "title":
-                product.get(
-                    "title",
-                    "Unknown Product",
-                ),
+                title,
+
+            "game":
+                game,
 
             "url":
-                product_url,
+                url,
+
+            "price":
+                price,
 
             "available":
                 available,
 
-            "price":
-                price,
+            "product_type":
+                product_type,
+
+            "product_state":
+                product_state,
+
+            "image_url":
+                image_url,
 
             "vendor":
                 product.get(
                     "vendor"
                 ),
 
-            "product_type":
-                (
-                    product.get(
-                        "product_type"
-                    )
-                    or "Unknown"
-                ),
-
-            "tags":
-                product.get(
-                    "tags"
-                ),
-
-            "game":
-                game,
-
-            "product_state":
-                product_state,
+            "handle":
+                handle,
         }
