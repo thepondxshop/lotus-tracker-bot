@@ -1,7 +1,5 @@
 import json
 
-from sqlalchemy import select
-
 from app.database import SessionLocal
 
 from app.events import (
@@ -22,12 +20,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT SERVICE
 # PonDeX Trackers
-# Version 0.7.6a
-#
-# PostgreSQL event history
-# Redis event queue
-# Source-aware event serialization
-# Product-image serialization
+# Version 0.7.8
 # =========================================================
 
 
@@ -35,10 +28,6 @@ EVENT_QUEUE_KEY = (
     "lotus:product_events"
 )
 
-
-# =========================================================
-# ENUM VALUE
-# =========================================================
 
 def enum_value(
     value,
@@ -55,10 +44,6 @@ def enum_value(
         value
     )
 
-
-# =========================================================
-# EVENT -> REDIS DICTIONARY
-# =========================================================
 
 def serialize_product_event(
     event: ProductEvent,
@@ -101,9 +86,8 @@ def serialize_product_event(
         "product_type":
             event.product_type,
 
-        # =================================================
-        # v0.7.6 SOURCE ROUTING
-        # =================================================
+        "product_category":
+            event.product_category,
 
         "source_type":
             event.source_type,
@@ -111,12 +95,17 @@ def serialize_product_event(
         "retailer_key":
             event.retailer_key,
 
-        # =================================================
-        # PRODUCT IMAGE
-        # =================================================
-
         "image_url":
             event.image_url,
+
+        "variant_id":
+            event.variant_id,
+
+        "purchase_limit":
+            event.purchase_limit,
+
+        "cart_base_url":
+            event.cart_base_url,
 
         "timestamp": (
             event.timestamp.isoformat()
@@ -127,10 +116,6 @@ def serialize_product_event(
         ),
     }
 
-
-# =========================================================
-# SAVE EVENT HISTORY
-# =========================================================
 
 async def save_product_event(
     event: ProductEvent,
@@ -144,51 +129,49 @@ async def save_product_event(
 
         async with SessionLocal() as session:
 
-            record = (
-                ProductEventRecord(
+            record = ProductEventRecord(
 
-                    game=event.game,
+                game=event.game,
 
-                    product_name=(
-                        event.product_name
-                    ),
+                product_name=(
+                    event.product_name
+                ),
 
-                    store_name=(
-                        event.store_name
-                    ),
+                store_name=(
+                    event.store_name
+                ),
 
-                    product_url=(
-                        event.product_url
-                    ),
+                product_url=(
+                    event.product_url
+                ),
 
-                    event_type=(
-                        enum_value(
-                            event.event_type
-                        )
-                    ),
+                event_type=(
+                    enum_value(
+                        event.event_type
+                    )
+                ),
 
-                    price=event.price,
+                price=event.price,
 
-                    currency=(
-                        event.currency
-                    ),
+                currency=(
+                    event.currency
+                ),
 
-                    in_stock=(
-                        event.in_stock
-                    ),
+                in_stock=(
+                    event.in_stock
+                ),
 
-                    region=(
-                        event.region
-                    ),
+                region=(
+                    event.region
+                ),
 
-                    language=(
-                        event.language
-                    ),
+                language=(
+                    event.language
+                ),
 
-                    product_type=(
-                        event.product_type
-                    ),
-                )
+                product_type=(
+                    event.product_type
+                ),
             )
 
             session.add(
@@ -211,10 +194,6 @@ async def save_product_event(
 
         return False
 
-
-# =========================================================
-# PUSH EVENT TO REDIS
-# =========================================================
 
 async def push_product_event(
     event: ProductEvent,
@@ -241,7 +220,9 @@ async def push_product_event(
         )
 
         await redis_client.rpush(
+
             EVENT_QUEUE_KEY,
+
             json.dumps(
                 payload
             ),
@@ -253,8 +234,10 @@ async def push_product_event(
                 f"Event={payload['event_type']} | "
                 f"Source={payload['source_type']} | "
                 f"Store={payload['store_name']} | "
-                f"Image="
-                f"{bool(payload['image_url'])}"
+                f"Category={payload['product_category']} | "
+                f"Variant={payload['variant_id']} | "
+                f"Limit={payload['purchase_limit']} | "
+                f"Image={bool(payload['image_url'])}"
             )
         )
 
@@ -272,10 +255,6 @@ async def push_product_event(
 
         return False
 
-
-# =========================================================
-# PROCESS EVENT
-# =========================================================
 
 async def process_product_event(
     event: ProductEvent,
@@ -302,10 +281,6 @@ async def process_product_event(
             redis_saved,
     }
 
-
-# =========================================================
-# POP NEXT EVENT
-# =========================================================
 
 async def pop_next_event(
     timeout: int = 5,
@@ -334,7 +309,7 @@ async def pop_next_event(
 
     try:
 
-        event = json.loads(
+        return json.loads(
             raw_payload
         )
 
@@ -350,12 +325,6 @@ async def pop_next_event(
 
         return None
 
-    return event
-
-
-# =========================================================
-# QUEUE SIZE
-# =========================================================
 
 async def get_queue_size():
 
@@ -379,10 +348,6 @@ async def get_queue_size():
 
         return 0
 
-
-# =========================================================
-# ALERT DELIVERY RECORD
-# =========================================================
 
 async def save_alert_delivery(
     *,
