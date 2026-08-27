@@ -1,3 +1,5 @@
+import re
+
 from urllib.parse import (
     urlparse,
 )
@@ -8,62 +10,33 @@ import aiohttp
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Version 0.7.7
+# Version 0.7.8
 #
-# Shopify Products API
-# Native Currency Detection
+# Currency
 # TCG Classification
+# Sealed / Single / Accessory Classification
+# Shopify Variant IDs
+# Purchase-Limit Detection
 # Product Images
 # =========================================================
 
 
-# =========================================================
-# REGION CURRENCY FALLBACK
-# =========================================================
-
 REGION_CURRENCY = {
 
-    "US":
-        "USD",
-
-    "CA":
-        "CAD",
-
-    "UK":
-        "GBP",
-
-    "GB":
-        "GBP",
-
-    "EU":
-        "EUR",
-
-    "DE":
-        "EUR",
-
-    "FR":
-        "EUR",
-
-    "IT":
-        "EUR",
-
-    "ES":
-        "EUR",
-
-    "JP":
-        "JPY",
-
-    "AU":
-        "AUD",
-
-    "NZ":
-        "NZD",
+    "US": "USD",
+    "CA": "CAD",
+    "UK": "GBP",
+    "GB": "GBP",
+    "EU": "EUR",
+    "DE": "EUR",
+    "FR": "EUR",
+    "IT": "EUR",
+    "ES": "EUR",
+    "JP": "JPY",
+    "AU": "AUD",
+    "NZ": "NZD",
 }
 
-
-# =========================================================
-# DOMAIN
-# =========================================================
 
 def normalize_shopify_domain(
     value: str,
@@ -107,9 +80,7 @@ def normalize_shopify_domain(
     ):
 
         hostname = (
-            hostname[
-                4:
-            ]
+            hostname[4:]
         )
 
     if not hostname:
@@ -122,7 +93,7 @@ def normalize_shopify_domain(
 
 
 # =========================================================
-# GAME KEYWORDS
+# GAME CLASSIFICATION
 # =========================================================
 
 GAME_KEYWORDS = {
@@ -202,11 +173,11 @@ GAME_KEYWORDS = {
 }
 
 
-def classify_game(
+def product_text(
     product,
 ):
 
-    combined = " ".join(
+    return " ".join(
         [
             str(
                 product.get(
@@ -214,26 +185,47 @@ def classify_game(
                     ""
                 )
             ),
+
             str(
                 product.get(
                     "vendor",
                     ""
                 )
             ),
+
             str(
                 product.get(
                     "product_type",
                     ""
                 )
             ),
+
             str(
                 product.get(
                     "tags",
                     ""
                 )
             ),
+
+            str(
+                product.get(
+                    "body_html",
+                    ""
+                )
+            ),
         ]
-    ).lower()
+    )
+
+
+def classify_game(
+    product,
+):
+
+    combined = (
+        product_text(
+            product
+        ).lower()
+    )
 
     for (
         game,
@@ -253,7 +245,196 @@ def classify_game(
 
 
 # =========================================================
-# TYPE
+# SEALED / SINGLE / ACCESSORY CLASSIFICATION
+# =========================================================
+
+SEALED_KEYWORDS = [
+
+    "booster box",
+    "booster pack",
+    "booster bundle",
+    "elite trainer box",
+    "etb",
+    "starter deck",
+    "structure deck",
+    "starter set",
+    "collection box",
+    "premium collection",
+    "special collection",
+    "collector chest",
+    "mini tin",
+    "tin",
+    "display box",
+    "booster display",
+    "sealed",
+    "case of",
+    "case ",
+    "blister",
+    "deck box set",
+]
+
+ACCESSORY_KEYWORDS = [
+
+    "playmat",
+    "play mat",
+    "sleeves",
+    "card sleeves",
+    "binder",
+    "deck box",
+    "storage box",
+    "card holder",
+    "dice",
+    "damage counters",
+    "accessory",
+    "accessories",
+    "portfolio",
+]
+
+SINGLE_KEYWORDS = [
+
+    "single card",
+    "single",
+    "parallel",
+    "alt art",
+    "alternate art",
+    "secret rare",
+    "special rare",
+    "super rare",
+    "promo card",
+    "foil card",
+    "holo card",
+    "reverse holo",
+    "individual card",
+]
+
+
+def classify_product_category(
+    product,
+):
+
+    combined = (
+        product_text(
+            product
+        ).lower()
+    )
+
+    raw_type = str(
+        product.get(
+            "product_type",
+            ""
+        )
+    ).lower()
+
+    tags = str(
+        product.get(
+            "tags",
+            ""
+        )
+    ).lower()
+
+    # Strong Shopify merchant labels first.
+
+    if (
+        "single"
+        in raw_type
+        or
+        "singles"
+        in raw_type
+        or
+        "single"
+        in tags
+        or
+        "singles"
+        in tags
+    ):
+
+        return (
+            "SINGLE"
+        )
+
+    if (
+        "accessory"
+        in raw_type
+        or
+        "accessories"
+        in raw_type
+    ):
+
+        return (
+            "ACCESSORY"
+        )
+
+    # Accessories before sealed because a deck box could
+    # otherwise match "box".
+
+    for keyword in ACCESSORY_KEYWORDS:
+
+        if keyword in combined:
+
+            return (
+                "ACCESSORY"
+            )
+
+    for keyword in SEALED_KEYWORDS:
+
+        if keyword in combined:
+
+            return (
+                "SEALED"
+            )
+
+    for keyword in SINGLE_KEYWORDS:
+
+        if keyword in combined:
+
+            return (
+                "SINGLE"
+            )
+
+    # Card-number patterns are useful for many singles:
+    #
+    # 025/165
+    # OP01-078
+    # P-115
+    #
+    # But don't apply them if obvious sealed terminology
+    # exists.
+
+    title = str(
+        product.get(
+            "title",
+            ""
+        )
+    )
+
+    card_patterns = [
+
+        r"\b\d{1,3}/\d{1,3}\b",
+
+        r"\b[A-Z]{1,4}\d{0,2}-\d{2,4}\b",
+
+        r"\bP-\d{2,4}\b",
+    ]
+
+    for pattern in card_patterns:
+
+        if re.search(
+            pattern,
+            title,
+            flags=re.IGNORECASE,
+        ):
+
+            return (
+                "SINGLE"
+            )
+
+    return (
+        "UNKNOWN"
+    )
+
+
+# =========================================================
+# PRODUCT TYPE
 # =========================================================
 
 def infer_product_type(
@@ -346,9 +527,7 @@ def extract_image_url(
     if images:
 
         first = (
-            images[
-                0
-            ]
+            images[0]
         )
 
         if isinstance(
@@ -397,6 +576,100 @@ def extract_image_url(
 
 
 # =========================================================
+# PURCHASE LIMIT DETECTION
+# =========================================================
+
+def detect_purchase_limit(
+    product,
+):
+
+    combined = (
+        product_text(
+            product
+        )
+        .lower()
+        .replace(
+            "&nbsp;",
+            " "
+        )
+    )
+
+    patterns = [
+
+        r"limit\s*(?:of)?\s*(\d{1,2})\s*(?:per|/)\s*(?:customer|person|order|household)",
+
+        r"limit\s*(\d{1,2})",
+
+        r"maximum\s*(?:of)?\s*(\d{1,2})\s*(?:per|/)\s*(?:customer|person|order|household)",
+
+        r"max(?:imum)?\s*(?:qty|quantity)?\s*[:\-]?\s*(\d{1,2})",
+
+        r"(\d{1,2})\s*(?:per|/)\s*(?:customer|person|order|household)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            combined,
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+
+            continue
+
+        try:
+
+            limit = int(
+                match.group(
+                    1
+                )
+            )
+
+        except Exception:
+
+            continue
+
+        if (
+            1
+            <= limit
+            <= 50
+        ):
+
+            return limit
+
+    return None
+
+
+# =========================================================
+# SELECT BEST VARIANT
+# =========================================================
+
+def select_primary_variant(
+    variants,
+):
+
+    if not variants:
+
+        return None
+
+    # Prefer an available variant.
+
+    for variant in variants:
+
+        if variant.get(
+            "available"
+        ):
+
+            return variant
+
+    return (
+        variants[0]
+    )
+
+
+# =========================================================
 # ADAPTER
 # =========================================================
 
@@ -431,10 +704,6 @@ class ShopifyAdapter:
         )
 
 
-    # =====================================================
-    # FETCH STORE CURRENCY
-    # =====================================================
-
     async def fetch_store_currency(
         self,
     ):
@@ -456,13 +725,17 @@ class ShopifyAdapter:
             ) as session:
 
                 async with session.get(
+
                     url,
+
                     headers={
                         "Accept":
                             "application/json",
+
                         "User-Agent":
-                            "PonDeX-Trackers/0.7.7",
+                            "PonDeX-Trackers/0.7.8",
                     },
+
                 ) as response:
 
                     if response.status == 200:
@@ -507,10 +780,6 @@ class ShopifyAdapter:
         )
 
 
-    # =====================================================
-    # FETCH PRODUCTS
-    # =====================================================
-
     async def fetch_products(
         self,
         max_pages=20,
@@ -530,7 +799,7 @@ class ShopifyAdapter:
                 "application/json",
 
             "User-Agent":
-                "PonDeX-Trackers/0.7.7",
+                "PonDeX-Trackers/0.7.8",
         }
 
         async with aiohttp.ClientSession(
@@ -555,7 +824,10 @@ class ShopifyAdapter:
                     allow_redirects=True,
                 ) as response:
 
-                    if response.status != 200:
+                    if (
+                        response.status
+                        != 200
+                    ):
 
                         raise RuntimeError(
                             (
@@ -597,10 +869,6 @@ class ShopifyAdapter:
         return products
 
 
-    # =====================================================
-    # NORMALIZE
-    # =====================================================
-
     def normalize_product(
         self,
         product,
@@ -626,6 +894,12 @@ class ShopifyAdapter:
             )
         )
 
+        category = (
+            classify_product_category(
+                product
+            )
+        )
+
         variants = (
             product.get(
                 "variants"
@@ -642,6 +916,36 @@ class ShopifyAdapter:
             for variant in variants
         )
 
+        primary_variant = (
+            select_primary_variant(
+                variants
+            )
+        )
+
+        variant_id = None
+        sku = None
+
+        if primary_variant:
+
+            if (
+                primary_variant.get(
+                    "id"
+                )
+                is not None
+            ):
+
+                variant_id = str(
+                    primary_variant[
+                        "id"
+                    ]
+                )
+
+            sku = (
+                primary_variant.get(
+                    "sku"
+                )
+            )
+
         prices = []
 
         for variant in variants:
@@ -654,7 +958,10 @@ class ShopifyAdapter:
 
             try:
 
-                if raw_price is not None:
+                if (
+                    raw_price
+                    is not None
+                ):
 
                     prices.append(
                         float(
@@ -752,6 +1059,9 @@ class ShopifyAdapter:
             "product_type":
                 product_type,
 
+            "product_category":
+                category,
+
             "product_state":
                 product_state,
 
@@ -767,4 +1077,18 @@ class ShopifyAdapter:
 
             "handle":
                 handle,
+
+            "sku":
+                sku,
+
+            "variant_id":
+                variant_id,
+
+            "purchase_limit":
+                detect_purchase_limit(
+                    product
+                ),
+
+            "cart_base_url":
+                self.base_url,
         }
