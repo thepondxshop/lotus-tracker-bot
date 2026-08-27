@@ -11,6 +11,7 @@ from app.affiliate import (
 from app.config import (
     ALERT_ACCESS,
     CHANNEL_MAP,
+    GAME_ROLES,
 )
 
 from app.currency_service import (
@@ -23,12 +24,20 @@ from app.event_service import (
     save_alert_delivery,
 )
 
+from app.family_preference_service import (
+    get_family_preferences_for_users,
+)
+
+from app.preference_service import (
+    get_product_preferences,
+)
+
 from app.helpers import (
     safe_int,
 )
 
-from app.preference_service import (
-    get_event_notification_role,
+from app.product_family import (
+    normalize_product_family,
 )
 
 from app.redis_client import (
@@ -37,274 +46,425 @@ from app.redis_client import (
     init_redis,
 )
 
-from app.smart_cart import (
-    build_smart_cart,
-)
 
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.0
+# Version 1.0.2
 #
-# Compact alert layout
-# Previous -> current price display
-# Smart Cart v1 URL buttons
-# Historical Pricing + Deal Score v2
-# Persistent MSRP + Scalper Protection
-# Preference-aware category pings
-# Native currency + USD conversion
-# Product images
-# Affiliate links
-# Source routing
-# Game validation failsafe
-# Realtime flicker protection
+# Source Routing
+# Strict Member Audience Filtering
+# Game Preferences
+# Category Preferences
+# Product Family Preferences
+# Images
+# Native Currency
+# USD Conversion
+# MSRP Intelligence
+# Deal Intelligence
+# Scalper Protection
+# Smart Quick Cart
+# Affiliate Links
 # =========================================================
 
 
+# =========================================================
+# EVENT TITLES
+# =========================================================
+
 EVENT_TITLES = {
-    "DISCOVERED": "ð¡ PRODUCT DISCOVERED",
-    "PAGE_LIVE": "ðµ PRODUCT PAGE LIVE",
-    "COMING_SOON": "ð¡ COMING SOON",
-    "PREORDER_LIVE": "ð£ PREORDER LIVE",
-    "STOCK_AVAILABLE": "ð¢ IN STOCK",
-    "RESTOCK": "ð¨ RESTOCK",
-    "SOLD_OUT": "ð´ SOLD OUT",
-    "PRICE_DROP": "ð¥ PRICE DROP",
-    "PRICE_INCREASE": "ð PRICE INCREASE",
-    "PRICE_ERROR": "â ï¸ POSSIBLE PRICE ERROR",
-    "INVENTORY_FLICKER": "â¡ INVENTORY FLICKER",
-    "RELEASE_DATE_CHANGED": "ð RELEASE DATE CHANGED",
-    "QUEUE_DETECTED": "ð¨ POKÃMON CENTER QUEUE DETECTED",
-    "QUEUE_ACTIVE": "ð¨ POKÃMON CENTER QUEUE LIVE",
-    "QUEUE_CLEARED": "â POKÃMON CENTER QUEUE CLEARED",
+
+    "DISCOVERED":
+        "📡 PRODUCT DISCOVERED",
+
+    "PAGE_LIVE":
+        "🔵 PRODUCT PAGE LIVE",
+
+    "COMING_SOON":
+        "🟡 COMING SOON",
+
+    "PREORDER_LIVE":
+        "🟣 PREORDER LIVE",
+
+    "STOCK_AVAILABLE":
+        "🟢 IN STOCK",
+
+    "RESTOCK":
+        "🚨 RESTOCK",
+
+    "SOLD_OUT":
+        "🔴 SOLD OUT",
+
+    "PRICE_DROP":
+        "🔥 PRICE DROP",
+
+    "PRICE_INCREASE":
+        "📈 PRICE INCREASE",
+
+    "PRICE_ERROR":
+        "⚠️ POSSIBLE PRICE ERROR",
+
+    "INVENTORY_FLICKER":
+        "⚡ INVENTORY FLICKER",
+
+    "RELEASE_DATE_CHANGED":
+        "📅 RELEASE DATE CHANGED",
+
+    "QUEUE_DETECTED":
+        "🚨 POKÉMON CENTER QUEUE DETECTED",
+
+    "QUEUE_ACTIVE":
+        "🚨 POKÉMON CENTER QUEUE LIVE",
+
+    "QUEUE_CLEARED":
+        "✅ POKÉMON CENTER QUEUE CLEARED",
 }
 
 
 # =========================================================
-# WORKER GAME VALIDATION
-#
-# Second defense against incorrect role pings.
+# PRODUCT FAMILY LABELS
 # =========================================================
 
-def validate_event_game(event):
-    game = (
-        event.get("game")
-        or ""
-    )
+PRODUCT_FAMILY_LABELS = {
 
-    title = (
-        event.get("product_name")
-        or ""
-    ).lower()
+    "GLOBAL_STANDARD":
+        "🌎 English / Global",
 
-    product_type = (
-        event.get("product_type")
-        or ""
-    ).lower()
+    "JP":
+        "🇯🇵 Japanese",
 
-    combined = (
-        f"{title} "
-        f"{product_type}"
-    )
+    "KR":
+        "🇰🇷 Korean",
 
-    # =====================================================
-    # OBVIOUS NON-TARGET PRODUCTS
-    # =====================================================
+    "CN":
+        "🇨🇳 Simplified Chinese",
 
-    obvious_other_products = [
-        "warhammer",
-        "games workshop",
-        "star wars unlimited",
-        "magic the gathering",
-        "magic: the gathering",
-        "flesh and blood",
-        "yu-gi-oh",
-        "yugioh",
-        "lorcana",
-        "digimon",
-        "weiss schwarz",
-        "union arena",
-        "cyberpunk edgerunners",
-        "combat zone",
-        "miniatures",
-        "board game",
-        "boardgame",
-    ]
+    "UNKNOWN":
+        "❓ Unknown",
+}
 
-    if game == "One Piece":
-        for term in obvious_other_products:
-            if term in combined:
-                print(
-                    (
-                        "GAME VALIDATION REJECTED | "
-                        "Assigned=One Piece | "
-                        f"Product={event.get('product_name')} | "
-                        f"Conflict={term}"
-                    )
-                )
-                return False
 
-    # =====================================================
-    # POKEMON CONTRADICTIONS
-    # =====================================================
+# =========================================================
+# PRODUCT CATEGORY LABELS
+# =========================================================
 
-    if game == "Pokemon":
-        pokemon_conflicts = [
-            "warhammer",
-            "games workshop",
-            "star wars unlimited",
-            "magic the gathering",
-            "magic: the gathering",
-            "one piece card game",
-            "gundam card game",
-            "dragon ball fusion world",
-        ]
+PRODUCT_CATEGORY_LABELS = {
 
-        for term in pokemon_conflicts:
-            if term in combined:
-                print(
-                    (
-                        "GAME VALIDATION REJECTED | "
-                        "Assigned=Pokemon | "
-                        f"Product={event.get('product_name')} | "
-                        f"Conflict={term}"
-                    )
-                )
-                return False
+    "SEALED":
+        "📦 Sealed",
 
-    return True
+    "SINGLE":
+        "🃏 Single",
+
+    "ACCESSORY":
+        "🎒 Accessory",
+
+    "UNKNOWN":
+        "❓ Unknown",
+}
 
 
 # =========================================================
 # ROUTING
 # =========================================================
 
-def determine_alert_route(event):
+def determine_alert_route(
+    event,
+):
+
     event_type = (
-        event.get("event_type")
+        event.get(
+            "event_type"
+        )
         or ""
     )
 
     source_type = (
-        event.get("source_type")
+        event.get(
+            "source_type"
+        )
         or ""
     ).lower()
 
+
+    # =====================================================
+    # POKEMON CENTER QUEUE
+    # =====================================================
+
     if event_type in {
+
         "QUEUE_DETECTED",
         "QUEUE_ACTIVE",
         "QUEUE_CLEARED",
+
     }:
-        return "pokemon_queue"
+
+        return (
+            "pokemon_queue"
+        )
+
 
     if not source_type:
+
         return None
+
 
     # =====================================================
     # SHOPIFY
     # =====================================================
 
     if source_type == "shopify":
+
+        # -------------------------------------------------
+        # Early discovery/page alerts
+        # -------------------------------------------------
+
         if event_type in {
+
             "DISCOVERED",
             "PAGE_LIVE",
             "COMING_SOON",
-        }:
-            return "page_live"
 
-        if event_type == "PREORDER_LIVE":
-            return "preorder"
+        }:
+
+            return (
+                "page_live"
+            )
+
+
+        # -------------------------------------------------
+        # Preorders
+        # -------------------------------------------------
+
+        if (
+            event_type
+            == "PREORDER_LIVE"
+        ):
+
+            return (
+                "preorder"
+            )
+
+
+        # -------------------------------------------------
+        # Inventory flicker
+        # -------------------------------------------------
+
+        if (
+            event_type
+            == "INVENTORY_FLICKER"
+        ):
+
+            return (
+                "inventory_flicker"
+            )
+
+
+        # -------------------------------------------------
+        # Pricing events
+        # -------------------------------------------------
 
         if event_type in {
+
             "PRICE_DROP",
             "PRICE_INCREASE",
             "PRICE_ERROR",
+
         }:
-            return "deal"
 
-        if event_type == "INVENTORY_FLICKER":
-            return "inventory_flicker"
+            return (
+                "deal"
+            )
 
-        if event_type == "RELEASE_DATE_CHANGED":
-            return "release_radar"
+
+        # -------------------------------------------------
+        # Stock / restock / sold-out
+        # -------------------------------------------------
 
         if event_type in {
+
             "STOCK_AVAILABLE",
             "RESTOCK",
             "SOLD_OUT",
+
         }:
-            return "shopify"
 
-        return None
+            return (
+                "shopify"
+            )
+
+
+        return (
+            "shopify"
+        )
+
 
     # =====================================================
-    # POKEMON CENTER
+    # POKEMON CENTER PRODUCTS
     # =====================================================
 
-    if source_type == "pokemon_center":
-        if event_type == "PREORDER_LIVE":
-            return "preorder"
+    if (
+        source_type
+        == "pokemon_center"
+    ):
+
+        if (
+            event_type
+            == "PREORDER_LIVE"
+        ):
+
+            return (
+                "preorder"
+            )
+
 
         if event_type in {
+
             "DISCOVERED",
             "PAGE_LIVE",
             "COMING_SOON",
+
         }:
-            return "page_live"
+
+            return (
+                "release_radar"
+            )
+
 
         if event_type in {
+
             "PRICE_DROP",
             "PRICE_INCREASE",
             "PRICE_ERROR",
+
         }:
-            return "deal"
 
-        if event_type == "INVENTORY_FLICKER":
-            return "inventory_flicker"
+            return (
+                "deal"
+            )
 
-        return "major_retailer"
+
+        return (
+            "major_retailer"
+        )
+
 
     # =====================================================
-    # MAJOR RETAILER
+    # MAJOR RETAILERS
     # =====================================================
 
-    if source_type == "major_retailer":
-        if event_type == "PREORDER_LIVE":
-            return "preorder"
+    if (
+        source_type
+        == "major_retailer"
+    ):
+
+        if (
+            event_type
+            == "PREORDER_LIVE"
+        ):
+
+            return (
+                "preorder"
+            )
+
 
         if event_type in {
+
+            "PRICE_DROP",
+            "PRICE_INCREASE",
+            "PRICE_ERROR",
+
+        }:
+
+            return (
+                "deal"
+            )
+
+
+        if (
+            event_type
+            == "INVENTORY_FLICKER"
+        ):
+
+            return (
+                "inventory_flicker"
+            )
+
+
+        return (
+            "major_retailer"
+        )
+
+
+    # =====================================================
+    # SIMULATION
+    # =====================================================
+
+    if (
+        source_type
+        == "simulation"
+    ):
+
+        if event_type in {
+
             "DISCOVERED",
             "PAGE_LIVE",
             "COMING_SOON",
+
         }:
-            return "page_live"
+
+            return (
+                "page_live"
+            )
+
+
+        if (
+            event_type
+            == "PREORDER_LIVE"
+        ):
+
+            return (
+                "preorder"
+            )
+
 
         if event_type in {
+
             "PRICE_DROP",
             "PRICE_INCREASE",
             "PRICE_ERROR",
+
         }:
-            return "deal"
 
-        if event_type == "INVENTORY_FLICKER":
-            return "inventory_flicker"
+            return (
+                "deal"
+            )
 
-        return "major_retailer"
 
-    if source_type == "simulation":
-        return "major_retailer"
+        if (
+            event_type
+            == "INVENTORY_FLICKER"
+        ):
+
+            return (
+                "inventory_flicker"
+            )
+
+
+        return (
+            "major_retailer"
+        )
+
 
     return None
 
 
 # =========================================================
 # DEDUPE
-#
-# Realtime events remain unsuppressed because rapid stock
-# movement is useful intelligence for Inventory Flicker.
 # =========================================================
 
 REALTIME_EVENTS = {
+
     "RESTOCK",
     "SOLD_OUT",
     "INVENTORY_FLICKER",
@@ -314,89 +474,133 @@ REALTIME_EVENTS = {
 }
 
 
-async def should_suppress_duplicate(event):
+async def should_suppress_duplicate(
+    event,
+):
+
     if (
-        event.get("event_type")
+        event.get(
+            "event_type"
+        )
         in REALTIME_EVENTS
     ):
+
         return False
 
-    redis_client = get_redis()
+
+    redis_client = (
+        get_redis()
+    )
+
 
     if redis_client is None:
+
         return False
+
 
     identity = "|".join(
         [
             str(
                 event.get(
                     "event_type",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "source_type",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "game",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "store_name",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "product_url",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "price",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "currency",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "product_category",
-                    "",
+                    ""
+                )
+            ),
+
+            str(
+                event.get(
+                    "product_family",
+                    ""
                 )
             ),
         ]
     )
 
-    digest = hashlib.sha256(
-        identity.encode("utf-8")
-    ).hexdigest()
+
+    digest = (
+        hashlib.sha256(
+            identity.encode(
+                "utf-8"
+            )
+        ).hexdigest()
+    )
+
 
     try:
-        result = await redis_client.set(
-            (
-                "lotus:dedupe:"
-                + digest
-            ),
-            "1",
-            nx=True,
-            ex=120,
+
+        result = (
+            await redis_client.set(
+
+                (
+                    "lotus:dedupe:"
+                    + digest
+                ),
+
+                "1",
+
+                nx=True,
+
+                ex=120,
+            )
         )
 
-        return result is None
+
+        return (
+            result is None
+        )
+
 
     except Exception as error:
+
         print(
             (
                 "DEDUPE ERROR | "
@@ -409,110 +613,129 @@ async def should_suppress_duplicate(event):
 
 
 # =========================================================
-# DISPLAY HELPERS
+# SAFE FLOAT
 # =========================================================
 
-def _pretty_text(value):
-    if value is None:
-        return ""
+def safe_float(
+    value,
+):
 
-    return (
-        str(value)
-        .replace("_", " ")
-        .strip()
-        .title()
+    if value is None:
+
+        return None
+
+
+    try:
+
+        return float(
+            value
+        )
+
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+
+# =========================================================
+# PERCENT
+# =========================================================
+
+def format_percent(
+    value,
+):
+
+    parsed = (
+        safe_float(
+            value
+        )
     )
 
 
-def _region_display(region):
-    if not region:
+    if parsed is None:
+
         return None
 
-    region_upper = (
-        str(region)
+
+    sign = (
+
+        "+"
+
+        if parsed > 0
+
+        else ""
+    )
+
+
+    return (
+        f"{sign}{parsed:.1f}%"
+    )
+
+
+# =========================================================
+# PRODUCT FAMILY
+# =========================================================
+
+def get_event_family(
+    event,
+):
+
+    return (
+        normalize_product_family(
+            event.get(
+                "product_family"
+            )
+        )
+        or "UNKNOWN"
+    )
+
+
+# =========================================================
+# PRODUCT CATEGORY
+# =========================================================
+
+def get_event_category(
+    event,
+):
+
+    category = (
+        str(
+            event.get(
+                "product_category"
+            )
+            or "UNKNOWN"
+        )
         .strip()
         .upper()
     )
 
-    region_flags = {
-        "US": "ðºð¸",
-        "USA": "ðºð¸",
-        "CA": "ð¨ð¦",
-        "CAN": "ð¨ð¦",
-        "CANADA": "ð¨ð¦",
-        "UK": "ð¬ð§",
-        "GB": "ð¬ð§",
-        "GBR": "ð¬ð§",
-        "JP": "ð¯ðµ",
-        "JPN": "ð¯ðµ",
-        "JAPAN": "ð¯ðµ",
-        "EU": "ðªðº",
-        "AU": "ð¦ðº",
-        "AUS": "ð¦ðº",
-        "NZ": "ð³ð¿",
-    }
 
-    flag = region_flags.get(
-        region_upper,
-        "ð",
-    )
+    if category not in {
 
-    return (
-        f"{flag} "
-        f"**{region_upper}**"
-    )
+        "SEALED",
+        "SINGLE",
+        "ACCESSORY",
+        "UNKNOWN",
+
+    }:
+
+        return "UNKNOWN"
 
 
-def _game_display(game):
-    if not game:
-        return None
-
-    game_icons = {
-        "One Piece": "ð´ââ ï¸",
-        "Pokemon": "â¡",
-        "PokÃ©mon": "â¡",
-        "Magic: The Gathering": "ð§",
-        "MTG": "ð§",
-        "Riftbound": "âï¸",
-        "Gundam": "ð¤",
-        "Dragon Ball": "ð",
-        "LEGO": "ð§±",
-        "Video Games": "ð®",
-        "Board Games": "ð²",
-    }
-
-    icon = game_icons.get(
-        game,
-        "ð´",
-    )
-
-    return (
-        f"{icon} "
-        f"**{game}**"
-    )
-
-
-def _source_label(source_type):
-    labels = {
-        "shopify": "Shopify â¢ TCG Store",
-        "major_retailer": "Major Retailer",
-        "pokemon_center": "PokÃ©mon Center",
-        "queue": "Queue Intelligence",
-        "simulation": "Simulation",
-    }
-
-    return labels.get(
-        source_type,
-        _pretty_text(source_type)
-        or "Unknown Source",
-    )
+    return category
 
 
 # =========================================================
-# EMBED
+# BUILD EVENT EMBED
 # =========================================================
 
-async def build_event_embed(event):
+async def build_event_embed(
+    event,
+):
+
     event_type = (
         event.get(
             "event_type",
@@ -521,321 +744,474 @@ async def build_event_embed(event):
     )
 
     product_name = (
-        event.get("product_name")
+        event.get(
+            "product_name"
+        )
         or "Unknown Product"
     )
 
     store_name = (
-        event.get("store_name")
+        event.get(
+            "store_name"
+        )
         or "Unknown Store"
     )
 
     product_url = (
-        event.get("product_url")
+        event.get(
+            "product_url"
+        )
         or ""
     )
 
+
     final_url, affiliate_used = (
         build_affiliate_url(
+
             product_url,
+
             store_name,
         )
     )
 
-    game = (
-        event.get("game")
-        or ""
+
+    embed = (
+        discord.Embed(
+
+            title=(
+                EVENT_TITLES.get(
+
+                    event_type,
+
+                    "📡 LOTUS PRODUCT EVENT",
+                )
+            ),
+
+            description=(
+                f"**{product_name}**"
+            ),
+
+            url=(
+                final_url
+                or None
+            ),
+        )
     )
 
-    product_category = (
-        event.get("product_category")
-        or "UNKNOWN"
-    )
-
-    product_type = (
-        event.get("product_type")
-        or ""
-    )
-
-    region = (
-        event.get("region")
-        or ""
-    )
-
-    source_type = (
-        event.get("source_type")
-        or "unknown"
-    ).lower()
-
-    price = event.get("price")
-    old_price = event.get("old_price")
-
-    currency = (
-        event.get("currency")
-        or "USD"
-    ).upper()
-
-    purchase_limit = (
-        event.get("purchase_limit")
-    )
 
     # =====================================================
-    # CREATE EMBED
+    # IMAGE
     # =====================================================
 
-    embed = discord.Embed(
-        title=(
-            EVENT_TITLES.get(
-                event_type,
-                "ð¡ LOTUS PRODUCT EVENT",
-            )
-        ),
-        description=(
-            f"**{product_name}**"
-        ),
-        url=(
-            final_url
-            or None
-        ),
+    image_url = (
+        event.get(
+            "image_url"
+        )
     )
 
-    # =====================================================
-    # PRODUCT IMAGE
-    # =====================================================
-
-    image_url = event.get(
-        "image_url"
-    )
 
     if image_url:
+
         embed.set_thumbnail(
             url=image_url
         )
 
+
     # =====================================================
-    # PRICE
-    #
-    # PRICE CHANGE:
-    #
-    # C$34.99 â C$39.33
-    # ð +C$4.34 â¢ +12.4%
-    # â US$28.37
-    #
-    # NORMAL:
-    #
-    # C$39.33
-    # â US$28.37
+    # STORE
     # =====================================================
+
+    embed.add_field(
+
+        name="Store",
+
+        value=(
+            store_name
+        ),
+
+        inline=True,
+    )
+
+
+    # =====================================================
+    # GAME
+    # =====================================================
+
+    game = (
+        event.get(
+            "game"
+        )
+    )
+
+
+    if game:
+
+        embed.add_field(
+
+            name="Game",
+
+            value=(
+                game
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # PRODUCT TYPE
+    # =====================================================
+
+    product_type = (
+        event.get(
+            "product_type"
+        )
+    )
+
+
+    if product_type:
+
+        embed.add_field(
+
+            name="Type",
+
+            value=(
+                product_type
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # CATEGORY
+    # =====================================================
+
+    category = (
+        get_event_category(
+            event
+        )
+    )
+
+
+    embed.add_field(
+
+        name="Category",
+
+        value=(
+            PRODUCT_CATEGORY_LABELS.get(
+
+                category,
+
+                category,
+            )
+        ),
+
+        inline=True,
+    )
+
+
+    # =====================================================
+    # PRODUCT FAMILY
+    # =====================================================
+
+    family = (
+        get_event_family(
+            event
+        )
+    )
+
+
+    embed.add_field(
+
+        name="Product Family",
+
+        value=(
+            PRODUCT_FAMILY_LABELS.get(
+
+                family,
+
+                family,
+            )
+        ),
+
+        inline=True,
+    )
+
+
+    # =====================================================
+    # CURRENT PRICE
+    # =====================================================
+
+    price = (
+        safe_float(
+            event.get(
+                "price"
+            )
+        )
+    )
+
+    currency = (
+        str(
+            event.get(
+                "currency"
+            )
+            or "USD"
+        )
+        .strip()
+        .upper()
+    )
+
 
     if price is not None:
-        native_text = format_currency(
-            price,
-            currency,
+
+        native_text = (
+            format_currency(
+
+                price,
+
+                currency,
+            )
         )
 
-        price_lines = []
-
-        is_price_change = (
-            event_type
-            in {
-                "PRICE_DROP",
-                "PRICE_INCREASE",
-                "PRICE_ERROR",
-            }
-        )
 
         if (
-            is_price_change
-            and old_price is not None
+            currency
+            == "USD"
         ):
-            try:
-                old_value = float(
-                    old_price
-                )
 
-                new_value = float(
-                    price
-                )
-
-                old_text = (
-                    format_currency(
-                        old_value,
-                        currency,
-                    )
-                )
-
-                difference = (
-                    new_value
-                    - old_value
-                )
-
-                percentage = (
-                    (
-                        difference
-                        / old_value
-                    )
-                    * 100
-                    if old_value != 0
-                    else 0.0
-                )
-
-                difference_text = (
-                    format_currency(
-                        abs(difference),
-                        currency,
-                    )
-                )
-
-                if difference < 0:
-                    price_lines.append(
-                        (
-                            f"**{old_text} â "
-                            f"{native_text}**"
-                        )
-                    )
-
-                    price_lines.append(
-                        (
-                            "ð¥ Save "
-                            f"**{difference_text}** "
-                            "â¢ "
-                            f"**{abs(percentage):.1f}%**"
-                        )
-                    )
-
-                elif difference > 0:
-                    price_lines.append(
-                        (
-                            f"**{old_text} â "
-                            f"{native_text}**"
-                        )
-                    )
-
-                    price_lines.append(
-                        (
-                            "ð +"
-                            f"**{difference_text}** "
-                            "â¢ "
-                            f"**+{percentage:.1f}%**"
-                        )
-                    )
-
-                else:
-                    price_lines.append(
-                        f"**{native_text}**"
-                    )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-                price_lines.append(
-                    f"**{native_text}**"
-                )
-
-        else:
-            price_lines.append(
-                f"**{native_text}**"
+            price_text = (
+                native_text
             )
 
-        # =================================================
-        # USD CONVERSION
-        # =================================================
 
-        if currency != "USD":
+        else:
+
             converted_usd = (
                 await convert_currency(
+
                     price,
+
                     currency,
+
                     "USD",
                 )
             )
 
+
             if converted_usd is not None:
+
                 usd_text = (
                     format_currency(
+
                         converted_usd,
+
                         "USD",
                     )
                 )
 
-                price_lines.append(
-                    f"â **{usd_text}**"
+
+                price_text = (
+                    f"{native_text}\n"
+                    f"≈ {usd_text}"
                 )
 
+
+            else:
+
+                price_text = (
+                    native_text
+                )
+
+
         embed.add_field(
-            name="ð° Price",
-            value="\n".join(
-                price_lines
+
+            name="Price",
+
+            value=(
+                price_text
             ),
-            inline=False,
+
+            inline=True,
         )
+
 
     # =====================================================
-    # PRICE INTELLIGENCE / DEAL SCORE / MSRP
+    # PREVIOUS PRICE
     # =====================================================
 
-    deal_score = (
-        event.get(
-            "deal_score"
+    old_price = (
+        safe_float(
+            event.get(
+                "old_price"
+            )
         )
     )
 
-    deal_label = (
-        event.get(
-            "deal_label"
-        )
-    )
 
-    deal_confidence = (
-        event.get(
-            "deal_confidence"
-        )
-    )
+    if (
+        old_price is not None
 
-    history_samples = (
-        event.get(
-            "price_history_samples"
-        )
-        or 0
-    )
+        and
 
-    history_low = (
-        event.get(
-            "price_30d_low"
-        )
-    )
+        price is not None
 
-    history_average = (
-        event.get(
-            "price_30d_average"
-        )
-    )
+        and
 
-    vs_average_pct = (
-        event.get(
-            "price_vs_average_pct"
-        )
-    )
+        old_price
+        != price
+    ):
 
-    vs_low_pct = (
-        event.get(
-            "price_vs_low_pct"
+        embed.add_field(
+
+            name="Previous Price",
+
+            value=(
+                format_currency(
+
+                    old_price,
+
+                    currency,
+                )
+            ),
+
+            inline=True,
         )
-    )
+
+
+    # =====================================================
+    # MSRP
+    # =====================================================
 
     msrp = (
-        event.get(
-            "msrp"
+        safe_float(
+            event.get(
+                "msrp"
+            )
         )
     )
 
     msrp_currency = (
-        event.get(
-            "msrp_currency"
+        str(
+            event.get(
+                "msrp_currency"
+            )
+            or currency
         )
-        or currency
+        .strip()
+        .upper()
     )
+
+
+    if msrp is not None:
+
+        msrp_text = (
+            format_currency(
+
+                msrp,
+
+                msrp_currency,
+            )
+        )
+
+
+        original_msrp = (
+            safe_float(
+                event.get(
+                    "msrp_original"
+                )
+            )
+        )
+
+        original_currency = (
+            event.get(
+                "msrp_original_currency"
+            )
+        )
+
+
+        if (
+            bool(
+                event.get(
+                    "msrp_conversion_used"
+                )
+            )
+
+            and
+
+            original_msrp is not None
+
+            and
+
+            original_currency
+        ):
+
+            original_currency = (
+                str(
+                    original_currency
+                )
+                .strip()
+                .upper()
+            )
+
+
+            original_text = (
+                format_currency(
+
+                    original_msrp,
+
+                    original_currency,
+                )
+            )
+
+
+            msrp_text += (
+                f"\nReference: {original_text}"
+            )
+
+
+        embed.add_field(
+
+            name="MSRP",
+
+            value=(
+                msrp_text
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # MSRP DIFFERENCE
+    # =====================================================
+
+    price_vs_msrp = (
+        format_percent(
+            event.get(
+                "price_vs_msrp_pct"
+            )
+        )
+    )
+
+
+    if price_vs_msrp:
+
+        embed.add_field(
+
+            name="vs MSRP",
+
+            value=(
+                price_vs_msrp
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # MSRP SOURCE
+    # =====================================================
 
     msrp_source = (
         event.get(
@@ -849,41 +1225,110 @@ async def build_event_embed(event):
         )
     )
 
-    msrp_original = (
-        event.get(
-            "msrp_original"
+
+    if msrp_source:
+
+        source_text = (
+            str(
+                msrp_source
+            )
+        )
+
+
+        if msrp_confidence:
+
+            source_text += (
+                "\n"
+                f"Confidence: {msrp_confidence}"
+            )
+
+
+        embed.add_field(
+
+            name="MSRP Reference",
+
+            value=(
+                source_text[
+                    :1024
+                ]
+            ),
+
+            inline=False,
+        )
+
+
+    # =====================================================
+    # DEAL SCORE
+    # =====================================================
+
+    deal_score = (
+        safe_float(
+            event.get(
+                "deal_score"
+            )
         )
     )
 
-    msrp_original_currency = (
+    deal_label = (
         event.get(
-            "msrp_original_currency"
+            "deal_label"
         )
     )
 
-    msrp_conversion_used = bool(
-        event.get(
-            "msrp_conversion_used"
-        )
-    )
 
-    vs_msrp_pct = (
-        event.get(
-            "price_vs_msrp_pct"
-        )
-    )
+    if (
+        deal_score is not None
 
-    markup_amount = (
-        event.get(
-            "markup_amount"
-        )
-    )
+        or
 
-    msrp_price_state = (
-        event.get(
-            "msrp_price_state"
+        deal_label
+    ):
+
+        if (
+            deal_score is not None
+
+            and
+
+            deal_label
+        ):
+
+            deal_text = (
+                f"{deal_score:.0f}/100\n"
+                f"{deal_label}"
+            )
+
+
+        elif deal_score is not None:
+
+            deal_text = (
+                f"{deal_score:.0f}/100"
+            )
+
+
+        else:
+
+            deal_text = (
+                str(
+                    deal_label
+                )
+            )
+
+
+        embed.add_field(
+
+            name="Deal Score",
+
+            value=(
+                deal_text
+            ),
+
+            inline=True,
         )
-    )
+
+
+    # =====================================================
+    # SCALPER PROTECTION
+    # =====================================================
 
     scalper_risk = (
         event.get(
@@ -891,566 +1336,835 @@ async def build_event_embed(event):
         )
     )
 
-    show_price_intelligence = (
-        deal_score is not None
-        or msrp is not None
-        or history_samples >= 2
-    )
 
-    if show_price_intelligence:
+    if scalper_risk:
 
-        intelligence_lines = []
-
-        # =================================================
-        # HISTORICAL PRICE DATA
-        # =================================================
-
-        if history_low is not None:
-
-            intelligence_lines.append(
-                (
-                    "30-day low: "
-                    f"**{format_currency(history_low, currency)}**"
-                )
+        risk_value = (
+            str(
+                scalper_risk
             )
+            .strip()
+            .upper()
+        )
 
-        if history_average is not None:
 
-            intelligence_lines.append(
-                (
-                    "30-day average: "
-                    f"**{format_currency(history_average, currency)}**"
-                )
-            )
-
-        if vs_average_pct is not None:
-
-            average_sign = (
-                "+"
-                if vs_average_pct > 0
-                else ""
-            )
-
-            intelligence_lines.append(
-                (
-                    "Current vs average: "
-                    f"**{average_sign}{vs_average_pct:.1f}%**"
-                )
-            )
-
-        if (
-            vs_low_pct is not None
-            and abs(
-                float(
-                    vs_low_pct
-                )
-            )
-            <= 0.10
-        ):
-
-            intelligence_lines.append(
-                "ð **At the 30-day low**"
-            )
-
-        # =================================================
-        # MSRP / REFERENCE PRICE
-        # =================================================
-
-        if msrp is not None:
-
-            # If conversion was required, preserve and show
-            # the original verified reference first.
-
-            if (
-                msrp_conversion_used
-                and msrp_original is not None
-                and msrp_original_currency
-            ):
-
-                intelligence_lines.append(
-                    (
-                        "ð·ï¸ MSRP: "
-                        f"**{format_currency(msrp_original, msrp_original_currency)}**"
-                    )
-                )
-
-                intelligence_lines.append(
-                    (
-                        "Converted reference: "
-                        f"â **{format_currency(msrp, msrp_currency)}**"
-                    )
-                )
-
-            else:
-
-                intelligence_lines.append(
-                    (
-                        "ð·ï¸ MSRP: "
-                        f"**{format_currency(msrp, msrp_currency)}**"
-                    )
-                )
-
-            if msrp_source:
-
-                source_text = str(msrp_source).strip()
-
-                if msrp_confidence:
-                    source_text += (
-                        " â¢ "
-                        f"{str(msrp_confidence).upper()} confidence"
-                    )
-
-                intelligence_lines.append(
-                    f"Reference: **{source_text}**"
-                )
-
-            if vs_msrp_pct is not None:
-
-                if msrp_price_state == "BELOW_MSRP":
-
-                    intelligence_lines.append(
-                        (
-                            "ð¥ Current vs MSRP: "
-                            f"**{abs(float(vs_msrp_pct)):.1f}% below**"
-                        )
-                    )
-
-                elif msrp_price_state == "AT_MSRP":
-
-                    intelligence_lines.append(
-                        "â **At MSRP**"
-                    )
-
-                else:
-
-                    intelligence_lines.append(
-                        (
-                            "â ï¸ Current vs MSRP: "
-                            f"**+{float(vs_msrp_pct):.1f}%**"
-                        )
-                    )
-
-            if (
-                markup_amount is not None
-                and float(markup_amount) > 0
-            ):
-
-                intelligence_lines.append(
-                    (
-                        "Markup: "
-                        f"**+{format_currency(markup_amount, msrp_currency)}**"
-                    )
-                )
-
-        # =================================================
-        # SCALPER PROTECTION
-        # =================================================
-
-        risk_icons = {
-            "NONE":
-                "ð¢",
+        risk_labels = {
 
             "LOW":
-                "ð¡",
+                "🟢 Low",
 
-            "MODERATE":
-                "â ï¸",
+            "MEDIUM":
+                "🟡 Medium",
 
             "HIGH":
-                "ð¨",
+                "🟠 High",
 
             "EXTREME":
-                "ð",
+                "🔴 Extreme",
         }
 
-        if scalper_risk:
 
-            risk_upper = (
-                str(
-                    scalper_risk
+        embed.add_field(
+
+            name="Markup Risk",
+
+            value=(
+                risk_labels.get(
+
+                    risk_value,
+
+                    risk_value,
                 )
-                .upper()
-            )
+            ),
 
-            intelligence_lines.append(
-                (
-                    f"{risk_icons.get(risk_upper, 'ð¡ï¸')} "
-                    "**Scalper Risk: "
-                    f"{risk_upper}**"
-                )
-            )
-
-        # =================================================
-        # FINAL DEAL SCORE
-        # =================================================
-
-        label_icons = {
-            "Excellent Deal":
-                "ð¥",
-
-            "Good Deal":
-                "â",
-
-            "Fair Price":
-                "â",
-
-            "Above Average":
-                "â ï¸",
-
-            "Marked Up":
-                "â ï¸",
-
-            "High Markup":
-                "ð¨",
-
-            "Extreme Markup":
-                "ð",
-
-            "Normal Price":
-                "â¹ï¸",
-        }
-
-        label_icon = (
-            label_icons.get(
-                deal_label,
-                "â­",
-            )
+            inline=True,
         )
 
-        score_text = (
-            f"{float(deal_score):.1f}/10"
+
+    # =====================================================
+    # 30-DAY HISTORY
+    # =====================================================
+
+    price_30d_low = (
+        safe_float(
+            event.get(
+                "price_30d_low"
+            )
         )
+    )
 
-        if deal_label:
-
-            intelligence_lines.append(
-                (
-                    f"{label_icon} **Deal Score: "
-                    f"{score_text} â "
-                    f"{deal_label}**"
-                )
+    price_30d_average = (
+        safe_float(
+            event.get(
+                "price_30d_average"
             )
+        )
+    )
 
-        else:
 
-            intelligence_lines.append(
+    if (
+        price_30d_low is not None
+
+        or
+
+        price_30d_average is not None
+    ):
+
+        history_lines = []
+
+
+        if price_30d_low is not None:
+
+            history_lines.append(
+
                 (
-                    "â­ **Deal Score: "
-                    f"{score_text}**"
-                )
-            )
+                    "Low: "
+                    + format_currency(
 
-        # =================================================
-        # CONFIDENCE / SOURCE
-        # =================================================
+                        price_30d_low,
 
-        confidence_parts = []
-
-        if deal_confidence:
-
-            confidence_parts.append(
-                (
-                    "History confidence: "
-                    f"**{str(deal_confidence).upper()}**"
-                )
-            )
-
-        if history_samples:
-
-            confidence_parts.append(
-                (
-                    f"{history_samples} "
-                    + (
-                        "observation"
-                        if history_samples == 1
-                        else "observations"
+                        currency,
                     )
                 )
             )
 
-        if (
-            msrp is not None
-            and msrp_confidence
-        ):
 
-            confidence_parts.append(
+        if price_30d_average is not None:
+
+            history_lines.append(
+
                 (
-                    "MSRP confidence: "
-                    f"**{str(msrp_confidence).upper()}**"
+                    "Average: "
+                    + format_currency(
+
+                        price_30d_average,
+
+                        currency,
+                    )
                 )
             )
 
-        if confidence_parts:
 
-            intelligence_lines.append(
-                " â¢ ".join(
-                    confidence_parts
-                )
+        samples = (
+            event.get(
+                "price_history_samples"
+            )
+        )
+
+
+        if samples:
+
+            history_lines.append(
+                f"Samples: {samples}"
             )
 
-        if (
-            msrp is not None
-            and msrp_source
-        ):
-
-            intelligence_lines.append(
-                (
-                    "Reference: "
-                    f"{msrp_source}"
-                )
-            )
 
         embed.add_field(
-            name="ð Price Intelligence",
-            value="\n".join(
-                intelligence_lines
+
+            name="30-Day Pricing",
+
+            value=(
+                "\n".join(
+                    history_lines
+                )
             ),
-            inline=False,
+
+            inline=True,
         )
+
 
     # =====================================================
-    # STORE + REGION
-    #
-    # ðª Hobbiesville â¢ ð¨ð¦ CA
-    # =====================================================
-
-    store_parts = [
-        f"ðª **{store_name}**"
-    ]
-
-    region_text = (
-        _region_display(
-            region
-        )
-    )
-
-    if region_text:
-        store_parts.append(
-            region_text
-        )
-
-    embed.add_field(
-        name="\u200b",
-        value=" â¢ ".join(
-            store_parts
-        ),
-        inline=False,
-    )
-
-    # =====================================================
-    # GAME + CATEGORY / TYPE
-    #
-    # ð´ââ ï¸ One Piece â¢ ð Single
-    # =====================================================
-
-    product_parts = []
-
-    game_text = (
-        _game_display(
-            game
-        )
-    )
-
-    if game_text:
-        product_parts.append(
-            game_text
-        )
-
-    category_display = None
-
-    if (
-        product_category
-        and str(
-            product_category
-        ).upper() != "UNKNOWN"
-    ):
-        category_display = (
-            _pretty_text(
-                product_category
-            )
-        )
-
-    type_display = (
-        _pretty_text(
-            product_type
-        )
-        if product_type
-        else None
-    )
-
-    if category_display:
-        product_parts.append(
-            f"ð {category_display}"
-        )
-
-    if (
-        type_display
-        and (
-            not category_display
-            or (
-                type_display.lower()
-                != category_display.lower()
-            )
-        )
-    ):
-        product_parts.append(
-            type_display
-        )
-
-    if product_parts:
-        embed.add_field(
-            name="\u200b",
-            value=" â¢ ".join(
-                product_parts
-            ),
-            inline=False,
-        )
-
-    # =====================================================
-    # STOCK / AVAILABILITY
+    # STOCK STATUS
     # =====================================================
 
     if event_type in {
+
         "STOCK_AVAILABLE",
         "RESTOCK",
         "SOLD_OUT",
         "INVENTORY_FLICKER",
+
     }:
-        in_stock = bool(
-            event.get("in_stock")
-        )
-
-        if in_stock:
-            stock_text = (
-                "ð¢ **IN STOCK**"
-            )
-        else:
-            stock_text = (
-                "ð´ **OUT OF STOCK**"
-            )
-
-        if event_type == "INVENTORY_FLICKER":
-            if in_stock:
-                stock_text += (
-                    "\nâ¡ Brief inventory activity "
-                    "detected â¢ checkout quickly"
-                )
-            else:
-                stock_text += (
-                    "\nâ¡ Rapid inventory movement "
-                    "detected"
-                )
 
         embed.add_field(
-            name="ð¦ Status",
-            value=stock_text,
+
+            name="Status",
+
+            value=(
+
+                "🟢 IN STOCK"
+
+                if event.get(
+                    "in_stock"
+                )
+
+                else
+
+                "🔴 OUT OF STOCK"
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # PURCHASE LIMIT
+    # =====================================================
+
+    purchase_limit = (
+        event.get(
+            "purchase_limit"
+        )
+    )
+
+
+    if purchase_limit:
+
+        embed.add_field(
+
+            name="Purchase Limit",
+
+            value=(
+                f"Max {purchase_limit}"
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # REGION
+    # =====================================================
+
+    region = (
+        event.get(
+            "region"
+        )
+    )
+
+
+    if region:
+
+        embed.add_field(
+
+            name="Store Region",
+
+            value=(
+                region
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # SOURCE
+    # =====================================================
+
+    source_type = (
+        event.get(
+            "source_type"
+        )
+        or "unknown"
+    )
+
+
+    source_labels = {
+
+        "shopify":
+            "Shopify / TCG Store",
+
+        "major_retailer":
+            "Major Retailer",
+
+        "pokemon_center":
+            "Pokémon Center",
+
+        "queue":
+            "Queue Intelligence",
+
+        "simulation":
+            "Simulation",
+    }
+
+
+    embed.add_field(
+
+        name="Source",
+
+        value=(
+            source_labels.get(
+
+                source_type,
+
+                source_type,
+            )
+        ),
+
+        inline=True,
+    )
+
+
+    # =====================================================
+    # QUICK PRODUCT LINK
+    # =====================================================
+
+    if final_url:
+
+        embed.add_field(
+
+            name="Quick Link",
+
+            value=(
+                f"[🛒 Open Product]"
+                f"({final_url})"
+            ),
+
             inline=False,
         )
 
+
     # =====================================================
-    # SMART CART
-    #
-    # Actual cart/product actions are rendered as Discord
-    # URL buttons by route_event_to_discord().
+    # SMART QUICK CART
     # =====================================================
 
-    smart_cart = (
-        build_smart_cart(
-            event,
-            product_url=(
-                final_url
-            ),
+    variant_id = (
+        event.get(
+            "variant_id"
         )
     )
 
-    embed.add_field(
-        name="ð Smart Cart",
-        value=(
-            smart_cart.status_text
-        ),
-        inline=False,
+    cart_base_url = (
+        event.get(
+            "cart_base_url"
+        )
     )
+
+
+    if (
+        variant_id
+
+        and
+
+        cart_base_url
+
+        and
+
+        event.get(
+            "in_stock"
+        )
+    ):
+
+        base = (
+            str(
+                cart_base_url
+            ).rstrip(
+                "/"
+            )
+        )
+
+
+        limit = (
+            event.get(
+                "purchase_limit"
+            )
+        )
+
+
+        quantities = [
+            1,
+            2,
+            3,
+            4,
+            5,
+            10,
+        ]
+
+
+        if limit:
+
+            try:
+
+                limit = int(
+                    limit
+                )
+
+
+                quantities = [
+
+                    quantity
+
+                    for quantity
+                    in quantities
+
+                    if quantity <= limit
+                ]
+
+
+                if (
+                    limit > 0
+
+                    and
+
+                    limit not in quantities
+                ):
+
+                    quantities.append(
+                        limit
+                    )
+
+
+                quantities = sorted(
+                    set(
+                        quantities
+                    )
+                )
+
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
+                pass
+
+
+        cart_links = []
+
+
+        for quantity in quantities:
+
+            cart_url = (
+                f"{base}/cart/"
+                f"{variant_id}:{quantity}"
+            )
+
+
+            cart_links.append(
+                f"[x{quantity}]({cart_url})"
+            )
+
+
+        if cart_links:
+
+            embed.add_field(
+
+                name="⚡ Quick Cart",
+
+                value=(
+                    " • ".join(
+                        cart_links
+                    )
+                ),
+
+                inline=False,
+            )
+
 
     # =====================================================
     # AFFILIATE DISCLOSURE
     # =====================================================
 
     if affiliate_used:
+
         embed.add_field(
+
             name="Affiliate Disclosure",
+
             value=(
                 AFFILIATE_DISCLOSURE
             ),
+
             inline=False,
         )
 
+
     # =====================================================
-    # COMPACT FOOTER
+    # FOOTER
     # =====================================================
 
     footer_parts = [
         "Lotus Tracker Bot",
-        _source_label(
-            source_type
-        ),
+        "PonDeX Trackers",
+        "v1.0.2",
     ]
 
+
     if (
-        currency != "USD"
-        and price is not None
+        currency
+        != "USD"
+
+        and
+
+        price is not None
     ):
+
         footer_parts.append(
             "USD conversion approximate"
         )
 
+
     embed.set_footer(
-        text=" â¢ ".join(
-            footer_parts
+
+        text=(
+            " • ".join(
+                footer_parts
+            )
         )
     )
+
 
     return (
         embed,
         affiliate_used,
-        smart_cart,
     )
 
 
 # =========================================================
-# GUILD
+# PRIMARY GUILD
 # =========================================================
 
-def get_primary_guild(bot):
+def get_primary_guild(
+    bot,
+):
+
     if not bot.guilds:
+
         return None
 
-    return bot.guilds[0]
+
+    return (
+        bot.guilds[
+            0
+        ]
+    )
 
 
 # =========================================================
-# ROUTE EVENT
+# BASE GAME MEMBERS
+# =========================================================
+
+def get_game_members(
+    guild,
+    game,
+):
+
+    if not game:
+
+        return []
+
+
+    role_id = (
+        safe_int(
+            GAME_ROLES.get(
+                game
+            )
+        )
+    )
+
+
+    if not role_id:
+
+        return []
+
+
+    role = (
+        guild.get_role(
+            role_id
+        )
+    )
+
+
+    if role is None:
+
+        return []
+
+
+    return [
+
+        member
+
+        for member
+        in role.members
+
+        if (
+            not member.bot
+        )
+    ]
+
+
+# =========================================================
+# CATEGORY ALLOWANCE
+# =========================================================
+
+async def member_allows_category(
+    member,
+    game,
+    category,
+):
+
+    try:
+
+        preferences = (
+            await get_product_preferences(
+
+                member.id,
+
+                game,
+            )
+        )
+
+
+        return bool(
+            preferences.get(
+                category,
+                False,
+            )
+        )
+
+
+    except Exception as error:
+
+        print(
+            (
+                "CATEGORY PREF ERROR | "
+                f"User={member.id} | "
+                f"Game={game} | "
+                f"Category={category} | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
+
+
+        return False
+
+
+# =========================================================
+# ELIGIBLE MEMBERS
+#
+# Requirement:
+#
+# GAME
+#   +
+# PRODUCT CATEGORY
+#   +
+# PRODUCT FAMILY
+#
+# All three must match.
+# =========================================================
+
+async def get_eligible_members(
+    guild,
+    event,
+):
+
+    game = (
+        event.get(
+            "game"
+        )
+    )
+
+
+    if not game:
+
+        return []
+
+
+    category = (
+        get_event_category(
+            event
+        )
+    )
+
+
+    family = (
+        get_event_family(
+            event
+        )
+    )
+
+
+    base_members = (
+        get_game_members(
+
+            guild,
+
+            game,
+        )
+    )
+
+
+    if not base_members:
+
+        return []
+
+
+    # =====================================================
+    # LOAD FAMILY PREFS IN ONE DATABASE QUERY
+    # =====================================================
+
+    family_preferences = (
+        await get_family_preferences_for_users(
+
+            [
+                member.id
+
+                for member
+                in base_members
+            ],
+
+            game,
+        )
+    )
+
+
+    eligible = []
+
+
+    for member in base_members:
+
+        # =================================================
+        # FAMILY CHECK
+        # =================================================
+
+        member_family_preferences = (
+            family_preferences.get(
+                member.id,
+                {}
+            )
+        )
+
+
+        family_allowed = bool(
+            member_family_preferences.get(
+                family,
+                False,
+            )
+        )
+
+
+        if not family_allowed:
+
+            continue
+
+
+        # =================================================
+        # CATEGORY CHECK
+        # =================================================
+
+        category_allowed = (
+            await member_allows_category(
+
+                member,
+
+                game,
+
+                category,
+            )
+        )
+
+
+        if not category_allowed:
+
+            continue
+
+
+        eligible.append(
+            member
+        )
+
+
+    return eligible
+
+
+# =========================================================
+# MENTION CHUNKS
+# =========================================================
+
+def build_mention_chunks(
+    members,
+    *,
+    max_length=1800,
+):
+
+    if not members:
+
+        return []
+
+
+    chunks = []
+
+    current = []
+
+
+    for member in members:
+
+        mention = (
+            member.mention
+        )
+
+
+        candidate = (
+            " ".join(
+                current
+                + [
+                    mention
+                ]
+            )
+        )
+
+
+        if (
+            len(
+                candidate
+            )
+            > max_length
+
+            and
+
+            current
+        ):
+
+            chunks.append(
+                " ".join(
+                    current
+                )
+            )
+
+
+            current = [
+                mention
+            ]
+
+
+        else:
+
+            current.append(
+                mention
+            )
+
+
+    if current:
+
+        chunks.append(
+            " ".join(
+                current
+            )
+        )
+
+
+    return chunks
+
+
+# =========================================================
+# SEND EVENT
 # =========================================================
 
 async def route_event_to_discord(
     bot,
     event,
 ):
-    # =====================================================
-    # GAME SAFETY CHECK BEFORE ROLE PING
-    # =====================================================
-
-    if not validate_event_game(
-        event
-    ):
-        print(
-            (
-                "EVENT BLOCKED BY GAME VALIDATION | "
-                f"Game={event.get('game')} | "
-                f"Product={event.get('product_name')}"
-            )
-        )
-
-        return False
 
     alert_type = (
         determine_alert_route(
@@ -1458,23 +2172,27 @@ async def route_event_to_discord(
         )
     )
 
+
     if not alert_type:
+
         print(
             (
-                "EVENT NOT ROUTED | "
+                "NO SAFE ROUTE FOR EVENT | "
                 f"Event={event.get('event_type')} | "
                 f"Source={event.get('source_type')} | "
-                f"Game={event.get('game')} | "
                 f"Store={event.get('store_name')}"
             )
         )
 
         return False
 
+
     if await should_suppress_duplicate(
         event
     ):
+
         return True
+
 
     access = (
         ALERT_ACCESS.get(
@@ -1482,19 +2200,41 @@ async def route_event_to_discord(
         )
     )
 
+
     if not access:
+
+        print(
+            (
+                "ALERT ACCESS MISSING | "
+                f"Route={alert_type}"
+            )
+        )
+
         return False
 
-    channel_id = safe_int(
-        CHANNEL_MAP.get(
-            access[
-                "channel_variable"
-            ]
+
+    channel_id = (
+        safe_int(
+            CHANNEL_MAP.get(
+                access[
+                    "channel_variable"
+                ]
+            )
         )
     )
 
+
     if not channel_id:
+
+        print(
+            (
+                "ALERT CHANNEL ID MISSING | "
+                f"Route={alert_type}"
+            )
+        )
+
         return False
+
 
     guild = (
         get_primary_guild(
@@ -1502,8 +2242,11 @@ async def route_event_to_discord(
         )
     )
 
+
     if guild is None:
+
         return False
+
 
     channel = (
         guild.get_channel(
@@ -1511,148 +2254,204 @@ async def route_event_to_discord(
         )
     )
 
+
     if channel is None:
+
+        print(
+            (
+                "ALERT CHANNEL NOT FOUND | "
+                f"Route={alert_type} | "
+                f"ChannelID={channel_id}"
+            )
+        )
+
         return False
 
+
     # =====================================================
-    # PREFERENCE-AWARE PRODUCT ALERT ROLE
+    # QUEUE EVENTS
+    #
+    # Queue intelligence is not a normal physical-product
+    # family event, so continue using the Pokemon game role.
     # =====================================================
 
-    game = event.get(
-        "game"
-    )
-
-    product_category = (
+    queue_event = (
         event.get(
-            "product_category"
+            "event_type"
         )
-        or "UNKNOWN"
-    ).upper()
+        in {
 
-    role = (
-        get_event_notification_role(
-            guild,
-            game,
-            product_category,
-        )
+            "QUEUE_DETECTED",
+            "QUEUE_ACTIVE",
+            "QUEUE_CLEARED",
+
+        }
     )
 
-    print(
-        (
-            "ALERT ROLE ROUTING | "
-            f"Game={game} | "
-            f"Category={product_category} | "
-            f"Role={role.name if role else 'NONE'}"
-        )
-    )
 
-    (
-        embed,
-        affiliate_used,
-        smart_cart,
-    ) = (
+    mention_chunks = []
+
+
+    if queue_event:
+
+        game = (
+            event.get(
+                "game"
+            )
+            or "Pokemon"
+        )
+
+
+        role_id = (
+            safe_int(
+                GAME_ROLES.get(
+                    game
+                )
+            )
+        )
+
+
+        role = (
+
+            guild.get_role(
+                role_id
+            )
+
+            if role_id
+
+            else None
+        )
+
+
+        if role:
+
+            mention_chunks = [
+                role.mention
+            ]
+
+
+    else:
+
+        # =================================================
+        # MEMBER-SPECIFIC AUDIENCE
+        # =================================================
+
+        eligible_members = (
+            await get_eligible_members(
+
+                guild,
+
+                event,
+            )
+        )
+
+
+        mention_chunks = (
+            build_mention_chunks(
+                eligible_members
+            )
+        )
+
+
+        print(
+            (
+                "ALERT AUDIENCE | "
+                f"Game={event.get('game')} | "
+                f"Category={get_event_category(event)} | "
+                f"Family={get_event_family(event)} | "
+                f"Eligible={len(eligible_members)}"
+            )
+        )
+
+
+    embed, affiliate_used = (
         await build_event_embed(
             event
         )
     )
 
+
     # =====================================================
-    # SMART CART BUTTONS
+    # FIRST MESSAGE
     #
-    # Discord link buttons do not require an interaction
-    # callback. They simply open the generated retailer URL.
+    # Alert is still posted even when nobody currently
+    # qualifies for a ping.
     # =====================================================
 
-    view = None
+    first_content = (
 
-    if smart_cart.actions:
-        view = discord.ui.View(
-            timeout=None
-        )
+        mention_chunks[
+            0
+        ]
 
-        for action in smart_cart.actions:
-            if action.kind == "cart":
-                button_style = (
-                    discord.ButtonStyle.success
-                )
-                emoji = "ð"
-            else:
-                button_style = (
-                    discord.ButtonStyle.link
-                )
-                emoji = "ð"
+        if mention_chunks
 
-            # URL buttons must use ButtonStyle.link.
-            # Discord does not allow success/primary styles
-            # on buttons that navigate directly to a URL.
-            button_style = (
-                discord.ButtonStyle.link
-            )
+        else None
+    )
 
-            view.add_item(
-                discord.ui.Button(
-                    label=(
-                        action.label
-                    ),
-                    url=(
-                        action.url
-                    ),
-                    style=(
-                        button_style
-                    ),
-                    emoji=(
-                        emoji
-                    ),
-                )
-            )
-
-    # =====================================================
-    # SEND WITH RETRIES
-    # =====================================================
 
     message = None
+
 
     for attempt in range(
         1,
         4,
     ):
+
         try:
+
             message = (
                 await channel.send(
+
                     content=(
-                        role.mention
-                        if role
-                        else None
+                        first_content
                     ),
-                    embed=embed,
-                    view=view,
+
+                    embed=(
+                        embed
+                    ),
+
                     allowed_mentions=(
                         discord.AllowedMentions(
+
                             roles=True,
-                            users=False,
+
+                            users=True,
+
                             everyone=False,
                         )
                     ),
                 )
             )
 
+
             break
 
+
         except discord.DiscordServerError as error:
+
             print(
                 (
-                    "DISCORD TEMPORARY ERROR | "
-                    f"Attempt={attempt}/3 | "
+                    "DISCORD ALERT RETRY | "
+                    f"Attempt={attempt} | "
+                    f"{type(error).__name__}: "
                     f"{error}"
                 )
             )
 
-            if attempt < 3:
+
+            if (
+                attempt
+                < 3
+            ):
+
                 await asyncio.sleep(
                     attempt * 2
                 )
 
+
         except Exception as error:
+
             print(
                 (
                     "DISCORD ALERT ERROR | "
@@ -1661,73 +2460,140 @@ async def route_event_to_discord(
                 )
             )
 
-            return False
+
+            break
+
 
     if message is None:
+
         return False
 
+
+    # =====================================================
+    # EXTRA MEMBER PING CHUNKS
+    #
+    # Only needed for very large eligible audiences.
+    # =====================================================
+
+    if (
+        len(
+            mention_chunks
+        )
+        > 1
+    ):
+
+        for extra_chunk in mention_chunks[
+            1:
+        ]:
+
+            try:
+
+                await channel.send(
+
+                    content=(
+                        extra_chunk
+                    ),
+
+                    allowed_mentions=(
+                        discord.AllowedMentions(
+
+                            roles=False,
+
+                            users=True,
+
+                            everyone=False,
+                        )
+                    ),
+
+                    delete_after=30,
+                )
+
+
+            except Exception as error:
+
+                print(
+                    (
+                        "EXTRA MEMBER PING ERROR | "
+                        f"{type(error).__name__}: "
+                        f"{error}"
+                    )
+                )
+
+
+    # =====================================================
+    # SAVE DELIVERY
+    # =====================================================
+
     await save_alert_delivery(
-        alert_type=alert_type,
+
+        alert_type=(
+            alert_type
+        ),
+
         minimum_tier=(
             access.get(
                 "minimum_tier",
                 "Free",
             )
         ),
+
         discord_channel_id=(
             channel.id
         ),
+
         discord_message_id=(
             message.id
         ),
     )
 
+
     print(
         (
             "ALERT SENT | "
             f"Event={event.get('event_type')} | "
-            f"Game={event.get('game')} | "
             f"Store={event.get('store_name')} | "
-            f"Category={event.get('product_category')} | "
-            f"Route={alert_type} | "
-            f"Channel={channel.name} | "
+            f"Game={event.get('game')} | "
+            f"Category={get_event_category(event)} | "
+            f"Family={get_event_family(event)} | "
             f"Currency={event.get('currency')} | "
-            f"OldPrice={event.get('old_price')} | "
-            f"Price={event.get('price')} | "
+            f"Route={alert_type} | "
             f"Image={bool(event.get('image_url'))} | "
-            f"Affiliate={affiliate_used} | "
-            f"SmartCart={smart_cart.supported} | "
-            f"SmartCartActions={len(smart_cart.actions)} | "
-            f"DealScore={event.get('deal_score')} | "
-            f"DealConfidence={event.get('deal_confidence')} | "
-            f"HistorySamples={event.get('price_history_samples')} | "
-            f"MSRP={event.get('msrp')} | "
-            f"OriginalMSRP={event.get('msrp_original')} | "
-            f"MSRPConverted={event.get('msrp_conversion_used')} | "
-            f"VsMSRP={event.get('price_vs_msrp_pct')} | "
-            f"ScalperRisk={event.get('scalper_risk')}"
+            f"Affiliate={affiliate_used}"
         )
     )
+
 
     return True
 
 
 # =========================================================
-# WORKER
+# EVENT WORKER
 # =========================================================
 
-async def run_event_worker(bot):
+async def run_event_worker(
+    bot,
+):
+
     await bot.wait_until_ready()
 
+
     print(
-        "Lotus Event Worker v1.0.0 started."
+        "Lotus Event Worker v1.0.2 started."
     )
 
+
     while not bot.is_closed():
+
         try:
+
             if not await check_redis():
+
                 await init_redis()
-                bot.redis_ready = True
+
+                bot.redis_ready = (
+                    True
+                )
+
 
             event = (
                 await pop_next_event(
@@ -1735,18 +2601,27 @@ async def run_event_worker(bot):
                 )
             )
 
+
             if event is None:
+
                 continue
 
+
             await route_event_to_discord(
+
                 bot,
+
                 event,
             )
 
+
         except asyncio.CancelledError:
+
             raise
 
+
         except Exception as error:
+
             print(
                 (
                     "EVENT WORKER ERROR | "
@@ -1754,6 +2629,7 @@ async def run_event_worker(bot):
                     f"{error}"
                 )
             )
+
 
             await asyncio.sleep(
                 2
