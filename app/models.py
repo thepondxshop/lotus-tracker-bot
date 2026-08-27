@@ -22,7 +22,7 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 0.7.8
+# Version 1.0.0
 # =========================================================
 
 
@@ -635,6 +635,113 @@ class PriceHistory(Base):
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# PRICING REFERENCES
+#
+# Verified MSRP / reference pricing used by:
+#
+# - MSRP Intelligence
+# - Scalper Protection
+# - Deal Score
+#
+# Lotus stores the reference in its ORIGINAL currency.
+# Currency conversion happens during pricing analysis.
+# =========================================================
+
+class PricingReference(Base):
+
+    __tablename__ = "pricing_references"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "game",
+            "normalized_name",
+            "region",
+            "kind",
+            name="uq_pricing_reference_product_region_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    game: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        index=True,
+    )
+
+    product_name: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+    )
+
+    normalized_name: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+        index=True,
+    )
+
+    amount: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+    )
+
+    currency: Mapped[str] = mapped_column(
+        String(10),
+        default="USD",
+        nullable=False,
+    )
+
+    source: Mapped[str] = mapped_column(
+        String(500),
+        default="Verified MSRP",
+        nullable=False,
+    )
+
+    confidence: Mapped[str] = mapped_column(
+        String(20),
+        default="HIGH",
+        nullable=False,
+    )
+
+    kind: Mapped[str] = mapped_column(
+        String(50),
+        default="MSRP",
+        nullable=False,
+    )
+
+    region: Mapped[str] = mapped_column(
+        String(50),
+        default="GLOBAL",
+        nullable=False,
+        index=True,
+    )
+
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+        index=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
         nullable=False,
     )
 
