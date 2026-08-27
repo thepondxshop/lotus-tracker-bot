@@ -67,7 +67,7 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Version 1.0.2
+# Version 1.0.3
 #
 # Strict TCG Classification
 # Historical Pricing
@@ -76,7 +76,9 @@ from app.store_health import (
 # Product Family MSRP Isolation
 # Scalper Protection
 # Native Currency
-# Smart Quick Cart
+# Smart Cart v1
+# Dynamic Variant Switching
+# Variant-Switch Price Protection
 # =========================================================
 
 
@@ -114,6 +116,9 @@ MONITOR_STATUS = {
     "duplicate_rows_detected":
         0,
 
+    "variant_switches":
+        0,
+
     "global_family_products":
         0,
 
@@ -132,6 +137,72 @@ MONITOR_STATUS = {
     "last_error":
         None,
 }
+
+
+# =========================================================
+# PRODUCT FAMILY -> LANGUAGE
+# =========================================================
+
+def family_language(
+    product_family,
+):
+
+    product_family = (
+        normalize_product_family(
+            product_family
+        )
+        or "UNKNOWN"
+    )
+
+    mapping = {
+
+        "GLOBAL_STANDARD":
+            "English",
+
+        "JP":
+            "Japanese",
+
+        "KR":
+            "Korean",
+
+        "CN":
+            "Simplified Chinese",
+
+        "UNKNOWN":
+            "Unknown",
+    }
+
+    return (
+        mapping.get(
+            product_family,
+            "Unknown",
+        )
+    )
+
+
+# =========================================================
+# NORMALIZE VARIANT ID
+# =========================================================
+
+def normalize_variant_id(
+    value,
+):
+
+    if value is None:
+
+        return None
+
+    value = (
+        str(
+            value
+        ).strip()
+    )
+
+    if not value:
+
+        return None
+
+    return value
 
 
 # =========================================================
@@ -170,14 +241,37 @@ async def add_shopify_store(
 
         if existing:
 
-            existing.name = name
-            existing.platform = "shopify"
-            existing.region = region.upper()
-            existing.active = True
-            existing.health_status = "HEALTHY"
-            existing.disabled_reason = None
-            existing.consecutive_failures = 0
-            existing.last_error = None
+            existing.name = (
+                name
+            )
+
+            existing.platform = (
+                "shopify"
+            )
+
+            existing.region = (
+                region.upper()
+            )
+
+            existing.active = (
+                True
+            )
+
+            existing.health_status = (
+                "HEALTHY"
+            )
+
+            existing.disabled_reason = (
+                None
+            )
+
+            existing.consecutive_failures = (
+                0
+            )
+
+            existing.last_error = (
+                None
+            )
 
             await session.commit()
 
@@ -192,21 +286,33 @@ async def add_shopify_store(
 
         store = Store(
 
-            name=name,
+            name=(
+                name
+            ),
 
-            domain=domain,
+            domain=(
+                domain
+            ),
 
-            platform="shopify",
+            platform=(
+                "shopify"
+            ),
 
             region=(
                 region.upper()
             ),
 
-            active=True,
+            active=(
+                True
+            ),
 
-            health_status="HEALTHY",
+            health_status=(
+                "HEALTHY"
+            ),
 
-            consecutive_failures=0,
+            consecutive_failures=(
+                0
+            ),
         )
 
         session.add(
@@ -433,6 +539,12 @@ def make_product_event(
 
             deal_fields = {}
 
+    product_family = (
+        get_item_family(
+            item
+        )
+    )
+
     return ProductEvent(
 
         event_type=(
@@ -646,7 +758,11 @@ def make_product_event(
             or "US"
         ),
 
-        language="English",
+        language=(
+            family_language(
+                product_family
+            )
+        ),
 
         product_type=(
             item.get(
@@ -662,11 +778,24 @@ def make_product_event(
             )
         ),
 
+        # IMPORTANT:
+        #
+        # This was missing from the current monitor.
+        #
+        # It must travel into Redis so member JP/KR/CN
+        # preferences work for real Shopify alerts.
+
+        product_family=(
+            product_family
+        ),
+
         # =================================================
         # SOURCE
         # =================================================
 
-        source_type="shopify",
+        source_type=(
+            "shopify"
+        ),
 
         retailer_key=(
             store.domain
@@ -721,9 +850,13 @@ def add_new_product_events(
                 ProductEventType.DISCOVERED
             ),
 
-            item=item,
+            item=(
+                item
+            ),
 
-            store=store,
+            store=(
+                store
+            ),
 
             in_stock=(
                 item[
@@ -792,9 +925,13 @@ def add_new_product_events(
                     event_type
                 ),
 
-                item=item,
+                item=(
+                    item
+                ),
 
-                store=store,
+                store=(
+                    store
+                ),
 
                 in_stock=(
                     in_stock
@@ -909,14 +1046,6 @@ async def get_deal_data(
         # MSRP RESOLUTION
         #
         # Currency does NOT determine product family.
-        #
-        # Example:
-        #
-        # JP booster box sold for USD
-        #
-        # family = JP
-        #
-        # Therefore only a JP MSRP rule may match.
         # =================================================
 
         reference_price = (
@@ -966,7 +1095,9 @@ async def get_deal_data(
                     currency
                 ),
 
-                window_days=30,
+                window_days=(
+                    30
+                ),
 
                 reference_price=(
                     reference_price
@@ -1073,10 +1204,6 @@ async def scan_shopify_store(
             store.region
             or "US"
         )
-
-        # -------------------------------------------------
-        # STRICT TCG FILTER
-        # -------------------------------------------------
 
         if not item.get(
             "game"
@@ -1218,6 +1345,9 @@ async def scan_shopify_store(
         "flickers":
             0,
 
+        "variant_switches":
+            0,
+
         "initial_seed":
             False,
 
@@ -1335,32 +1465,8 @@ async def scan_shopify_store(
                     ),
 
                     language=(
-                        "Japanese"
-
-                        if product_family
-                        == "JP"
-
-                        else (
-                            "Korean"
-
-                            if product_family
-                            == "KR"
-
-                            else (
-                                "Simplified Chinese"
-
-                                if product_family
-                                == "CN"
-
-                                else (
-                                    "English"
-
-                                    if product_family
-                                    == "GLOBAL_STANDARD"
-
-                                    else "Unknown"
-                                )
-                            )
+                        family_language(
+                            product_family
                         )
                     ),
                 )
@@ -1490,11 +1596,6 @@ async def scan_shopify_store(
                     "new"
                 ] += 1
 
-                # -------------------------------------------------
-                # New products can immediately receive MSRP
-                # intelligence if a SAFE family rule exists.
-                # -------------------------------------------------
-
                 new_deal_data = None
 
                 if (
@@ -1509,7 +1610,9 @@ async def scan_shopify_store(
 
                             session,
 
-                            item=item,
+                            item=(
+                                item
+                            ),
 
                             store_product=(
                                 store_product
@@ -1521,7 +1624,9 @@ async def scan_shopify_store(
                                 )
                             ),
 
-                            old_price=None,
+                            old_price=(
+                                None
+                            ),
 
                             currency=(
                                 item.get(
@@ -1553,14 +1658,18 @@ async def scan_shopify_store(
             # EXISTING PRODUCT
             # =================================================
 
-            old_stock = bool(
-                store_product.in_stock
+            old_stock = (
+                bool(
+                    store_product.in_stock
+                )
             )
 
-            new_stock = bool(
-                item[
-                    "available"
-                ]
+            new_stock = (
+                bool(
+                    item[
+                        "available"
+                    ]
+                )
             )
 
             old_price = (
@@ -1584,7 +1693,72 @@ async def scan_shopify_store(
                 ]
             )
 
+            old_variant_id = (
+                normalize_variant_id(
+                    store_product.variant_id
+                )
+            )
+
+            new_variant_id = (
+                normalize_variant_id(
+                    item.get(
+                        "variant_id"
+                    )
+                )
+            )
+
+            variant_changed = (
+                old_variant_id
+                != new_variant_id
+            )
+
             changed = False
+
+            # =================================================
+            # DYNAMIC SMART CART VARIANT SWITCH
+            #
+            # Example:
+            #
+            # A sold out
+            # B available -> selected
+            #
+            # later:
+            #
+            # B sold out
+            # C available -> selected
+            #
+            # Product remains IN STOCK, therefore:
+            #
+            # - update variant silently
+            # - do not create fake RESTOCK
+            # - do not create fake SOLD OUT
+            # =================================================
+
+            if variant_changed:
+
+                stats[
+                    "variant_switches"
+                ] += 1
+
+                MONITOR_STATUS[
+                    "variant_switches"
+                ] += 1
+
+                print(
+                    (
+                        "SHOPIFY VARIANT SWITCH | "
+                        f"Store={store.name} | "
+                        f"Product={item['title']} | "
+                        f"OldVariant={old_variant_id} | "
+                        f"NewVariant={new_variant_id} | "
+                        f"VariantTitle="
+                        f"{item.get('variant_title')} | "
+                        f"VariantAvailable="
+                        f"{item.get('variant_available')} | "
+                        f"OldStock={old_stock} | "
+                        f"NewStock={new_stock}"
+                    )
+                )
 
             # =================================================
             # KEEP SMART CART CURRENT
@@ -1597,9 +1771,7 @@ async def scan_shopify_store(
             )
 
             store_product.variant_id = (
-                item.get(
-                    "variant_id"
-                )
+                new_variant_id
             )
 
             store_product.purchase_limit = (
@@ -1666,41 +1838,19 @@ async def scan_shopify_store(
                     product_family
                 )
 
+                product_row.region = (
+                    store.region
+                    or product_row.region
+                )
+
                 product_row.language = (
-
-                    "Japanese"
-
-                    if product_family
-                    == "JP"
-
-                    else (
-                        "Korean"
-
-                        if product_family
-                        == "KR"
-
-                        else (
-                            "Simplified Chinese"
-
-                            if product_family
-                            == "CN"
-
-                            else (
-                                "English"
-
-                                if product_family
-                                == "GLOBAL_STANDARD"
-
-                                else "Unknown"
-                            )
-                        )
+                    family_language(
+                        product_family
                     )
                 )
 
             # =================================================
             # CURRENCY CORRECTION
-            #
-            # Currency changing does not alter product family.
             # =================================================
 
             currency_changed = (
@@ -1749,6 +1899,13 @@ async def scan_shopify_store(
 
             # =================================================
             # STOCK CHANGE
+            #
+            # Variant changes do not matter here.
+            #
+            # We only care whether ANY valid variant changed:
+            #
+            # False -> True = RESTOCK
+            # True -> False = SOLD OUT
             # =================================================
 
             if (
@@ -1756,7 +1913,9 @@ async def scan_shopify_store(
                 != new_stock
             ):
 
-                changed = True
+                changed = (
+                    True
+                )
 
                 flicker_result = (
                     await record_stock_transition(
@@ -1777,7 +1936,10 @@ async def scan_shopify_store(
 
                     if (
                         not old_stock
-                        and new_stock
+
+                        and
+
+                        new_stock
                     )
 
                     else
@@ -1802,7 +1964,9 @@ async def scan_shopify_store(
 
                             session,
 
-                            item=item,
+                            item=(
+                                item
+                            ),
 
                             store_product=(
                                 store_product
@@ -1830,9 +1994,13 @@ async def scan_shopify_store(
                             stock_event
                         ),
 
-                        item=item,
+                        item=(
+                            item
+                        ),
 
-                        store=store,
+                        store=(
+                            store
+                        ),
 
                         in_stock=(
                             new_stock
@@ -1878,9 +2046,13 @@ async def scan_shopify_store(
                                 ProductEventType.INVENTORY_FLICKER
                             ),
 
-                            item=item,
+                            item=(
+                                item
+                            ),
 
-                            store=store,
+                            store=(
+                                store
+                            ),
 
                             in_stock=(
                                 new_stock
@@ -1903,10 +2075,44 @@ async def scan_shopify_store(
 
             # =================================================
             # PRICE CHANGE
+            #
+            # IMPORTANT:
+            #
+            # If B -> C switched while the product stayed
+            # available, the selected purchasable price can
+            # also change.
+            #
+            # Example:
+            #
+            # B $119.99 sells out
+            # C $129.99 remains available
+            #
+            # We update the stored current price to $129.99,
+            # but DO NOT emit a PRICE_INCREASE simply because
+            # Lotus moved to another variant.
+            #
+            # This prevents variant switching from generating
+            # misleading price alerts.
             # =================================================
+
+            suppress_variant_switch_price_event = (
+                variant_changed
+
+                and
+
+                old_stock
+
+                and
+
+                new_stock
+            )
 
             if (
                 not currency_changed
+
+                and
+
+                not suppress_variant_switch_price_event
 
                 and
 
@@ -1922,14 +2128,18 @@ async def scan_shopify_store(
                 != new_price
             ):
 
-                changed = True
+                changed = (
+                    True
+                )
 
                 price_deal_data = (
                     await get_deal_data(
 
                         session,
 
-                        item=item,
+                        item=(
+                            item
+                        ),
 
                         store_product=(
                             store_product
@@ -1989,9 +2199,13 @@ async def scan_shopify_store(
                             price_event
                         ),
 
-                        item=item,
+                        item=(
+                            item
+                        ),
 
-                        store=store,
+                        store=(
+                            store
+                        ),
 
                         in_stock=(
                             new_stock
@@ -2004,6 +2218,59 @@ async def scan_shopify_store(
                         deal_data=(
                             price_deal_data
                         ),
+                    )
+                )
+
+            # =================================================
+            # VARIANT-SWITCH PRICE HISTORY
+            #
+            # We still preserve the new observed purchasable
+            # price in history even though we do not alert.
+            # =================================================
+
+            elif (
+                suppress_variant_switch_price_event
+
+                and
+
+                old_price is not None
+
+                and
+
+                new_price is not None
+
+                and
+
+                old_price
+                != new_price
+            ):
+
+                session.add(
+
+                    PriceHistory(
+
+                        store_product_id=(
+                            store_product.id
+                        ),
+
+                        price=(
+                            new_price
+                        ),
+
+                        currency=(
+                            new_currency
+                        ),
+                    )
+                )
+
+                print(
+                    (
+                        "SHOPIFY VARIANT PRICE SWITCH | "
+                        f"Store={store.name} | "
+                        f"Product={item['title']} | "
+                        f"{old_price}->{new_price} "
+                        f"{new_currency} | "
+                        "AlertSuppressed=True"
                     )
                 )
 
@@ -2064,7 +2331,9 @@ async def scan_shopify_store(
                 "events"
             ] += 1
 
-    return stats
+    return (
+        stats
+    )
 
 
 # =========================================================
@@ -2079,10 +2348,25 @@ async def scan_all_shopify_stores():
 
     results = []
 
-    total_products = 0
-    total_events = 0
-    total_flickers = 0
-    stores_scanned = 0
+    total_products = (
+        0
+    )
+
+    total_events = (
+        0
+    )
+
+    total_flickers = (
+        0
+    )
+
+    total_variant_switches = (
+        0
+    )
+
+    stores_scanned = (
+        0
+    )
 
     total_families = {
 
@@ -2104,7 +2388,9 @@ async def scan_all_shopify_stores():
 
     MONITOR_STATUS[
         "last_error"
-    ] = None
+    ] = (
+        None
+    )
 
     for store in stores:
 
@@ -2124,7 +2410,9 @@ async def scan_all_shopify_stores():
                 result
             )
 
-            stores_scanned += 1
+            stores_scanned += (
+                1
+            )
 
             total_products += (
                 result[
@@ -2142,6 +2430,13 @@ async def scan_all_shopify_stores():
                 result[
                     "flickers"
                 ]
+            )
+
+            total_variant_switches += (
+                result.get(
+                    "variant_switches",
+                    0,
+                )
             )
 
             for (
@@ -2220,6 +2515,15 @@ async def scan_all_shopify_stores():
         total_flickers
     )
 
+    # This represents switches seen during the latest
+    # complete scan cycle.
+
+    MONITOR_STATUS[
+        "variant_switches"
+    ] = (
+        total_variant_switches
+    )
+
     MONITOR_STATUS[
         "global_family_products"
     ] = (
@@ -2260,7 +2564,9 @@ async def scan_all_shopify_stores():
         ]
     )
 
-    return results
+    return (
+        results
+    )
 
 
 # =========================================================
@@ -2290,7 +2596,9 @@ async def probe_shopify_store(
 
             store.id,
 
-            allow_health_reenable=True,
+            allow_health_reenable=(
+                True
+            ),
         )
     )
 
@@ -2305,7 +2613,9 @@ async def run_health_recovery_probes():
         await get_health_recovery_candidates()
     )
 
-    recovered_count = 0
+    recovered_count = (
+        0
+    )
 
     for store in stores:
 
@@ -2319,10 +2629,15 @@ async def run_health_recovery_probes():
 
             if (
                 recovered
-                and recovered.active
+
+                and
+
+                recovered.active
             ):
 
-                recovered_count += 1
+                recovered_count += (
+                    1
+                )
 
         except Exception as error:
 
@@ -2348,7 +2663,9 @@ async def run_health_recovery_probes():
         recovered_count
     )
 
-    return recovered_count
+    return (
+        recovered_count
+    )
 
 
 # =========================================================
@@ -2470,10 +2787,12 @@ async def run_shopify_monitor():
 
     MONITOR_STATUS[
         "running"
-    ] = True
+    ] = (
+        True
+    )
 
     print(
-        "Lotus Shopify Monitor v1.0.2 started."
+        "Lotus Shopify Monitor v1.0.3 started."
     )
 
     await asyncio.sleep(
@@ -2510,7 +2829,9 @@ async def run_shopify_monitor():
 
             MONITOR_STATUS[
                 "running"
-            ] = False
+            ] = (
+                False
+            )
 
             raise
 
