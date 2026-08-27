@@ -11,7 +11,6 @@ from app.affiliate import (
 from app.config import (
     ALERT_ACCESS,
     CHANNEL_MAP,
-    GAME_ROLES,
 )
 
 from app.currency_service import (
@@ -28,20 +27,31 @@ from app.helpers import (
     safe_int,
 )
 
+from app.preference_service import (
+    get_event_notification_role,
+)
+
 from app.redis_client import (
     check_redis,
     get_redis,
     init_redis,
 )
 
+from app.smart_cart import (
+    build_smart_cart,
+)
+
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 0.7.9
+# Version 1.0.0
 #
 # Compact alert layout
 # Previous -> current price display
-# Smart Cart presentation
+# Smart Cart v1 URL buttons
+# Historical Pricing + Deal Score v2
+# Persistent MSRP + Scalper Protection
+# Preference-aware category pings
 # Native currency + USD conversion
 # Product images
 # Affiliate links
@@ -52,21 +62,21 @@ from app.redis_client import (
 
 
 EVENT_TITLES = {
-    "DISCOVERED": "📡 PRODUCT DISCOVERED",
-    "PAGE_LIVE": "🔵 PRODUCT PAGE LIVE",
-    "COMING_SOON": "🟡 COMING SOON",
-    "PREORDER_LIVE": "🟣 PREORDER LIVE",
-    "STOCK_AVAILABLE": "🟢 IN STOCK",
-    "RESTOCK": "🚨 RESTOCK",
-    "SOLD_OUT": "🔴 SOLD OUT",
-    "PRICE_DROP": "🔥 PRICE DROP",
-    "PRICE_INCREASE": "📈 PRICE INCREASE",
-    "PRICE_ERROR": "⚠️ POSSIBLE PRICE ERROR",
-    "INVENTORY_FLICKER": "⚡ INVENTORY FLICKER",
-    "RELEASE_DATE_CHANGED": "📅 RELEASE DATE CHANGED",
-    "QUEUE_DETECTED": "🚨 POKÉMON CENTER QUEUE DETECTED",
-    "QUEUE_ACTIVE": "🚨 POKÉMON CENTER QUEUE LIVE",
-    "QUEUE_CLEARED": "✅ POKÉMON CENTER QUEUE CLEARED",
+    "DISCOVERED": "ð¡ PRODUCT DISCOVERED",
+    "PAGE_LIVE": "ðµ PRODUCT PAGE LIVE",
+    "COMING_SOON": "ð¡ COMING SOON",
+    "PREORDER_LIVE": "ð£ PREORDER LIVE",
+    "STOCK_AVAILABLE": "ð¢ IN STOCK",
+    "RESTOCK": "ð¨ RESTOCK",
+    "SOLD_OUT": "ð´ SOLD OUT",
+    "PRICE_DROP": "ð¥ PRICE DROP",
+    "PRICE_INCREASE": "ð PRICE INCREASE",
+    "PRICE_ERROR": "â ï¸ POSSIBLE PRICE ERROR",
+    "INVENTORY_FLICKER": "â¡ INVENTORY FLICKER",
+    "RELEASE_DATE_CHANGED": "ð RELEASE DATE CHANGED",
+    "QUEUE_DETECTED": "ð¨ POKÃMON CENTER QUEUE DETECTED",
+    "QUEUE_ACTIVE": "ð¨ POKÃMON CENTER QUEUE LIVE",
+    "QUEUE_CLEARED": "â POKÃMON CENTER QUEUE CLEARED",
 }
 
 
@@ -360,6 +370,12 @@ async def should_suppress_duplicate(event):
                     "",
                 )
             ),
+            str(
+                event.get(
+                    "product_category",
+                    "",
+                )
+            ),
         ]
     )
 
@@ -419,26 +435,26 @@ def _region_display(region):
     )
 
     region_flags = {
-        "US": "🇺🇸",
-        "USA": "🇺🇸",
-        "CA": "🇨🇦",
-        "CAN": "🇨🇦",
-        "CANADA": "🇨🇦",
-        "UK": "🇬🇧",
-        "GB": "🇬🇧",
-        "GBR": "🇬🇧",
-        "JP": "🇯🇵",
-        "JPN": "🇯🇵",
-        "JAPAN": "🇯🇵",
-        "EU": "🇪🇺",
-        "AU": "🇦🇺",
-        "AUS": "🇦🇺",
-        "NZ": "🇳🇿",
+        "US": "ðºð¸",
+        "USA": "ðºð¸",
+        "CA": "ð¨ð¦",
+        "CAN": "ð¨ð¦",
+        "CANADA": "ð¨ð¦",
+        "UK": "ð¬ð§",
+        "GB": "ð¬ð§",
+        "GBR": "ð¬ð§",
+        "JP": "ð¯ðµ",
+        "JPN": "ð¯ðµ",
+        "JAPAN": "ð¯ðµ",
+        "EU": "ðªðº",
+        "AU": "ð¦ðº",
+        "AUS": "ð¦ðº",
+        "NZ": "ð³ð¿",
     }
 
     flag = region_flags.get(
         region_upper,
-        "🌎",
+        "ð",
     )
 
     return (
@@ -452,22 +468,22 @@ def _game_display(game):
         return None
 
     game_icons = {
-        "One Piece": "🏴‍☠️",
-        "Pokemon": "⚡",
-        "Pokémon": "⚡",
-        "Magic: The Gathering": "🧙",
-        "MTG": "🧙",
-        "Riftbound": "⚔️",
-        "Gundam": "🤖",
-        "Dragon Ball": "🐉",
-        "LEGO": "🧱",
-        "Video Games": "🎮",
-        "Board Games": "🎲",
+        "One Piece": "ð´ââ ï¸",
+        "Pokemon": "â¡",
+        "PokÃ©mon": "â¡",
+        "Magic: The Gathering": "ð§",
+        "MTG": "ð§",
+        "Riftbound": "âï¸",
+        "Gundam": "ð¤",
+        "Dragon Ball": "ð",
+        "LEGO": "ð§±",
+        "Video Games": "ð®",
+        "Board Games": "ð²",
     }
 
     icon = game_icons.get(
         game,
-        "🎴",
+        "ð´",
     )
 
     return (
@@ -478,9 +494,9 @@ def _game_display(game):
 
 def _source_label(source_type):
     labels = {
-        "shopify": "Shopify • TCG Store",
+        "shopify": "Shopify â¢ TCG Store",
         "major_retailer": "Major Retailer",
-        "pokemon_center": "Pokémon Center",
+        "pokemon_center": "PokÃ©mon Center",
         "queue": "Queue Intelligence",
         "simulation": "Simulation",
     }
@@ -571,7 +587,7 @@ async def build_event_embed(event):
         title=(
             EVENT_TITLES.get(
                 event_type,
-                "📡 LOTUS PRODUCT EVENT",
+                "ð¡ LOTUS PRODUCT EVENT",
             )
         ),
         description=(
@@ -601,14 +617,14 @@ async def build_event_embed(event):
     #
     # PRICE CHANGE:
     #
-    # C$34.99 → C$39.33
-    # 📈 +C$4.34 • +12.4%
-    # ≈ US$28.37
+    # C$34.99 â C$39.33
+    # ð +C$4.34 â¢ +12.4%
+    # â US$28.37
     #
     # NORMAL:
     #
     # C$39.33
-    # ≈ US$28.37
+    # â US$28.37
     # =====================================================
 
     if price is not None:
@@ -673,16 +689,16 @@ async def build_event_embed(event):
                 if difference < 0:
                     price_lines.append(
                         (
-                            f"**{old_text} → "
+                            f"**{old_text} â "
                             f"{native_text}**"
                         )
                     )
 
                     price_lines.append(
                         (
-                            "🔥 Save "
+                            "ð¥ Save "
                             f"**{difference_text}** "
-                            "• "
+                            "â¢ "
                             f"**{abs(percentage):.1f}%**"
                         )
                     )
@@ -690,16 +706,16 @@ async def build_event_embed(event):
                 elif difference > 0:
                     price_lines.append(
                         (
-                            f"**{old_text} → "
+                            f"**{old_text} â "
                             f"{native_text}**"
                         )
                     )
 
                     price_lines.append(
                         (
-                            "📈 +"
+                            "ð +"
                             f"**{difference_text}** "
-                            "• "
+                            "â¢ "
                             f"**+{percentage:.1f}%**"
                         )
                     )
@@ -744,11 +760,11 @@ async def build_event_embed(event):
                 )
 
                 price_lines.append(
-                    f"≈ **{usd_text}**"
+                    f"â **{usd_text}**"
                 )
 
         embed.add_field(
-            name="💰 Price",
+            name="ð° Price",
             value="\n".join(
                 price_lines
             ),
@@ -756,13 +772,450 @@ async def build_event_embed(event):
         )
 
     # =====================================================
+    # PRICE INTELLIGENCE / DEAL SCORE / MSRP
+    # =====================================================
+
+    deal_score = (
+        event.get(
+            "deal_score"
+        )
+    )
+
+    deal_label = (
+        event.get(
+            "deal_label"
+        )
+    )
+
+    deal_confidence = (
+        event.get(
+            "deal_confidence"
+        )
+    )
+
+    history_samples = (
+        event.get(
+            "price_history_samples"
+        )
+        or 0
+    )
+
+    history_low = (
+        event.get(
+            "price_30d_low"
+        )
+    )
+
+    history_average = (
+        event.get(
+            "price_30d_average"
+        )
+    )
+
+    vs_average_pct = (
+        event.get(
+            "price_vs_average_pct"
+        )
+    )
+
+    vs_low_pct = (
+        event.get(
+            "price_vs_low_pct"
+        )
+    )
+
+    msrp = (
+        event.get(
+            "msrp"
+        )
+    )
+
+    msrp_currency = (
+        event.get(
+            "msrp_currency"
+        )
+        or currency
+    )
+
+    msrp_source = (
+        event.get(
+            "msrp_source"
+        )
+    )
+
+    msrp_confidence = (
+        event.get(
+            "msrp_confidence"
+        )
+    )
+
+    msrp_original = (
+        event.get(
+            "msrp_original"
+        )
+    )
+
+    msrp_original_currency = (
+        event.get(
+            "msrp_original_currency"
+        )
+    )
+
+    msrp_conversion_used = bool(
+        event.get(
+            "msrp_conversion_used"
+        )
+    )
+
+    vs_msrp_pct = (
+        event.get(
+            "price_vs_msrp_pct"
+        )
+    )
+
+    markup_amount = (
+        event.get(
+            "markup_amount"
+        )
+    )
+
+    msrp_price_state = (
+        event.get(
+            "msrp_price_state"
+        )
+    )
+
+    scalper_risk = (
+        event.get(
+            "scalper_risk"
+        )
+    )
+
+    show_price_intelligence = (
+        deal_score is not None
+        or msrp is not None
+        or history_samples >= 2
+    )
+
+    if show_price_intelligence:
+
+        intelligence_lines = []
+
+        # =================================================
+        # HISTORICAL PRICE DATA
+        # =================================================
+
+        if history_low is not None:
+
+            intelligence_lines.append(
+                (
+                    "30-day low: "
+                    f"**{format_currency(history_low, currency)}**"
+                )
+            )
+
+        if history_average is not None:
+
+            intelligence_lines.append(
+                (
+                    "30-day average: "
+                    f"**{format_currency(history_average, currency)}**"
+                )
+            )
+
+        if vs_average_pct is not None:
+
+            average_sign = (
+                "+"
+                if vs_average_pct > 0
+                else ""
+            )
+
+            intelligence_lines.append(
+                (
+                    "Current vs average: "
+                    f"**{average_sign}{vs_average_pct:.1f}%**"
+                )
+            )
+
+        if (
+            vs_low_pct is not None
+            and abs(
+                float(
+                    vs_low_pct
+                )
+            )
+            <= 0.10
+        ):
+
+            intelligence_lines.append(
+                "ð **At the 30-day low**"
+            )
+
+        # =================================================
+        # MSRP / REFERENCE PRICE
+        # =================================================
+
+        if msrp is not None:
+
+            # If conversion was required, preserve and show
+            # the original verified reference first.
+
+            if (
+                msrp_conversion_used
+                and msrp_original is not None
+                and msrp_original_currency
+            ):
+
+                intelligence_lines.append(
+                    (
+                        "ð·ï¸ MSRP: "
+                        f"**{format_currency(msrp_original, msrp_original_currency)}**"
+                    )
+                )
+
+                intelligence_lines.append(
+                    (
+                        "Converted reference: "
+                        f"â **{format_currency(msrp, msrp_currency)}**"
+                    )
+                )
+
+            else:
+
+                intelligence_lines.append(
+                    (
+                        "ð·ï¸ MSRP: "
+                        f"**{format_currency(msrp, msrp_currency)}**"
+                    )
+                )
+
+            if msrp_source:
+
+                source_text = str(msrp_source).strip()
+
+                if msrp_confidence:
+                    source_text += (
+                        " â¢ "
+                        f"{str(msrp_confidence).upper()} confidence"
+                    )
+
+                intelligence_lines.append(
+                    f"Reference: **{source_text}**"
+                )
+
+            if vs_msrp_pct is not None:
+
+                if msrp_price_state == "BELOW_MSRP":
+
+                    intelligence_lines.append(
+                        (
+                            "ð¥ Current vs MSRP: "
+                            f"**{abs(float(vs_msrp_pct)):.1f}% below**"
+                        )
+                    )
+
+                elif msrp_price_state == "AT_MSRP":
+
+                    intelligence_lines.append(
+                        "â **At MSRP**"
+                    )
+
+                else:
+
+                    intelligence_lines.append(
+                        (
+                            "â ï¸ Current vs MSRP: "
+                            f"**+{float(vs_msrp_pct):.1f}%**"
+                        )
+                    )
+
+            if (
+                markup_amount is not None
+                and float(markup_amount) > 0
+            ):
+
+                intelligence_lines.append(
+                    (
+                        "Markup: "
+                        f"**+{format_currency(markup_amount, msrp_currency)}**"
+                    )
+                )
+
+        # =================================================
+        # SCALPER PROTECTION
+        # =================================================
+
+        risk_icons = {
+            "NONE":
+                "ð¢",
+
+            "LOW":
+                "ð¡",
+
+            "MODERATE":
+                "â ï¸",
+
+            "HIGH":
+                "ð¨",
+
+            "EXTREME":
+                "ð",
+        }
+
+        if scalper_risk:
+
+            risk_upper = (
+                str(
+                    scalper_risk
+                )
+                .upper()
+            )
+
+            intelligence_lines.append(
+                (
+                    f"{risk_icons.get(risk_upper, 'ð¡ï¸')} "
+                    "**Scalper Risk: "
+                    f"{risk_upper}**"
+                )
+            )
+
+        # =================================================
+        # FINAL DEAL SCORE
+        # =================================================
+
+        label_icons = {
+            "Excellent Deal":
+                "ð¥",
+
+            "Good Deal":
+                "â",
+
+            "Fair Price":
+                "â",
+
+            "Above Average":
+                "â ï¸",
+
+            "Marked Up":
+                "â ï¸",
+
+            "High Markup":
+                "ð¨",
+
+            "Extreme Markup":
+                "ð",
+
+            "Normal Price":
+                "â¹ï¸",
+        }
+
+        label_icon = (
+            label_icons.get(
+                deal_label,
+                "â­",
+            )
+        )
+
+        score_text = (
+            f"{float(deal_score):.1f}/10"
+        )
+
+        if deal_label:
+
+            intelligence_lines.append(
+                (
+                    f"{label_icon} **Deal Score: "
+                    f"{score_text} â "
+                    f"{deal_label}**"
+                )
+            )
+
+        else:
+
+            intelligence_lines.append(
+                (
+                    "â­ **Deal Score: "
+                    f"{score_text}**"
+                )
+            )
+
+        # =================================================
+        # CONFIDENCE / SOURCE
+        # =================================================
+
+        confidence_parts = []
+
+        if deal_confidence:
+
+            confidence_parts.append(
+                (
+                    "History confidence: "
+                    f"**{str(deal_confidence).upper()}**"
+                )
+            )
+
+        if history_samples:
+
+            confidence_parts.append(
+                (
+                    f"{history_samples} "
+                    + (
+                        "observation"
+                        if history_samples == 1
+                        else "observations"
+                    )
+                )
+            )
+
+        if (
+            msrp is not None
+            and msrp_confidence
+        ):
+
+            confidence_parts.append(
+                (
+                    "MSRP confidence: "
+                    f"**{str(msrp_confidence).upper()}**"
+                )
+            )
+
+        if confidence_parts:
+
+            intelligence_lines.append(
+                " â¢ ".join(
+                    confidence_parts
+                )
+            )
+
+        if (
+            msrp is not None
+            and msrp_source
+        ):
+
+            intelligence_lines.append(
+                (
+                    "Reference: "
+                    f"{msrp_source}"
+                )
+            )
+
+        embed.add_field(
+            name="ð Price Intelligence",
+            value="\n".join(
+                intelligence_lines
+            ),
+            inline=False,
+        )
+
+    # =====================================================
     # STORE + REGION
     #
-    # 🏪 Hobbiesville • 🇨🇦 CA
+    # ðª Hobbiesville â¢ ð¨ð¦ CA
     # =====================================================
 
     store_parts = [
-        f"🏪 **{store_name}**"
+        f"ðª **{store_name}**"
     ]
 
     region_text = (
@@ -778,7 +1231,7 @@ async def build_event_embed(event):
 
     embed.add_field(
         name="\u200b",
-        value=" • ".join(
+        value=" â¢ ".join(
             store_parts
         ),
         inline=False,
@@ -787,7 +1240,7 @@ async def build_event_embed(event):
     # =====================================================
     # GAME + CATEGORY / TYPE
     #
-    # 🏴‍☠️ One Piece • 🃏 Single
+    # ð´ââ ï¸ One Piece â¢ ð Single
     # =====================================================
 
     product_parts = []
@@ -827,7 +1280,7 @@ async def build_event_embed(event):
 
     if category_display:
         product_parts.append(
-            f"🃏 {category_display}"
+            f"ð {category_display}"
         )
 
     if (
@@ -847,7 +1300,7 @@ async def build_event_embed(event):
     if product_parts:
         embed.add_field(
             name="\u200b",
-            value=" • ".join(
+            value=" â¢ ".join(
                 product_parts
             ),
             inline=False,
@@ -869,80 +1322,54 @@ async def build_event_embed(event):
 
         if in_stock:
             stock_text = (
-                "🟢 **IN STOCK**"
+                "ð¢ **IN STOCK**"
             )
         else:
             stock_text = (
-                "🔴 **OUT OF STOCK**"
+                "ð´ **OUT OF STOCK**"
             )
 
         if event_type == "INVENTORY_FLICKER":
             if in_stock:
                 stock_text += (
-                    "\n⚡ Brief inventory activity "
-                    "detected • checkout quickly"
+                    "\nâ¡ Brief inventory activity "
+                    "detected â¢ checkout quickly"
                 )
             else:
                 stock_text += (
-                    "\n⚡ Rapid inventory movement "
+                    "\nâ¡ Rapid inventory movement "
                     "detected"
                 )
 
         embed.add_field(
-            name="📦 Status",
+            name="ð¦ Status",
             value=stock_text,
             inline=False,
         )
 
     # =====================================================
     # SMART CART
+    #
+    # Actual cart/product actions are rendered as Discord
+    # URL buttons by route_event_to_discord().
     # =====================================================
 
-    if purchase_limit:
-        try:
-            limit_number = int(
-                purchase_limit
-            )
-
-            smart_cart_text = (
-                "Detected retailer limit: "
-                f"**{limit_number}**"
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            smart_cart_text = (
-                "Detected retailer limit: "
-                f"**{purchase_limit}**"
-            )
-
-    else:
-        smart_cart_text = (
-            "Limit not detected • "
-            "retailer may adjust quantity"
+    smart_cart = (
+        build_smart_cart(
+            event,
+            product_url=(
+                final_url
+            ),
         )
-
-    embed.add_field(
-        name="🛒 Smart Cart",
-        value=smart_cart_text,
-        inline=False,
     )
 
-    # =====================================================
-    # QUICK LINK
-    # =====================================================
-
-    if final_url:
-        embed.add_field(
-            name="🔗 Quick Link",
-            value=(
-                f"[**Open Product**]"
-                f"({final_url})"
-            ),
-            inline=False,
-        )
+    embed.add_field(
+        name="ð Smart Cart",
+        value=(
+            smart_cart.status_text
+        ),
+        inline=False,
+    )
 
     # =====================================================
     # AFFILIATE DISCLOSURE
@@ -977,7 +1404,7 @@ async def build_event_embed(event):
         )
 
     embed.set_footer(
-        text=" • ".join(
+        text=" â¢ ".join(
             footer_parts
         )
     )
@@ -985,6 +1412,7 @@ async def build_event_embed(event):
     return (
         embed,
         affiliate_used,
+        smart_cart,
     )
 
 
@@ -1087,32 +1515,96 @@ async def route_event_to_discord(
         return False
 
     # =====================================================
-    # GAME ROLE
+    # PREFERENCE-AWARE PRODUCT ALERT ROLE
     # =====================================================
 
     game = event.get(
         "game"
     )
 
-    role_id = safe_int(
-        GAME_ROLES.get(
-            game
+    product_category = (
+        event.get(
+            "product_category"
         )
-    )
+        or "UNKNOWN"
+    ).upper()
 
     role = (
-        guild.get_role(
-            role_id
+        get_event_notification_role(
+            guild,
+            game,
+            product_category,
         )
-        if role_id
-        else None
     )
 
-    embed, affiliate_used = (
+    print(
+        (
+            "ALERT ROLE ROUTING | "
+            f"Game={game} | "
+            f"Category={product_category} | "
+            f"Role={role.name if role else 'NONE'}"
+        )
+    )
+
+    (
+        embed,
+        affiliate_used,
+        smart_cart,
+    ) = (
         await build_event_embed(
             event
         )
     )
+
+    # =====================================================
+    # SMART CART BUTTONS
+    #
+    # Discord link buttons do not require an interaction
+    # callback. They simply open the generated retailer URL.
+    # =====================================================
+
+    view = None
+
+    if smart_cart.actions:
+        view = discord.ui.View(
+            timeout=None
+        )
+
+        for action in smart_cart.actions:
+            if action.kind == "cart":
+                button_style = (
+                    discord.ButtonStyle.success
+                )
+                emoji = "ð"
+            else:
+                button_style = (
+                    discord.ButtonStyle.link
+                )
+                emoji = "ð"
+
+            # URL buttons must use ButtonStyle.link.
+            # Discord does not allow success/primary styles
+            # on buttons that navigate directly to a URL.
+            button_style = (
+                discord.ButtonStyle.link
+            )
+
+            view.add_item(
+                discord.ui.Button(
+                    label=(
+                        action.label
+                    ),
+                    url=(
+                        action.url
+                    ),
+                    style=(
+                        button_style
+                    ),
+                    emoji=(
+                        emoji
+                    ),
+                )
+            )
 
     # =====================================================
     # SEND WITH RETRIES
@@ -1130,13 +1622,10 @@ async def route_event_to_discord(
                     content=(
                         role.mention
                         if role
-                        else (
-                            f"**{game}**"
-                            if game
-                            else None
-                        )
+                        else None
                     ),
                     embed=embed,
+                    view=view,
                     allowed_mentions=(
                         discord.AllowedMentions(
                             roles=True,
@@ -1206,7 +1695,17 @@ async def route_event_to_discord(
             f"OldPrice={event.get('old_price')} | "
             f"Price={event.get('price')} | "
             f"Image={bool(event.get('image_url'))} | "
-            f"Affiliate={affiliate_used}"
+            f"Affiliate={affiliate_used} | "
+            f"SmartCart={smart_cart.supported} | "
+            f"SmartCartActions={len(smart_cart.actions)} | "
+            f"DealScore={event.get('deal_score')} | "
+            f"DealConfidence={event.get('deal_confidence')} | "
+            f"HistorySamples={event.get('price_history_samples')} | "
+            f"MSRP={event.get('msrp')} | "
+            f"OriginalMSRP={event.get('msrp_original')} | "
+            f"MSRPConverted={event.get('msrp_conversion_used')} | "
+            f"VsMSRP={event.get('price_vs_msrp_pct')} | "
+            f"ScalperRisk={event.get('scalper_risk')}"
         )
     )
 
@@ -1221,7 +1720,7 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v0.7.9 started."
+        "Lotus Event Worker v1.0.0 started."
     )
 
     while not bot.is_closed():
