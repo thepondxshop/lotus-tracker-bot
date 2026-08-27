@@ -3,7 +3,6 @@ import hashlib
 
 import discord
 
-
 from app.affiliate import (
     AFFILIATE_DISCLOSURE,
     build_affiliate_url,
@@ -15,14 +14,17 @@ from app.config import (
     GAME_ROLES,
 )
 
+from app.currency_service import (
+    convert_currency,
+    format_currency,
+)
+
 from app.event_service import (
     pop_next_event,
     save_alert_delivery,
 )
 
-from app.helpers import (
-    safe_int,
-)
+from app.helpers import safe_int
 
 from app.redis_client import (
     check_redis,
@@ -34,19 +36,15 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 0.7.6a
+# Version 0.7.7
 #
-# Source-first routing
-# Shopify isolation
-# Product thumbnails
-# Affiliate links
-# Safe handling of legacy events
+# Source Routing
+# Images
+# Affiliate Links
+# Native Currency
+# USD Conversion
 # =========================================================
 
-
-# =========================================================
-# EVENT TITLES
-# =========================================================
 
 EVENT_TITLES = {
 
@@ -102,7 +100,7 @@ EVENT_TITLES = {
 # =========================================================
 
 def determine_alert_route(
-    event: dict,
+    event,
 ):
 
     event_type = (
@@ -117,68 +115,23 @@ def determine_alert_route(
             "source_type"
         )
         or ""
-    )
+    ).lower()
 
-    source_type = (
-        source_type.lower()
-    )
-
-    # =====================================================
-    # QUEUE INTELLIGENCE
-    # =====================================================
-
-    if (
-        event_type
-        in {
-            "QUEUE_DETECTED",
-            "QUEUE_ACTIVE",
-            "QUEUE_CLEARED",
-        }
-    ):
+    if event_type in {
+        "QUEUE_DETECTED",
+        "QUEUE_ACTIVE",
+        "QUEUE_CLEARED",
+    }:
 
         return (
             "pokemon_queue"
         )
 
-
-    # =====================================================
-    # LEGACY EVENT SAFETY
-    #
-    # Events queued before v0.7.6a do not contain
-    # source_type.
-    #
-    # Do NOT guess that they belong to Target.
-    # =====================================================
-
     if not source_type:
-
-        print(
-            (
-                "LEGACY EVENT SKIPPED | "
-                f"Event={event_type} | "
-                f"Store={event.get('store_name')} | "
-                "Reason=Missing source_type"
-            )
-        )
 
         return None
 
-
-    # =====================================================
-    # SHOPIFY
-    #
-    # Saga Concepts
-    # Hobbiesville
-    # Independent Shopify stores
-    # =====================================================
-
-    if (
-        source_type
-        == "shopify"
-    ):
-
-        # Premium+ inventory flicker retains its
-        # specialized channel.
+    if source_type == "shopify":
 
         if (
             event_type
@@ -189,58 +142,24 @@ def determine_alert_route(
                 "inventory_flicker"
             )
 
-        # Price changes can retain Deals.
-
-        if (
-            event_type
-            in {
-                "PRICE_DROP",
-                "PRICE_INCREASE",
-                "PRICE_ERROR",
-            }
-        ):
+        if event_type in {
+            "PRICE_DROP",
+            "PRICE_INCREASE",
+            "PRICE_ERROR",
+        }:
 
             return (
                 "deal"
             )
-
-        # Everything else from Shopify goes here.
 
         return (
             "shopify"
         )
 
-
-    # =====================================================
-    # POKEMON CENTER PRODUCTS
-    # =====================================================
-
     if (
         source_type
         == "pokemon_center"
     ):
-
-        if (
-            event_type
-            == "INVENTORY_FLICKER"
-        ):
-
-            return (
-                "inventory_flicker"
-            )
-
-        if (
-            event_type
-            in {
-                "PRICE_DROP",
-                "PRICE_INCREASE",
-                "PRICE_ERROR",
-            }
-        ):
-
-            return (
-                "deal"
-            )
 
         if (
             event_type
@@ -251,14 +170,11 @@ def determine_alert_route(
                 "preorder"
             )
 
-        if (
-            event_type
-            in {
-                "DISCOVERED",
-                "PAGE_LIVE",
-                "COMING_SOON",
-            }
-        ):
+        if event_type in {
+            "DISCOVERED",
+            "PAGE_LIVE",
+            "COMING_SOON",
+        }:
 
             return (
                 "release_radar"
@@ -267,17 +183,6 @@ def determine_alert_route(
         return (
             "major_retailer"
         )
-
-
-    # =====================================================
-    # MAJOR RETAILERS
-    #
-    # Target
-    # Walmart
-    # GameStop
-    # Best Buy
-    # etc.
-    # =====================================================
 
     if (
         source_type
@@ -293,14 +198,11 @@ def determine_alert_route(
                 "preorder"
             )
 
-        if (
-            event_type
-            in {
-                "PRICE_DROP",
-                "PRICE_INCREASE",
-                "PRICE_ERROR",
-            }
-        ):
+        if event_type in {
+            "PRICE_DROP",
+            "PRICE_INCREASE",
+            "PRICE_ERROR",
+        }:
 
             return (
                 "deal"
@@ -319,11 +221,6 @@ def determine_alert_route(
             "major_retailer"
         )
 
-
-    # =====================================================
-    # SIMULATION
-    # =====================================================
-
     if (
         source_type
         == "simulation"
@@ -333,51 +230,32 @@ def determine_alert_route(
             "major_retailer"
         )
 
-
-    print(
-        (
-            "UNKNOWN EVENT SOURCE | "
-            f"Source={source_type} | "
-            f"Event={event_type}"
-        )
-    )
-
     return None
 
 
 # =========================================================
-# DUPLICATE PROTECTION
+# DEDUPE
 # =========================================================
 
 REALTIME_EVENTS = {
 
     "RESTOCK",
-
     "SOLD_OUT",
-
     "INVENTORY_FLICKER",
-
     "QUEUE_DETECTED",
-
     "QUEUE_ACTIVE",
-
     "QUEUE_CLEARED",
 }
 
 
 async def should_suppress_duplicate(
-    event: dict,
+    event,
 ):
 
-    event_type = (
-        event.get(
-            "event_type",
-            "UNKNOWN"
-        )
-    )
-
     if (
-        event_type
+        event.get(
+            "event_type"
+        )
         in REALTIME_EVENTS
     ):
 
@@ -392,47 +270,46 @@ async def should_suppress_duplicate(
         return False
 
     identity = "|".join(
-
         [
-
             str(
                 event.get(
                     "event_type",
                     ""
                 )
             ),
-
             str(
                 event.get(
                     "source_type",
                     ""
                 )
             ),
-
             str(
                 event.get(
                     "game",
                     ""
                 )
             ),
-
             str(
                 event.get(
                     "store_name",
                     ""
                 )
             ),
-
             str(
                 event.get(
                     "product_url",
                     ""
                 )
             ),
-
             str(
                 event.get(
                     "price",
+                    ""
+                )
+            ),
+            str(
+                event.get(
+                    "currency",
                     ""
                 )
             ),
@@ -447,60 +324,35 @@ async def should_suppress_duplicate(
         ).hexdigest()
     )
 
-    try:
-
-        result = (
-            await redis_client.set(
-
-                (
-                    "lotus:dedupe:"
-                    + digest
-                ),
-
-                "1",
-
-                nx=True,
-
-                ex=120,
-            )
-        )
-
-        return (
-            result is None
-        )
-
-    except Exception as error:
-
-        print(
+    result = (
+        await redis_client.set(
             (
-                "DEDUPE ERROR | "
-                f"{type(error).__name__}: "
-                f"{error}"
-            )
+                "lotus:dedupe:"
+                + digest
+            ),
+            "1",
+            nx=True,
+            ex=120,
         )
+    )
 
-        return False
+    return (
+        result is None
+    )
 
 
 # =========================================================
 # EMBED
 # =========================================================
 
-def build_event_embed(
-    event: dict,
+async def build_event_embed(
+    event,
 ):
 
     event_type = (
         event.get(
             "event_type",
-            "UNKNOWN"
-        )
-    )
-
-    title = (
-        EVENT_TITLES.get(
-            event_type,
-            "📡 LOTUS PRODUCT EVENT",
+            "UNKNOWN",
         )
     )
 
@@ -518,35 +370,28 @@ def build_event_embed(
         or "Unknown Store"
     )
 
-    original_url = (
+    product_url = (
         event.get(
             "product_url"
         )
         or ""
     )
 
-    source_type = (
-        event.get(
-            "source_type"
-        )
-        or "unknown"
-    )
-
-    # =====================================================
-    # AFFILIATE LINK
-    # =====================================================
-
     final_url, affiliate_used = (
         build_affiliate_url(
-            original_url,
+            product_url,
             store_name,
         )
     )
 
-
     embed = discord.Embed(
 
-        title=title,
+        title=(
+            EVENT_TITLES.get(
+                event_type,
+                "📡 LOTUS PRODUCT EVENT",
+            )
+        ),
 
         description=(
             f"**{product_name}**"
@@ -554,15 +399,9 @@ def build_event_embed(
 
         url=(
             final_url
-            if final_url
-            else None
+            or None
         ),
     )
-
-
-    # =====================================================
-    # PRODUCT IMAGE
-    # =====================================================
 
     image_url = (
         event.get(
@@ -572,34 +411,15 @@ def build_event_embed(
 
     if image_url:
 
-        try:
-
-            embed.set_thumbnail(
-                url=image_url
-            )
-
-        except Exception:
-
-            pass
-
-
-    # =====================================================
-    # STORE
-    # =====================================================
+        embed.set_thumbnail(
+            url=image_url
+        )
 
     embed.add_field(
-
         name="Store",
-
         value=store_name,
-
         inline=True,
     )
-
-
-    # =====================================================
-    # GAME
-    # =====================================================
 
     game = (
         event.get(
@@ -610,18 +430,10 @@ def build_event_embed(
     if game:
 
         embed.add_field(
-
             name="Game",
-
             value=game,
-
             inline=True,
         )
-
-
-    # =====================================================
-    # PRODUCT TYPE
-    # =====================================================
 
     product_type = (
         event.get(
@@ -632,17 +444,13 @@ def build_event_embed(
     if product_type:
 
         embed.add_field(
-
             name="Type",
-
             value=product_type,
-
             inline=True,
         )
 
-
     # =====================================================
-    # PRICE
+    # PRICE + CURRENCY CONVERSION
     # =====================================================
 
     price = (
@@ -656,92 +464,78 @@ def build_event_embed(
             "currency"
         )
         or "USD"
-    )
+    ).upper()
 
     if price is not None:
 
-        try:
+        native_text = (
+            format_currency(
+                price,
+                currency,
+            )
+        )
 
-            numeric_price = (
-                float(
-                    price
+        if currency == "USD":
+
+            price_text = (
+                native_text
+            )
+
+        else:
+
+            converted_usd = (
+                await convert_currency(
+                    price,
+                    currency,
+                    "USD",
                 )
             )
 
-            if (
-                currency
-                == "USD"
-            ):
+            if converted_usd is not None:
+
+                usd_text = (
+                    format_currency(
+                        converted_usd,
+                        "USD",
+                    )
+                )
 
                 price_text = (
-                    f"${numeric_price:.2f}"
+                    f"{native_text}\n"
+                    f"≈ {usd_text}"
                 )
 
             else:
 
                 price_text = (
-                    f"{numeric_price:.2f} "
-                    f"{currency}"
+                    native_text
                 )
 
-        except (
-            ValueError,
-            TypeError,
-        ):
-
-            price_text = (
-                f"{price} "
-                f"{currency}"
-            )
-
         embed.add_field(
-
             name="Price",
-
             value=price_text,
-
             inline=True,
         )
 
-
-    # =====================================================
-    # STOCK
-    # =====================================================
-
-    if (
-        event_type
-        in {
-            "STOCK_AVAILABLE",
-            "RESTOCK",
-            "SOLD_OUT",
-            "INVENTORY_FLICKER",
-        }
-    ):
+    if event_type in {
+        "STOCK_AVAILABLE",
+        "RESTOCK",
+        "SOLD_OUT",
+        "INVENTORY_FLICKER",
+    }:
 
         embed.add_field(
-
             name="Status",
-
             value=(
-
                 "🟢 IN STOCK"
-
                 if event.get(
                     "in_stock"
                 )
-
                 else
-
                 "🔴 OUT OF STOCK"
             ),
-
             inline=True,
         )
-
-
-    # =====================================================
-    # REGION
-    # =====================================================
 
     region = (
         event.get(
@@ -752,20 +546,19 @@ def build_event_embed(
     if region:
 
         embed.add_field(
-
             name="Region",
-
             value=region,
-
             inline=True,
         )
 
+    source_type = (
+        event.get(
+            "source_type"
+        )
+        or "unknown"
+    )
 
-    # =====================================================
-    # SOURCE
-    # =====================================================
-
-    source_names = {
+    source_labels = {
 
         "shopify":
             "Shopify / TCG Store",
@@ -784,63 +577,58 @@ def build_event_embed(
     }
 
     embed.add_field(
-
         name="Source",
-
         value=(
-            source_names.get(
+            source_labels.get(
                 source_type,
                 source_type,
             )
         ),
-
         inline=True,
     )
-
-
-    # =====================================================
-    # QUICK LINK
-    # =====================================================
 
     if final_url:
 
         embed.add_field(
-
             name="Quick Link",
-
             value=(
                 f"[🛒 Open Product]"
                 f"({final_url})"
             ),
-
             inline=False,
         )
-
-
-    # =====================================================
-    # AFFILIATE DISCLOSURE
-    # =====================================================
 
     if affiliate_used:
 
         embed.add_field(
-
             name="Affiliate Disclosure",
-
             value=(
                 AFFILIATE_DISCLOSURE
             ),
-
             inline=False,
         )
 
+    if (
+        currency
+        != "USD"
+        and price is not None
+    ):
 
-    embed.set_footer(
-
-        text=(
-            "Lotus Tracker Bot • PonDeX Trackers"
+        embed.set_footer(
+            text=(
+                "Lotus Tracker Bot • "
+                "USD conversion is approximate"
+            )
         )
-    )
+
+    else:
+
+        embed.set_footer(
+            text=(
+                "Lotus Tracker Bot • "
+                "PonDeX Trackers"
+            )
+        )
 
     return (
         embed,
@@ -849,7 +637,7 @@ def build_event_embed(
 
 
 # =========================================================
-# PRIMARY GUILD
+# SEND
 # =========================================================
 
 def get_primary_guild(
@@ -867,29 +655,10 @@ def get_primary_guild(
     )
 
 
-# =========================================================
-# SEND EVENT
-# =========================================================
-
 async def route_event_to_discord(
     bot,
-    event: dict,
+    event,
 ):
-
-    event_type = (
-        event.get(
-            "event_type"
-        )
-    )
-
-
-    # =====================================================
-    # DETERMINE ROUTE FIRST
-    #
-    # Important:
-    # legacy Source=None events are rejected here before
-    # they can contaminate another channel.
-    # =====================================================
 
     alert_type = (
         determine_alert_route(
@@ -901,27 +670,11 @@ async def route_event_to_discord(
 
         return False
 
-
-    # =====================================================
-    # DEDUPE
-    # =====================================================
-
-    if (
-        await should_suppress_duplicate(
-            event
-        )
+    if await should_suppress_duplicate(
+        event
     ):
 
-        print(
-            (
-                "DUPLICATE EVENT SUPPRESSED | "
-                f"{event_type} | "
-                f"{event.get('product_name')}"
-            )
-        )
-
         return True
-
 
     access = (
         ALERT_ACCESS.get(
@@ -931,50 +684,21 @@ async def route_event_to_discord(
 
     if not access:
 
-        print(
-            (
-                "NO ALERT ACCESS CONFIG | "
-                f"Route={alert_type}"
-            )
-        )
-
         return False
-
-
-    channel_variable = (
-        access.get(
-            "channel_variable"
-        )
-    )
-
-    minimum_tier = (
-        access.get(
-            "minimum_tier",
-            "Free"
-        )
-    )
 
     channel_id = (
         safe_int(
             CHANNEL_MAP.get(
-                channel_variable
+                access[
+                    "channel_variable"
+                ]
             )
         )
     )
 
     if not channel_id:
 
-        print(
-            (
-                "MISSING ALERT CHANNEL | "
-                f"Route={alert_type} | "
-                f"Variable="
-                f"{channel_variable}"
-            )
-        )
-
         return False
-
 
     guild = (
         get_primary_guild(
@@ -986,7 +710,6 @@ async def route_event_to_discord(
 
         return False
 
-
     channel = (
         guild.get_channel(
             channel_id
@@ -995,19 +718,7 @@ async def route_event_to_discord(
 
     if channel is None:
 
-        print(
-            (
-                "DISCORD CHANNEL NOT FOUND | "
-                f"ID={channel_id}"
-            )
-        )
-
         return False
-
-
-    # =====================================================
-    # GAME ROLE
-    # =====================================================
 
     game = (
         event.get(
@@ -1024,31 +735,18 @@ async def route_event_to_discord(
     )
 
     role = (
-
         guild.get_role(
             role_id
         )
-
         if role_id
-
         else None
     )
 
-
-    # =====================================================
-    # EMBED
-    # =====================================================
-
     embed, affiliate_used = (
-        build_event_embed(
+        await build_event_embed(
             event
         )
     )
-
-
-    # =====================================================
-    # SEND WITH BASIC RETRY
-    # =====================================================
 
     message = None
 
@@ -1061,22 +759,16 @@ async def route_event_to_discord(
 
             message = (
                 await channel.send(
-
                     content=(
-
                         role.mention
-
                         if role
-
                         else (
                             f"**{game}**"
                             if game
                             else None
                         )
                     ),
-
                     embed=embed,
-
                     allowed_mentions=(
                         discord.AllowedMentions(
                             roles=True,
@@ -1089,16 +781,7 @@ async def route_event_to_discord(
 
             break
 
-        except discord.DiscordServerError as error:
-
-            print(
-                (
-                    "DISCORD TEMPORARY ERROR | "
-                    f"Attempt={attempt}/3 | "
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-            )
+        except discord.DiscordServerError:
 
             if (
                 attempt
@@ -1109,71 +792,36 @@ async def route_event_to_discord(
                     attempt * 2
                 )
 
-        except Exception as error:
-
-            print(
-                (
-                    "DISCORD ALERT ERROR | "
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-            )
-
-            return False
-
-
     if message is None:
-
-        print(
-            (
-                "DISCORD ALERT FAILED AFTER RETRIES | "
-                f"Event={event_type} | "
-                f"Store="
-                f"{event.get('store_name')}"
-            )
-        )
 
         return False
 
-
-    # =====================================================
-    # DELIVERY HISTORY
-    # =====================================================
-
     await save_alert_delivery(
-
-        alert_type=(
-            alert_type
-        ),
-
+        alert_type=alert_type,
         minimum_tier=(
-            minimum_tier
+            access.get(
+                "minimum_tier",
+                "Free",
+            )
         ),
-
         discord_channel_id=(
             channel.id
         ),
-
         discord_message_id=(
             message.id
         ),
     )
 
-
     print(
         (
             "ALERT SENT | "
-            f"Event={event_type} | "
-            f"Source="
-            f"{event.get('source_type')} | "
             f"Store="
             f"{event.get('store_name')} | "
+            f"Currency="
+            f"{event.get('currency')} | "
             f"Route={alert_type} | "
-            f"Channel={channel.name} | "
             f"Image="
-            f"{bool(event.get('image_url'))} | "
-            f"Affiliate="
-            f"{affiliate_used}"
+            f"{bool(event.get('image_url'))}"
         )
     )
 
@@ -1181,7 +829,7 @@ async def route_event_to_discord(
 
 
 # =========================================================
-# EVENT WORKER
+# WORKER
 # =========================================================
 
 async def run_event_worker(
@@ -1191,7 +839,7 @@ async def run_event_worker(
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v0.7.6a started."
+        "Lotus Event Worker v0.7.7 started."
     )
 
     while not bot.is_closed():
@@ -1200,31 +848,9 @@ async def run_event_worker(
 
             if not await check_redis():
 
-                try:
+                await init_redis()
 
-                    await init_redis()
-
-                    bot.redis_ready = True
-
-                except Exception as error:
-
-                    bot.redis_ready = False
-
-                    print(
-                        (
-                            "EVENT WORKER REDIS "
-                            "RECONNECT ERROR | "
-                            f"{type(error).__name__}: "
-                            f"{error}"
-                        )
-                    )
-
-                    await asyncio.sleep(
-                        5
-                    )
-
-                    continue
-
+                bot.redis_ready = True
 
             event = (
                 await pop_next_event(
@@ -1236,17 +862,14 @@ async def run_event_worker(
 
                 continue
 
-
             await route_event_to_discord(
                 bot,
                 event,
             )
 
-
         except asyncio.CancelledError:
 
             raise
-
 
         except Exception as error:
 
