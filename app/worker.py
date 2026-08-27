@@ -55,6 +55,11 @@ from app.smart_cart import (
     smart_cart_debug_summary,
 )
 
+from app.shopify_variant_validator import (
+    validate_event_variant,
+    variant_validation_summary,
+)
+
 
 # =========================================================
 # LOTUS EVENT WORKER
@@ -73,6 +78,7 @@ from app.smart_cart import (
 # Deal Intelligence
 # Scalper Protection
 # Smart Cart v1
+# Live Shopify Variant Validation
 # Discord Link Buttons
 # Purchase Limit Protection
 # Affiliate Links
@@ -226,10 +232,6 @@ def determine_alert_route(
 
     if source_type == "shopify":
 
-        # -------------------------------------------------
-        # Early discovery/page alerts
-        # -------------------------------------------------
-
         if event_type in {
 
             "DISCOVERED",
@@ -243,10 +245,6 @@ def determine_alert_route(
             )
 
 
-        # -------------------------------------------------
-        # Preorders
-        # -------------------------------------------------
-
         if (
             event_type
             == "PREORDER_LIVE"
@@ -257,10 +255,6 @@ def determine_alert_route(
             )
 
 
-        # -------------------------------------------------
-        # Inventory flicker
-        # -------------------------------------------------
-
         if (
             event_type
             == "INVENTORY_FLICKER"
@@ -270,10 +264,6 @@ def determine_alert_route(
                 "inventory_flicker"
             )
 
-
-        # -------------------------------------------------
-        # Pricing events
-        # -------------------------------------------------
 
         if event_type in {
 
@@ -287,10 +277,6 @@ def determine_alert_route(
                 "deal"
             )
 
-
-        # -------------------------------------------------
-        # Stock / restock / sold-out
-        # -------------------------------------------------
 
         if event_type in {
 
@@ -733,7 +719,9 @@ def get_event_category(
 
     }:
 
-        return "UNKNOWN"
+        return (
+            "UNKNOWN"
+        )
 
 
     return category
@@ -784,11 +772,210 @@ def is_valid_http_url(
 
 
 # =========================================================
+# SHOULD VALIDATE SMART CART
+#
+# We only spend another HTTP request when it is useful.
+#
+# No need to validate:
+#
+# - simulation
+# - queue events
+# - sold-out alerts
+# - products without a variant
+# =========================================================
+
+def should_validate_smart_cart(
+    event,
+):
+
+    source_type = (
+        str(
+            event.get(
+                "source_type"
+            )
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+
+    if (
+        source_type
+        != "shopify"
+    ):
+
+        return False
+
+
+    if not bool(
+        event.get(
+            "in_stock"
+        )
+    ):
+
+        return False
+
+
+    variant_id = (
+        event.get(
+            "variant_id"
+        )
+    )
+
+
+    if not variant_id:
+
+        return False
+
+
+    return True
+
+
+# =========================================================
+# LIVE SMART CART VALIDATION
+# =========================================================
+
+async def get_live_variant_validation(
+    event,
+):
+
+    if not should_validate_smart_cart(
+        event
+    ):
+
+        return None
+
+
+    try:
+
+        validation = (
+            await validate_event_variant(
+                event
+            )
+        )
+
+
+        print(
+            (
+                "SHOPIFY VARIANT VALIDATION | "
+                f"Store={event.get('store_name')} | "
+                f"Product={event.get('product_name')} | "
+                f"{variant_validation_summary(validation)}"
+            )
+        )
+
+
+        return validation
+
+
+    except Exception as error:
+
+        print(
+            (
+                "SHOPIFY VARIANT VALIDATION ERROR | "
+                f"Store={event.get('store_name')} | "
+                f"Product={event.get('product_name')} | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
+
+
+        return None
+
+
+# =========================================================
+# SMART CART READY
+#
+# Stored event state alone is no longer enough.
+#
+# Requirements:
+#
+# Event in stock
+# Smart Cart supported
+# Validation exists
+# Variant valid
+# Variant available
+# =========================================================
+
+def is_smart_cart_ready(
+    event,
+    smart_cart,
+    validation,
+):
+
+    if smart_cart is None:
+
+        return False
+
+
+    if not smart_cart.supported:
+
+        return False
+
+
+    if not bool(
+        event.get(
+            "in_stock"
+        )
+    ):
+
+        return False
+
+
+    if validation is None:
+
+        return False
+
+
+    if not validation.checked:
+
+        return False
+
+
+    if not validation.valid:
+
+        return False
+
+
+    if not validation.available:
+
+        return False
+
+
+    if (
+        validation.variant_id
+
+        and
+
+        smart_cart.variant_id
+
+        and
+
+        str(
+            validation.variant_id
+        )
+        !=
+        str(
+            smart_cart.variant_id
+        )
+    ):
+
+        return False
+
+
+    return True
+
+
+# =========================================================
 # BUILD EVENT EMBED
 # =========================================================
 
 async def build_event_embed(
     event,
+    *,
+    variant_validation=None,
 ):
 
     event_type = (
@@ -1668,9 +1855,6 @@ async def build_event_embed(
 
     # =====================================================
     # QUICK PRODUCT LINK
-    #
-    # Keep this as a text fallback even though v1.0.3 also
-    # adds an actual Discord Product Page button.
     # =====================================================
 
     if (
@@ -1699,10 +1883,9 @@ async def build_event_embed(
     # =====================================================
     # SMART CART STATUS
     #
-    # Actual cart links are Discord buttons now.
+    # v1.0.3:
     #
-    # We intentionally removed the old text-link quantity
-    # section to avoid duplicate cart interfaces.
+    # Smart Cart must now pass LIVE variant validation.
     # =====================================================
 
     try:
@@ -1714,15 +1897,19 @@ async def build_event_embed(
         )
 
 
-        if (
-            smart_cart.supported
+        smart_cart_ready = (
+            is_smart_cart_ready(
 
-            and
+                event,
 
-            event.get(
-                "in_stock"
+                smart_cart,
+
+                variant_validation,
             )
-        ):
+        )
+
+
+        if smart_cart_ready:
 
             quantity_text = (
                 ", ".join(
@@ -1741,7 +1928,7 @@ async def build_event_embed(
 
                 value=(
 
-                    "✅ Ready\n"
+                    "✅ Live Variant Verified\n"
 
                     f"Quantities: "
                     f"{quantity_text}"
@@ -1832,18 +2019,16 @@ async def build_event_embed(
 #
 # Row 1+:
 #
-# Qty x1
-# Qty x2
-# Qty x3
-# ...
+# x1 x2 x3...
 #
-# Discord allows up to 5 buttons per row.
+# Smart Cart buttons ONLY appear after validation.
 # =========================================================
 
 def build_alert_view(
     event,
     *,
     product_url=None,
+    variant_validation=None,
 ):
 
     view = (
@@ -1883,30 +2068,24 @@ def build_alert_view(
         smart_cart = None
 
 
+    smart_cart_ready = (
+        is_smart_cart_ready(
+
+            event,
+
+            smart_cart,
+
+            variant_validation,
+        )
+    )
+
+
     # =====================================================
-    # QUICK CART BUTTON
-    #
-    # Only show when:
-    #
-    # - Smart Cart is supported
-    # - Product is currently in stock
-    # - Primary x1 cart URL exists
+    # QUICK CART
     # =====================================================
 
     if (
-        smart_cart is not None
-
-        and
-
-        smart_cart.supported
-
-        and
-
-        bool(
-            event.get(
-                "in_stock"
-            )
-        )
+        smart_cart_ready
 
         and
 
@@ -1944,9 +2123,11 @@ def build_alert_view(
 
 
     # =====================================================
-    # PRODUCT PAGE BUTTON
+    # PRODUCT PAGE
     #
-    # Affiliate URL is used here when one exists.
+    # ALWAYS retained when we have a valid URL.
+    #
+    # So validation failure never kills the useful alert.
     # =====================================================
 
     final_product_url = (
@@ -1989,28 +2170,9 @@ def build_alert_view(
 
     # =====================================================
     # QUANTITY BUTTONS
-    #
-    # These only appear while currently in stock.
-    #
-    # Purchase-limit filtering is already handled inside
-    # smart_cart.py.
     # =====================================================
 
-    if (
-        smart_cart is not None
-
-        and
-
-        smart_cart.supported
-
-        and
-
-        bool(
-            event.get(
-                "in_stock"
-            )
-        )
-    ):
+    if smart_cart_ready:
 
         quantities = list(
             smart_cart.quantities
@@ -2041,13 +2203,6 @@ def build_alert_view(
                 continue
 
 
-            # -------------------------------------------------
-            # Five quantity buttons maximum on each row.
-            #
-            # 0-4  -> row 1
-            # 5-9  -> row 2
-            # -------------------------------------------------
-
             row = (
                 1
                 + (
@@ -2056,8 +2211,6 @@ def build_alert_view(
                 )
             )
 
-
-            # Discord only has rows 0 through 4.
 
             if row > 4:
 
@@ -2096,23 +2249,30 @@ def build_alert_view(
 
     if smart_cart is not None:
 
+        validation_text = (
+
+            variant_validation_summary(
+                variant_validation
+            )
+
+            if variant_validation is not None
+
+            else "VariantValidation(Not Run)"
+        )
+
+
         print(
             (
                 "SMART CART | "
                 f"Store={event.get('store_name')} | "
                 f"Product={event.get('product_name')} | "
                 f"{smart_cart_debug_summary(smart_cart)} | "
-                f"InStock={bool(event.get('in_stock'))} | "
+                f"{validation_text} | "
+                f"Ready={smart_cart_ready} | "
                 f"Buttons={buttons_added}"
             )
         )
 
-
-    # =====================================================
-    # EMPTY VIEW
-    #
-    # Discord does not need an empty view attached.
-    # =====================================================
 
     if buttons_added == 0:
 
@@ -2245,15 +2405,11 @@ async def member_allows_category(
 # =========================================================
 # ELIGIBLE MEMBERS
 #
-# Requirement:
-#
 # GAME
-#   +
+# +
 # PRODUCT CATEGORY
-#   +
+# +
 # PRODUCT FAMILY
-#
-# All three must match.
 # =========================================================
 
 async def get_eligible_members(
@@ -2302,10 +2458,6 @@ async def get_eligible_members(
         return []
 
 
-    # =====================================================
-    # LOAD FAMILY PREFS IN ONE DATABASE QUERY
-    # =====================================================
-
     family_preferences = (
         await get_family_preferences_for_users(
 
@@ -2325,10 +2477,6 @@ async def get_eligible_members(
 
 
     for member in base_members:
-
-        # =================================================
-        # FAMILY CHECK
-        # =================================================
 
         member_family_preferences = (
             family_preferences.get(
@@ -2350,10 +2498,6 @@ async def get_eligible_members(
 
             continue
 
-
-        # =================================================
-        # CATEGORY CHECK
-        # =================================================
 
         category_allowed = (
             await member_allows_category(
@@ -2571,10 +2715,7 @@ async def route_event_to_discord(
 
 
     # =====================================================
-    # QUEUE EVENTS
-    #
-    # Queue intelligence is not a normal physical-product
-    # family event, so continue using the Pokemon game role.
+    # AUDIENCE
     # =====================================================
 
     queue_event = (
@@ -2634,10 +2775,6 @@ async def route_event_to_discord(
 
     else:
 
-        # =================================================
-        # MEMBER-SPECIFIC AUDIENCE
-        # =================================================
-
         eligible_members = (
             await get_eligible_members(
 
@@ -2667,6 +2804,20 @@ async def route_event_to_discord(
 
 
     # =====================================================
+    # LIVE VARIANT VALIDATION
+    #
+    # This happens immediately before building the Discord
+    # alert.
+    # =====================================================
+
+    variant_validation = (
+        await get_live_variant_validation(
+            event
+        )
+    )
+
+
+    # =====================================================
     # EMBED
     # =====================================================
 
@@ -2676,13 +2827,18 @@ async def route_event_to_discord(
         final_product_url,
     ) = (
         await build_event_embed(
-            event
+
+            event,
+
+            variant_validation=(
+                variant_validation
+            ),
         )
     )
 
 
     # =====================================================
-    # SMART CART / PRODUCT BUTTONS
+    # BUTTONS
     # =====================================================
 
     alert_view = (
@@ -2693,16 +2849,13 @@ async def route_event_to_discord(
             product_url=(
                 final_product_url
             ),
+
+            variant_validation=(
+                variant_validation
+            ),
         )
     )
 
-
-    # =====================================================
-    # FIRST MESSAGE
-    #
-    # Alert is still posted even when nobody currently
-    # qualifies for a ping.
-    # =====================================================
 
     first_content = (
 
@@ -2718,6 +2871,10 @@ async def route_event_to_discord(
 
     message = None
 
+
+    # =====================================================
+    # SEND
+    # =====================================================
 
     for attempt in range(
         1,
@@ -2800,9 +2957,7 @@ async def route_event_to_discord(
 
 
     # =====================================================
-    # EXTRA MEMBER PING CHUNKS
-    #
-    # Only needed for very large eligible audiences.
+    # EXTRA MEMBER PINGS
     # =====================================================
 
     if (
@@ -2878,7 +3033,7 @@ async def route_event_to_discord(
 
 
     # =====================================================
-    # SMART CART LOGGING
+    # SMART CART FINAL STATUS
     # =====================================================
 
     try:
@@ -2891,15 +3046,13 @@ async def route_event_to_discord(
 
 
         smart_cart_ready = (
+            is_smart_cart_ready(
 
-            smart_cart.supported
+                event,
 
-            and
+                smart_cart,
 
-            bool(
-                event.get(
-                    "in_stock"
-                )
+                variant_validation,
             )
         )
 
@@ -2909,6 +3062,16 @@ async def route_event_to_discord(
         smart_cart_ready = (
             False
         )
+
+
+    validation_reason = (
+
+        variant_validation.reason
+
+        if variant_validation is not None
+
+        else "NOT_RUN"
+    )
 
 
     print(
@@ -2923,6 +3086,7 @@ async def route_event_to_discord(
             f"Route={alert_type} | "
             f"Image={bool(event.get('image_url'))} | "
             f"SmartCart={smart_cart_ready} | "
+            f"VariantValidation={validation_reason} | "
             f"Affiliate={affiliate_used}"
         )
     )
