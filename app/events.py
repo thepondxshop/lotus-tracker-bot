@@ -6,9 +6,13 @@ from enum import Enum
 # =========================================================
 # LOTUS PRODUCT EVENTS
 # PonDeX Trackers
-# Version 0.9.0
+# Version 1.0.0
 #
-# Historical Pricing + Deal Score v1
+# Historical Pricing
+# MSRP Intelligence
+# Scalper Protection
+# Deal Score
+# Smart Quick Cart
 # =========================================================
 
 
@@ -17,16 +21,23 @@ class ProductEventType(
     Enum,
 ):
     DISCOVERED = "DISCOVERED"
+
     PAGE_LIVE = "PAGE_LIVE"
+
     COMING_SOON = "COMING_SOON"
+
     PREORDER_LIVE = "PREORDER_LIVE"
 
     STOCK_AVAILABLE = "STOCK_AVAILABLE"
+
     RESTOCK = "RESTOCK"
+
     SOLD_OUT = "SOLD_OUT"
 
     PRICE_DROP = "PRICE_DROP"
+
     PRICE_INCREASE = "PRICE_INCREASE"
+
     PRICE_ERROR = "PRICE_ERROR"
 
     INVENTORY_FLICKER = "INVENTORY_FLICKER"
@@ -34,9 +45,15 @@ class ProductEventType(
     RELEASE_DATE_CHANGED = "RELEASE_DATE_CHANGED"
 
     QUEUE_DETECTED = "QUEUE_DETECTED"
+
     QUEUE_ACTIVE = "QUEUE_ACTIVE"
+
     QUEUE_CLEARED = "QUEUE_CLEARED"
 
+
+# =========================================================
+# PRODUCT EVENT
+# =========================================================
 
 @dataclass
 class ProductEvent:
@@ -51,8 +68,9 @@ class ProductEvent:
 
     product_url: str
 
+
     # =====================================================
-    # PRICING
+    # CURRENT PRICING
     # =====================================================
 
     price: float | None = None
@@ -61,8 +79,17 @@ class ProductEvent:
 
     currency: str = "USD"
 
+
     # =====================================================
-    # HISTORICAL PRICING / DEAL INTELLIGENCE
+    # HISTORICAL PRICING
+    #
+    # Used for:
+    #
+    # - 30-day low
+    # - 30-day average
+    # - 30-day high
+    # - price-drop calculations
+    # - historical deal score
     # =====================================================
 
     price_window_days: int | None = None
@@ -81,11 +108,74 @@ class ProductEvent:
 
     price_drop_pct: float | None = None
 
+    historical_deal_score: float | None = None
+
+
+    # =====================================================
+    # MSRP / REFERENCE PRICING
+    #
+    # msrp:
+    # MSRP converted into the store's current native
+    # currency when conversion is required.
+    #
+    # msrp_original:
+    # Original verified reference amount.
+    #
+    # Example:
+    #
+    # Verified MSRP:
+    # $59.99 USD
+    #
+    # Hobbiesville listing:
+    # C$89.99 CAD
+    #
+    # Event stores:
+    #
+    # msrp = ~82.75
+    # msrp_currency = CAD
+    #
+    # msrp_original = 59.99
+    # msrp_original_currency = USD
+    # =====================================================
+
+    msrp: float | None = None
+
+    msrp_currency: str | None = None
+
+    msrp_source: str | None = None
+
+    msrp_confidence: str | None = None
+
+    msrp_original: float | None = None
+
+    msrp_original_currency: str | None = None
+
+    msrp_conversion_used: bool = False
+
+
+    # =====================================================
+    # MSRP COMPARISON
+    # =====================================================
+
+    price_vs_msrp_pct: float | None = None
+
+    markup_amount: float | None = None
+
+    msrp_price_state: str | None = None
+
+    scalper_risk: str | None = None
+
+
+    # =====================================================
+    # FINAL DEAL SCORE
+    # =====================================================
+
     deal_score: float | None = None
 
     deal_label: str | None = None
 
     deal_confidence: str | None = None
+
 
     # =====================================================
     # INVENTORY
@@ -93,8 +183,9 @@ class ProductEvent:
 
     in_stock: bool = False
 
+
     # =====================================================
-    # PRODUCT / REGION DATA
+    # PRODUCT / REGION
     # =====================================================
 
     region: str = "US"
@@ -107,6 +198,7 @@ class ProductEvent:
 
     product_category: str = "UNKNOWN"
 
+
     # =====================================================
     # SOURCE
     # =====================================================
@@ -117,8 +209,9 @@ class ProductEvent:
 
     image_url: str | None = None
 
+
     # =====================================================
-    # SMART CART
+    # SMART QUICK CART
     # =====================================================
 
     variant_id: str | None = None
@@ -127,38 +220,211 @@ class ProductEvent:
 
     cart_base_url: str | None = None
 
+
     # =====================================================
-    # EVENT TIME
+    # TIME
     # =====================================================
 
     timestamp: datetime | None = None
 
 
+    # =====================================================
+    # NORMALIZATION
+    # =====================================================
+
     def __post_init__(
         self,
     ):
 
+        # -------------------------------------------------
+        # Timestamp
+        # -------------------------------------------------
+
         if self.timestamp is None:
+
             self.timestamp = (
                 datetime.utcnow()
             )
 
+
+        # -------------------------------------------------
+        # Product Category
+        # -------------------------------------------------
+
         if self.product_category:
+
             self.product_category = (
-                self.product_category.upper()
+                str(
+                    self.product_category
+                )
+                .strip()
+                .upper()
             )
+
+        else:
+
+            self.product_category = (
+                "UNKNOWN"
+            )
+
+
+        # -------------------------------------------------
+        # Store Currency
+        # -------------------------------------------------
 
         if self.currency:
+
             self.currency = (
-                self.currency.upper()
+                str(
+                    self.currency
+                )
+                .strip()
+                .upper()
             )
+
+        else:
+
+            self.currency = (
+                "USD"
+            )
+
+
+        # -------------------------------------------------
+        # Region
+        # -------------------------------------------------
 
         if self.region:
+
             self.region = (
-                self.region.upper()
+                str(
+                    self.region
+                )
+                .strip()
+                .upper()
             )
 
-        if self.deal_confidence:
-            self.deal_confidence = (
-                self.deal_confidence.upper()
+        else:
+
+            self.region = (
+                "US"
             )
+
+
+        # -------------------------------------------------
+        # Converted MSRP Currency
+        # -------------------------------------------------
+
+        if self.msrp_currency:
+
+            self.msrp_currency = (
+                str(
+                    self.msrp_currency
+                )
+                .strip()
+                .upper()
+            )
+
+
+        # -------------------------------------------------
+        # Original MSRP Currency
+        # -------------------------------------------------
+
+        if self.msrp_original_currency:
+
+            self.msrp_original_currency = (
+                str(
+                    self.msrp_original_currency
+                )
+                .strip()
+                .upper()
+            )
+
+
+        # -------------------------------------------------
+        # MSRP Confidence
+        # -------------------------------------------------
+
+        if self.msrp_confidence:
+
+            self.msrp_confidence = (
+                str(
+                    self.msrp_confidence
+                )
+                .strip()
+                .upper()
+            )
+
+
+        # -------------------------------------------------
+        # MSRP Price State
+        # -------------------------------------------------
+
+        if self.msrp_price_state:
+
+            self.msrp_price_state = (
+                str(
+                    self.msrp_price_state
+                )
+                .strip()
+                .upper()
+            )
+
+
+        # -------------------------------------------------
+        # Deal Confidence
+        # -------------------------------------------------
+
+        if self.deal_confidence:
+
+            self.deal_confidence = (
+                str(
+                    self.deal_confidence
+                )
+                .strip()
+                .upper()
+            )
+
+
+        # -------------------------------------------------
+        # Scalper Risk
+        # -------------------------------------------------
+
+        if self.scalper_risk:
+
+            self.scalper_risk = (
+                str(
+                    self.scalper_risk
+                )
+                .strip()
+                .upper()
+            )
+
+
+        # -------------------------------------------------
+        # Source Type
+        # -------------------------------------------------
+
+        if self.source_type:
+
+            self.source_type = (
+                str(
+                    self.source_type
+                )
+                .strip()
+                .lower()
+            )
+
+        else:
+
+            self.source_type = (
+                "unknown"
+            )
+
+
+        # -------------------------------------------------
+        # Boolean MSRP Conversion Flag
+        # -------------------------------------------------
+
+        self.msrp_conversion_used = bool(
+            self.msrp_conversion_used
+        )
