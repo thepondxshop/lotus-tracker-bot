@@ -6,32 +6,23 @@ import re
 # PonDeX Trackers
 # Version 1.0.2
 #
-# Product families:
+# PRODUCT FAMILY != STORE CURRENCY
+#
+# A Japanese product sold for USD is still JP.
+# A Korean product sold for CAD is still KR.
+# A Chinese product sold for EUR is still CN.
+#
+# Families:
 #
 # GLOBAL_STANDARD
 # JP
 # KR
 # CN
 # UNKNOWN
-#
-# IMPORTANT:
-#
-# Product family describes the actual PRODUCT configuration,
-# not the currency or physical location of the retailer.
-#
-# Example:
-#
-# Japanese One Piece booster box sold by a US store in USD
-# remains:
-#
-# JP
-#
-# It must NOT inherit GLOBAL_STANDARD MSRP.
 # =========================================================
 
 
 VALID_PRODUCT_FAMILIES = {
-
     "GLOBAL_STANDARD",
     "JP",
     "KR",
@@ -49,39 +40,23 @@ def normalize_product_family(
 ):
 
     if value is None:
-
         return None
 
     value = (
-        str(
-            value
-        )
+        str(value)
         .strip()
         .upper()
-        .replace(
-            "-",
-            "_",
-        )
-        .replace(
-            " ",
-            "_",
-        )
+        .replace("-", "_")
+        .replace(" ", "_")
     )
-
 
     aliases = {
 
-        # -------------------------------------------------
-        # Global / International
-        # -------------------------------------------------
-
+        # Global / international
         "GLOBAL":
             "GLOBAL_STANDARD",
 
-        "INTERNATIONAL":
-            "GLOBAL_STANDARD",
-
-        "INTERNATIONAL_ENGLISH":
+        "STANDARD":
             "GLOBAL_STANDARD",
 
         "ENGLISH":
@@ -90,20 +65,25 @@ def normalize_product_family(
         "ENG":
             "GLOBAL_STANDARD",
 
+        "INTERNATIONAL":
+            "GLOBAL_STANDARD",
+
+        "INTERNATIONAL_ENGLISH":
+            "GLOBAL_STANDARD",
+
+        "NA":
+            "GLOBAL_STANDARD",
+
+        "NORTH_AMERICA":
+            "GLOBAL_STANDARD",
+
         "US":
             "GLOBAL_STANDARD",
 
         "USA":
             "GLOBAL_STANDARD",
 
-        "NA":
-            "GLOBAL_STANDARD",
-
-
-        # -------------------------------------------------
         # Japan
-        # -------------------------------------------------
-
         "JAPAN":
             "JP",
 
@@ -113,11 +93,7 @@ def normalize_product_family(
         "JPN":
             "JP",
 
-
-        # -------------------------------------------------
         # Korea
-        # -------------------------------------------------
-
         "KOREA":
             "KR",
 
@@ -127,11 +103,7 @@ def normalize_product_family(
         "KOR":
             "KR",
 
-
-        # -------------------------------------------------
         # Mainland China / Simplified Chinese
-        # -------------------------------------------------
-
         "CHINA":
             "CN",
 
@@ -148,35 +120,53 @@ def normalize_product_family(
             "CN",
     }
 
-
-    value = (
-        aliases.get(
-            value,
-            value,
-        )
+    value = aliases.get(
+        value,
+        value,
     )
 
-
     if value not in VALID_PRODUCT_FAMILIES:
-
         return None
-
 
     return value
 
 
 # =========================================================
-# BUILD SEARCH TEXT
+# TEXT HELPERS
 # =========================================================
 
-def _build_product_text(
+def _flatten_value(
+    value,
+):
+
+    if value is None:
+        return ""
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+
+        return " ".join(
+            str(item)
+            for item in value
+        )
+
+    return str(value)
+
+
+def build_product_family_text(
     item,
 ):
 
-    values = []
+    if not item:
+        return ""
 
-
-    for key in (
+    fields = (
 
         "title",
         "product_name",
@@ -184,58 +174,31 @@ def _build_product_text(
         "vendor",
         "tags",
         "description",
+        "body_html",
         "handle",
         "sku",
-
-    ):
-
-        value = (
-            item.get(
-                key
-            )
-        )
-
-
-        if value is None:
-
-            continue
-
-
-        if isinstance(
-            value,
-            (
-                list,
-                tuple,
-                set,
-            ),
-        ):
-
-            values.extend(
-
-                str(
-                    part
-                )
-
-                for part in value
-            )
-
-
-        else:
-
-            values.append(
-                str(
-                    value
-                )
-            )
-
-
-    text = (
-        " ".join(
-            values
-        )
-        .lower()
     )
 
+    parts = []
+
+    for field in fields:
+
+        value = item.get(
+            field
+        )
+
+        if value is None:
+            continue
+
+        parts.append(
+            _flatten_value(
+                value
+            )
+        )
+
+    text = " ".join(
+        parts
+    ).lower()
 
     text = re.sub(
         r"\s+",
@@ -243,31 +206,22 @@ def _build_product_text(
         text,
     )
 
-
     return text.strip()
 
-
-# =========================================================
-# TOKEN / PHRASE MATCH
-# =========================================================
 
 def _contains_any(
     text,
     phrases,
 ):
 
-    for phrase in phrases:
-
-        if phrase in text:
-
-            return True
-
-
-    return False
+    return any(
+        phrase in text
+        for phrase in phrases
+    )
 
 
 # =========================================================
-# JAPANESE MARKERS
+# FAMILY MARKERS
 # =========================================================
 
 JP_MARKERS = [
@@ -275,62 +229,71 @@ JP_MARKERS = [
     "japanese version",
     "japanese edition",
     "japanese booster",
-    "japanese box",
+    "japanese booster box",
+    "japanese display",
+    "japanese card game",
     "japanese tcg",
+    "japanese language",
+
     "japan version",
     "japan edition",
     "japan import",
+    "japan booster",
+    "japan booster box",
+
     "jp version",
     "jp edition",
     "jp booster",
-    "jp box",
+    "jp booster box",
+    "jp display",
+
     "jpn version",
     "jpn edition",
     "jpn booster",
-    "jpn box",
-    "language japanese",
-    "japanese language",
+    "jpn booster box",
 
-    # Common Unicode markers
+    "language: japanese",
+    "language japanese",
+
     "日本語",
     "日本版",
     "日版",
 ]
 
 
-# =========================================================
-# KOREAN MARKERS
-# =========================================================
-
 KR_MARKERS = [
 
     "korean version",
     "korean edition",
     "korean booster",
-    "korean box",
+    "korean booster box",
+    "korean display",
+    "korean card game",
     "korean tcg",
+    "korean language",
+
     "korea version",
     "korea edition",
     "korea import",
+    "korea booster",
+    "korea booster box",
+
     "kr version",
     "kr edition",
     "kr booster",
-    "kr box",
+    "kr booster box",
+
     "kor version",
     "kor edition",
-    "language korean",
-    "korean language",
 
-    # Common Unicode markers
+    "language: korean",
+    "language korean",
+
     "한국어",
     "한국판",
     "한글판",
 ]
 
-
-# =========================================================
-# SIMPLIFIED CHINESE MARKERS
-# =========================================================
 
 CN_MARKERS = [
 
@@ -339,47 +302,79 @@ CN_MARKERS = [
     "simplified chinese version",
     "simplified chinese edition",
     "simplified chinese booster",
-    "simplified chinese box",
+    "simplified chinese booster box",
+    "simplified chinese display",
     "simplified chinese tcg",
+
     "mainland china",
+    "mainland chinese",
+
     "china version",
     "china edition",
     "china import",
+    "china booster",
+    "china booster box",
+
     "cn version",
     "cn edition",
     "cn booster",
-    "cn box",
+    "cn booster box",
+
     "s chinese",
     "s-chinese",
+
+    "language: simplified chinese",
     "language simplified chinese",
 
-    # Common Chinese markers
     "简体中文",
     "简中",
     "中国大陆",
 ]
 
 
-# =========================================================
-# GLOBAL STANDARD MARKERS
-#
-# These are useful only when explicitly present.
-# Lack of one does NOT automatically mean a product is
-# foreign.
-# =========================================================
-
 GLOBAL_MARKERS = [
 
     "english version",
     "english edition",
     "english language",
+
     "international version",
     "international edition",
-    "north america",
-    "north american",
+
+    "north american version",
+    "north america version",
+
     "na version",
     "us version",
     "usa version",
+
+    "language: english",
+    "language english",
+]
+
+
+# =========================================================
+# AMBIGUOUS IMPORT MARKERS
+#
+# If Lotus knows something is imported but cannot safely
+# determine which configuration it is, do NOT guess global.
+# =========================================================
+
+AMBIGUOUS_IMPORT_MARKERS = [
+
+    "import edition",
+    "import version",
+    "import booster",
+    "import booster box",
+
+    "asian version",
+    "asia version",
+    "asia edition",
+
+    "overseas edition",
+    "overseas version",
+
+    "foreign language",
 ]
 
 
@@ -390,24 +385,24 @@ GLOBAL_MARKERS = [
 def detect_product_family(
     item,
     *,
-    default="GLOBAL_STANDARD",
+    default=None,
 ):
 
     """
-    Detect the physical/product configuration family.
+    Determine the actual product configuration.
+
+    Currency is deliberately ignored.
 
     Priority:
-
-    1. Explicit product_family supplied by adapter
-    2. Japanese markers
-    3. Korean markers
-    4. Simplified Chinese markers
-    5. Explicit international/English markers
-    6. Safe configured default
-
-    Store currency is intentionally ignored.
+      1. Explicit adapter value
+      2. JP
+      3. KR
+      4. CN
+      5. Explicit GLOBAL_STANDARD
+      6. Ambiguous import -> UNKNOWN
+      7. Optional trusted-store default
+      8. UNKNOWN
     """
-
 
     if not item:
 
@@ -418,36 +413,26 @@ def detect_product_family(
             or "UNKNOWN"
         )
 
-
-    # =====================================================
-    # EXPLICIT ADAPTER VALUE
-    # =====================================================
+    # -----------------------------------------------------
+    # Explicit adapter metadata wins.
+    # -----------------------------------------------------
 
     explicit = (
         normalize_product_family(
-
             item.get(
                 "product_family"
             )
         )
     )
 
-
     if explicit:
-
         return explicit
 
-
-    # =====================================================
-    # SEARCH PRODUCT TEXT
-    # =====================================================
-
     text = (
-        _build_product_text(
+        build_product_family_text(
             item
         )
     )
-
 
     if not text:
 
@@ -458,80 +443,76 @@ def detect_product_family(
             or "UNKNOWN"
         )
 
-
-    # =====================================================
-    # FOREIGN CONFIGURATIONS FIRST
-    # =====================================================
+    # -----------------------------------------------------
+    # Foreign configurations first.
+    # -----------------------------------------------------
 
     if _contains_any(
         text,
         JP_MARKERS,
     ):
-
         return "JP"
-
 
     if _contains_any(
         text,
         KR_MARKERS,
     ):
-
         return "KR"
-
 
     if _contains_any(
         text,
         CN_MARKERS,
     ):
-
         return "CN"
 
-
-    # =====================================================
-    # EXPLICIT GLOBAL / ENGLISH CONFIGURATION
-    # =====================================================
+    # -----------------------------------------------------
+    # Explicit global-standard evidence.
+    # -----------------------------------------------------
 
     if _contains_any(
         text,
         GLOBAL_MARKERS,
     ):
-
         return "GLOBAL_STANDARD"
 
+    # -----------------------------------------------------
+    # Known import, unknown configuration.
+    # -----------------------------------------------------
 
-    # =====================================================
-    # DEFAULT
-    #
-    # For the stores currently monitored as standard
-    # English/international TCG retailers, products without
-    # foreign-language indicators remain GLOBAL_STANDARD.
-    #
-    # A future adapter can explicitly set UNKNOWN if it
-    # cannot safely classify a product.
-    # =====================================================
+    if _contains_any(
+        text,
+        AMBIGUOUS_IMPORT_MARKERS,
+    ):
+        return "UNKNOWN"
 
-    return (
+    # -----------------------------------------------------
+    # Trusted store default.
+    #
+    # The monitor can pass GLOBAL_STANDARD for a normal
+    # domestic/international English retailer.
+    #
+    # Otherwise we stay UNKNOWN.
+    # -----------------------------------------------------
+
+    normalized_default = (
         normalize_product_family(
             default
         )
-        or "UNKNOWN"
     )
+
+    if normalized_default:
+        return normalized_default
+
+    return "UNKNOWN"
 
 
 # =========================================================
-# GLOBAL FALLBACK POLICY
+# GLOBAL MSRP FALLBACK POLICY
 # =========================================================
 
 def allows_global_msrp_fallback(
     product_family,
 ):
-
-    """
-    GLOBAL_STANDARD may use GLOBAL_STANDARD references.
-
-    JP / KR / CN / UNKNOWN are isolated from global MSRP.
-    """
-
 
     family = (
         normalize_product_family(
@@ -540,8 +521,30 @@ def allows_global_msrp_fallback(
         or "UNKNOWN"
     )
 
-
     return (
         family
         == "GLOBAL_STANDARD"
     )
+
+
+# =========================================================
+# MSRP SAFETY
+# =========================================================
+
+def is_isolated_family(
+    product_family,
+):
+
+    family = (
+        normalize_product_family(
+            product_family
+        )
+        or "UNKNOWN"
+    )
+
+    return family in {
+        "JP",
+        "KR",
+        "CN",
+        "UNKNOWN",
+    }
