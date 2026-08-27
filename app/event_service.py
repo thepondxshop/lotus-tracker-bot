@@ -20,30 +20,31 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT SERVICE
 # PonDeX Trackers
-# Version 0.7.8
+# Version 0.7.8-hotfix
 # =========================================================
 
 
-EVENT_QUEUE_KEY = (
-    "lotus:product_events"
-)
+EVENT_QUEUE_KEY = "lotus:product_events"
 
 
-def enum_value(
-    value,
-):
+# =========================================================
+# ENUM VALUE
+# =========================================================
+
+def enum_value(value):
 
     if isinstance(
         value,
         ProductEventType,
     ):
-
         return value.value
 
-    return str(
-        value
-    )
+    return str(value)
 
+
+# =========================================================
+# SERIALIZE EVENT
+# =========================================================
 
 def serialize_product_event(
     event: ProductEvent,
@@ -87,7 +88,11 @@ def serialize_product_event(
             event.product_type,
 
         "product_category":
-            event.product_category,
+            getattr(
+                event,
+                "product_category",
+                "UNKNOWN",
+            ),
 
         "source_type":
             event.source_type,
@@ -99,30 +104,43 @@ def serialize_product_event(
             event.image_url,
 
         "variant_id":
-            event.variant_id,
+            getattr(
+                event,
+                "variant_id",
+                None,
+            ),
 
         "purchase_limit":
-            event.purchase_limit,
+            getattr(
+                event,
+                "purchase_limit",
+                None,
+            ),
 
         "cart_base_url":
-            event.cart_base_url,
+            getattr(
+                event,
+                "cart_base_url",
+                None,
+            ),
 
         "timestamp": (
             event.timestamp.isoformat()
-
             if event.timestamp
-
             else None
         ),
     }
 
+
+# =========================================================
+# SAVE DATABASE EVENT
+# =========================================================
 
 async def save_product_event(
     event: ProductEvent,
 ):
 
     if SessionLocal is None:
-
         return False
 
     try:
@@ -195,6 +213,10 @@ async def save_product_event(
         return False
 
 
+# =========================================================
+# REDIS QUEUE
+# =========================================================
+
 async def push_product_event(
     event: ProductEvent,
 ):
@@ -232,6 +254,7 @@ async def push_product_event(
             (
                 "EVENT QUEUED | "
                 f"Event={payload['event_type']} | "
+                f"Game={payload['game']} | "
                 f"Source={payload['source_type']} | "
                 f"Store={payload['store_name']} | "
                 f"Category={payload['product_category']} | "
@@ -255,6 +278,10 @@ async def push_product_event(
 
         return False
 
+
+# =========================================================
+# PROCESS EVENT
+# =========================================================
 
 async def process_product_event(
     event: ProductEvent,
@@ -282,6 +309,10 @@ async def process_product_event(
     }
 
 
+# =========================================================
+# POP EVENT
+# =========================================================
+
 async def pop_next_event(
     timeout: int = 5,
 ):
@@ -291,21 +322,19 @@ async def pop_next_event(
     )
 
     if redis_client is None:
-
         return None
 
-    result = await redis_client.blpop(
-        EVENT_QUEUE_KEY,
-        timeout=timeout,
+    result = (
+        await redis_client.blpop(
+            EVENT_QUEUE_KEY,
+            timeout=timeout,
+        )
     )
 
     if not result:
-
         return None
 
-    _, raw_payload = (
-        result
-    )
+    _, raw_payload = result
 
     try:
 
@@ -326,6 +355,10 @@ async def pop_next_event(
         return None
 
 
+# =========================================================
+# QUEUE SIZE
+# =========================================================
+
 async def get_queue_size():
 
     redis_client = (
@@ -333,7 +366,6 @@ async def get_queue_size():
     )
 
     if redis_client is None:
-
         return 0
 
     try:
@@ -345,9 +377,62 @@ async def get_queue_size():
         )
 
     except Exception:
+        return 0
+
+
+# =========================================================
+# CLEAR ONLY LOTUS PRODUCT EVENT QUEUE
+#
+# This does NOT flush Redis.
+# It does NOT delete database records.
+# =========================================================
+
+async def clear_event_queue():
+
+    redis_client = (
+        get_redis()
+    )
+
+    if redis_client is None:
+        return 0
+
+    try:
+
+        existing = int(
+            await redis_client.llen(
+                EVENT_QUEUE_KEY
+            )
+        )
+
+        await redis_client.delete(
+            EVENT_QUEUE_KEY
+        )
+
+        print(
+            (
+                "EVENT QUEUE CLEARED | "
+                f"Removed={existing}"
+            )
+        )
+
+        return existing
+
+    except Exception as error:
+
+        print(
+            (
+                "EVENT QUEUE CLEAR ERROR | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
 
         return 0
 
+
+# =========================================================
+# SAVE ALERT DELIVERY
+# =========================================================
 
 async def save_alert_delivery(
     *,
@@ -358,7 +443,6 @@ async def save_alert_delivery(
 ):
 
     if SessionLocal is None:
-
         return False
 
     try:
@@ -371,9 +455,7 @@ async def save_alert_delivery(
 
                 store_id=None,
 
-                alert_type=(
-                    alert_type
-                ),
+                alert_type=alert_type,
 
                 minimum_tier=(
                     minimum_tier
