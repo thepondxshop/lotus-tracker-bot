@@ -139,7 +139,11 @@ from app.pokemon_center_products import (
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 0.7.5
+# Version 0.7.6
+#
+# Shopify Source Routing
+# Pokémon Structured Parsing
+# Product Image Support
 # =========================================================
 
 
@@ -505,9 +509,10 @@ class GameSelect(
     ):
 
         current_ids = {
+
             role.id
-            for role
-            in member.roles
+
+            for role in member.roles
         }
 
         options = []
@@ -798,7 +803,7 @@ class LotusTrackerBot(
         )
 
         # =================================================
-        # SHOPIFY
+        # SHOPIFY MONITOR
         # =================================================
 
         self.shopify_monitor_task = (
@@ -840,7 +845,7 @@ class LotusTrackerBot(
         )
 
         # =================================================
-        # SLASH COMMANDS
+        # COMMAND SYNC
         # =================================================
 
         synced = (
@@ -873,7 +878,7 @@ async def on_ready():
     )
 
     print(
-        "Version: 0.7.5"
+        "Version: 0.7.6"
     )
 
     print("=" * 60)
@@ -1047,7 +1052,9 @@ async def subscription(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -1180,7 +1187,9 @@ async def settings(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -1211,6 +1220,11 @@ async def settings(
         (
             "Preorder Alerts",
             "Lite",
+        ),
+
+        (
+            "Shopify Drops",
+            "Premium",
         ),
 
         (
@@ -1369,8 +1383,10 @@ async def dbme(
 
         (
             "💾 **Lotus Database Profile**\n\n"
+
             f"Tier: "
             f"**{profile['subscription']}**\n\n"
+
             f"Games:\n"
             f"{games_text}"
         ),
@@ -1426,6 +1442,7 @@ async def dbstatus(
 
             (
                 "🔴 PostgreSQL failed.\n"
+
                 f"`{type(error).__name__}: "
                 f"{error}`"
             ),
@@ -1509,6 +1526,10 @@ async def eventstatus(
 
             f"**Queue:** `{queue}`\n"
 
+            "**Source Routing:** ✅\n"
+
+            "**Product Images:** ✅\n"
+
             "**Affiliate Pipeline:** ✅"
         ),
     )
@@ -1556,6 +1577,7 @@ async def addshopifystore(
             (
                 f"{'✅ Added' if created else '✅ Updated'} "
                 f"**{store.name}**\n"
+
                 f"`{store.domain}`"
             ),
 
@@ -1568,6 +1590,7 @@ async def addshopifystore(
 
             (
                 "❌ Store could not be added.\n\n"
+
                 f"`{type(error).__name__}: "
                 f"{error}`"
             ),
@@ -1575,6 +1598,10 @@ async def addshopifystore(
             ephemeral=True,
         )
 
+
+# =========================================================
+# /STORES
+# =========================================================
 
 @bot.tree.command(
     name="stores",
@@ -1640,6 +1667,10 @@ async def stores(
         ephemeral=True,
     )
 
+
+# =========================================================
+# /STOREINFO
+# =========================================================
 
 @bot.tree.command(
     name="storeinfo",
@@ -1763,6 +1794,10 @@ async def storeinfo(
     )
 
 
+# =========================================================
+# /DISABLESTORE
+# =========================================================
+
 @bot.tree.command(
     name="disablestore",
     description="Manually disable a store.",
@@ -1796,12 +1831,17 @@ async def disablestore(
         (
             f"⚫ **{store.name}** "
             "manually disabled.\n\n"
+
             "It will not automatically reactivate."
         ),
 
         ephemeral=True,
     )
 
+
+# =========================================================
+# /ENABLESTORE
+# =========================================================
 
 @bot.tree.command(
     name="enablestore",
@@ -1837,6 +1877,10 @@ async def enablestore(
     )
 
 
+# =========================================================
+# /REMOVESTORE
+# =========================================================
+
 @bot.tree.command(
     name="removestore",
     description="Remove a store from monitoring.",
@@ -1869,12 +1913,17 @@ async def removestore(
         (
             f"🗑️ **{store.name}** removed "
             "from active monitoring.\n\n"
+
             "Historical data remains preserved."
         ),
 
         ephemeral=True,
     )
 
+
+# =========================================================
+# /RESTORESTORE
+# =========================================================
 
 @bot.tree.command(
     name="restorestore",
@@ -1957,6 +2006,10 @@ async def healthstatus(
         ephemeral=True,
     )
 
+
+# =========================================================
+# RETRY STORE
+# =========================================================
 
 @bot.tree.command(
     name="retrystore",
@@ -2096,7 +2149,7 @@ async def scanshopify(
             (
                 f"**{result['store']}**\n"
 
-                f"Products: "
+                f"Relevant TCG Products: "
                 f"{result['seen']}\n"
 
                 f"New: "
@@ -2136,7 +2189,7 @@ async def scanshopify(
 
 
 # =========================================================
-# /SHOPIFYSTATUS
+# SHOPIFY STATUS
 # =========================================================
 
 @bot.tree.command(
@@ -2176,7 +2229,7 @@ async def shopifystatus(
             f"**Stores Scanned:** "
             f"{data['stores_scanned']}\n"
 
-            f"**Products Seen:** "
+            f"**TCG Products Seen:** "
             f"{data['products_seen']}\n"
 
             f"**Events:** "
@@ -2186,7 +2239,9 @@ async def shopifystatus(
             f"{data['flickers_detected']}\n"
 
             f"**Recovered Stores:** "
-            f"{data['stores_recovered']}"
+            f"{data['stores_recovered']}\n"
+
+            "**Alert Route:** `#shopify-drops`"
         ),
     )
 
@@ -2225,7 +2280,7 @@ async def shopifystatus(
 
 
 # =========================================================
-# POKEMON CENTER QUEUE
+# POKEMON CENTER QUEUE STATUS
 # =========================================================
 
 @bot.tree.command(
@@ -2307,6 +2362,10 @@ async def pokemoncenterstatus(
     )
 
 
+# =========================================================
+# SCAN POKEMON CENTER QUEUE
+# =========================================================
+
 @bot.tree.command(
     name="scanpokemoncenter",
     description="Run a Pokémon Center queue scan now.",
@@ -2378,6 +2437,7 @@ async def scanpokemoncenter(
 
             (
                 "❌ Pokémon Center scan failed.\n"
+
                 f"`{type(error).__name__}: "
                 f"{error}`"
             ),
@@ -2422,7 +2482,8 @@ async def addpokemonproduct(
                 f"{'✅ Added' if created else '✅ Reactivated'} "
                 "**Pokémon Center product**\n\n"
 
-                f"**ID:** `{product.id}`\n"
+                f"**ID:** "
+                f"`{product.id}`\n"
 
                 f"**Code:** "
                 f"`{product.product_code or 'Unknown'}`\n"
@@ -2446,6 +2507,7 @@ async def addpokemonproduct(
 
             (
                 "❌ Product could not be added.\n\n"
+
                 f"`{type(error).__name__}: "
                 f"{error}`"
             ),
@@ -2492,6 +2554,10 @@ async def pokemonproducts(
 
     for product in products:
 
+        # =================================================
+        # STATE DISPLAY
+        # =================================================
+
         if product.last_state:
 
             state_text = (
@@ -2500,16 +2566,11 @@ async def pokemonproducts(
 
         elif (
             product.scan_status
-            == "BLOCKED"
-        ):
-
-            state_text = (
-                "UNKNOWN"
+            in (
+                "BLOCKED",
+                "ERROR",
+                "PARSE_ERROR",
             )
-
-        elif (
-            product.scan_status
-            == "ERROR"
         ):
 
             state_text = (
@@ -2521,6 +2582,10 @@ async def pokemonproducts(
             state_text = (
                 "NOT_SCANNED"
             )
+
+        # =================================================
+        # ICON
+        # =================================================
 
         if (
             product.scan_status
@@ -2535,6 +2600,13 @@ async def pokemonproducts(
         ):
 
             scan_icon = "🚫"
+
+        elif (
+            product.scan_status
+            == "PARSE_ERROR"
+        ):
+
+            scan_icon = "🧩"
 
         elif (
             product.scan_status
@@ -2574,7 +2646,8 @@ async def pokemonproducts(
                 f"Last Attempt: "
                 f"`{product.last_scan_attempt_at or 'Never'}`\n"
 
-                f"{product.title or product.url}"
+                f"Title: "
+                f"{product.title or 'Unknown'}"
             )
         )
 
@@ -2628,6 +2701,7 @@ async def removepokemonproduct(
         (
             "⚫ Pokémon Center product removed "
             "from active monitoring.\n"
+
             f"`{product.product_code or product.id}`"
         ),
 
@@ -2670,6 +2744,7 @@ async def restorepokemonproduct(
 
         (
             "♻️ Pokémon Center product restored.\n"
+
             f"`{product.product_code or product.id}`"
         ),
 
@@ -2706,6 +2781,7 @@ async def discoverpokemonproducts(
 
             (
                 "🔎 Pokémon Center discovery complete.\n\n"
+
                 f"**New products added:** "
                 f"`{count}`"
             ),
@@ -2719,6 +2795,7 @@ async def discoverpokemonproducts(
 
             (
                 "❌ Product discovery failed.\n"
+
                 f"`{type(error).__name__}: "
                 f"{error}`"
             ),
@@ -2763,8 +2840,11 @@ async def scanpokemonproducts(
                 f"Actually Checked: "
                 f"`{result['checked']}`\n"
 
-                f"Successful: "
+                f"Successful Parses: "
                 f"`{result['successful']}`\n"
+
+                f"Parse Errors: "
+                f"`{result['parse_errors']}`\n"
 
                 f"Blocked: "
                 f"`{result['blocked']}`\n"
@@ -2785,6 +2865,7 @@ async def scanpokemonproducts(
 
             (
                 "❌ Product scan failed.\n"
+
                 f"`{type(error).__name__}: "
                 f"{error}`"
             ),
@@ -2839,8 +2920,11 @@ async def pokemonproductstatus(
             f"**Actually Checked:** "
             f"{data['products_checked']}\n"
 
-            f"**Successful:** "
+            f"**Successful Parses:** "
             f"{data['successful_products']}\n"
+
+            f"**Parse Errors:** "
+            f"{data['parse_errors']}\n"
 
             f"**Blocked:** "
             f"{data['blocked_products']}\n"
@@ -2968,6 +3052,7 @@ async def pokemonburst(
 
             (
                 "❌ Burst mode failed.\n"
+
                 f"`{type(error).__name__}: "
                 f"{error}`"
             ),
@@ -3007,6 +3092,27 @@ async def simulateproduct(
         )
     )
 
+    # -----------------------------------------------------
+    # Simulation events need an explicit source.
+    #
+    # Queue simulation:
+    #   source_type=queue
+    #
+    # Normal simulation:
+    #   source_type=major_retailer
+    #
+    # This keeps stock-event routing testable.
+    # -----------------------------------------------------
+
+    source_type = (
+
+        "queue"
+
+        if queue_event
+
+        else "major_retailer"
+    )
+
     product_event = (
         ProductEvent(
 
@@ -3026,7 +3132,8 @@ async def simulateproduct(
                 "Pokémon Center Test"
                 if queue_event
                 else (
-                    f"{game.value} Test Product"
+                    f"{game.value} "
+                    "Test Product"
                 )
             ),
 
@@ -3068,6 +3175,18 @@ async def simulateproduct(
                 if queue_event
                 else "Booster Box"
             ),
+
+            source_type=(
+                source_type
+            ),
+
+            retailer_key=(
+                "pokemon_center"
+                if queue_event
+                else "simulation"
+            ),
+
+            image_url=None,
         )
     )
 
@@ -3084,6 +3203,9 @@ async def simulateproduct(
 
             f"Event: "
             f"`{event.value}`\n"
+
+            f"Source: "
+            f"`{source_type}`\n"
 
             f"Database: "
             f"{'✅' if result['database_saved'] else '❌'}\n"
@@ -3137,13 +3259,24 @@ async def testalert(
             (
                 "❌ Unknown alert type.\n\n"
 
+                "Available examples:\n"
+
                 "`major_retailer`\n"
+
+                "`shopify`\n"
+
                 "`preorder`\n"
+
                 "`page_live`\n"
+
                 "`deal`\n"
+
                 "`international`\n"
+
                 "`inventory_flicker`\n"
+
                 "`release_radar`\n"
+
                 "`pokemon_queue`"
             ),
 
@@ -3213,7 +3346,7 @@ async def testalert(
 
                 f"**{game.value} Test Product**\n"
 
-                f"Alert type: "
+                f"Route: "
                 f"`{alert_type}`"
             ),
         ),
@@ -3322,6 +3455,16 @@ async def status(
             f"**Pokémon Product Monitor:** "
             f"{'✅' if pokemon_products_online else '❌'}\n"
 
+            "**Source-Aware Routing:** ✅\n"
+
+            "**Shopify → Shopify Drops:** ✅\n"
+
+            "**Major Retailer Routing:** ✅\n"
+
+            "**Product Image Support:** ✅\n"
+
+            "**Structured Product Parsing:** ✅\n"
+
             "**Affiliate Pipeline:** ✅\n"
 
             "**Store Self-Healing:** ✅\n"
@@ -3344,7 +3487,7 @@ async def status(
             f"**Redis Queue:** "
             f"{queue}\n\n"
 
-            "**Version:** 0.7.5"
+            "**Version:** 0.7.6"
         ),
     )
 
