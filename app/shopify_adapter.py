@@ -1,5 +1,3 @@
-import re
-
 from urllib.parse import (
     urlparse,
 )
@@ -10,17 +8,61 @@ import aiohttp
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Version 0.7.6
+# Version 0.7.7
 #
 # Shopify Products API
-# TCG classification
-# Product images
-# Product URL normalization
+# Native Currency Detection
+# TCG Classification
+# Product Images
 # =========================================================
 
 
 # =========================================================
-# DOMAIN NORMALIZATION
+# REGION CURRENCY FALLBACK
+# =========================================================
+
+REGION_CURRENCY = {
+
+    "US":
+        "USD",
+
+    "CA":
+        "CAD",
+
+    "UK":
+        "GBP",
+
+    "GB":
+        "GBP",
+
+    "EU":
+        "EUR",
+
+    "DE":
+        "EUR",
+
+    "FR":
+        "EUR",
+
+    "IT":
+        "EUR",
+
+    "ES":
+        "EUR",
+
+    "JP":
+        "JPY",
+
+    "AU":
+        "AUD",
+
+    "NZ":
+        "NZD",
+}
+
+
+# =========================================================
+# DOMAIN
 # =========================================================
 
 def normalize_shopify_domain(
@@ -86,156 +128,104 @@ def normalize_shopify_domain(
 GAME_KEYWORDS = {
 
     "One Piece": [
-
         "one piece card game",
-
         "one piece tcg",
-
         "op-",
-
         "op01",
-
         "op02",
-
         "op03",
-
         "op04",
-
         "op05",
-
         "op06",
-
         "op07",
-
         "op08",
-
         "op09",
-
         "op10",
-
         "op11",
-
         "op12",
-
         "op13",
-
         "op14",
-
         "eb01",
-
         "eb02",
-
         "st-",
     ],
 
     "Pokemon": [
-
         "pokemon tcg",
-
         "pokémon tcg",
-
         "pokemon trading card",
-
         "pokémon trading card",
-
         "elite trainer box",
-
         "booster bundle",
-
         "pokemon booster",
-
         "pokémon booster",
     ],
 
     "Gundam": [
-
         "gundam card game",
-
         "gundam tcg",
     ],
 
     "Dragon Ball Fusion World": [
-
         "dragon ball super card game fusion world",
-
         "fusion world",
     ],
 
     "Riftbound": [
-
         "riftbound",
     ],
 
     "Palworld": [
-
         "palworld card",
-
         "palworld tcg",
     ],
 
     "Naruto": [
-
         "naruto card game",
-
         "naruto tcg",
     ],
 
     "Cyberpunk TCG": [
-
         "cyberpunk tcg",
-
         "cyberpunk trading card",
     ],
 
     "Azuki TCG": [
-
         "azuki tcg",
-
         "azuki card game",
     ],
 
     "Hellbreak TCG": [
-
         "hellbreak tcg",
-
         "hellbreak card",
     ],
 }
 
 
-# =========================================================
-# GAME CLASSIFICATION
-# =========================================================
-
 def classify_game(
-    product: dict,
+    product,
 ):
 
     combined = " ".join(
-
         [
-
             str(
                 product.get(
                     "title",
                     ""
                 )
             ),
-
             str(
                 product.get(
                     "vendor",
                     ""
                 )
             ),
-
             str(
                 product.get(
                     "product_type",
                     ""
                 )
             ),
-
             str(
                 product.get(
                     "tags",
@@ -263,12 +253,12 @@ def classify_game(
 
 
 # =========================================================
-# PRODUCT TYPE
+# TYPE
 # =========================================================
 
 def infer_product_type(
-    title: str,
-    raw_type: str | None,
+    title,
+    raw_type,
 ):
 
     lower = (
@@ -343,14 +333,8 @@ def infer_product_type(
 # =========================================================
 
 def extract_image_url(
-    product: dict,
+    product,
 ):
-
-    # Shopify usually exposes:
-    #
-    # images: [
-    #   {"src": "..."}
-    # ]
 
     images = (
         product.get(
@@ -372,17 +356,13 @@ def extract_image_url(
             dict,
         ):
 
-            src = (
+            return (
                 first.get(
                     "src"
                 )
             )
 
-            if src:
-
-                return src
-
-        elif isinstance(
+        if isinstance(
             first,
             str,
         ):
@@ -417,14 +397,15 @@ def extract_image_url(
 
 
 # =========================================================
-# SHOPIFY ADAPTER
+# ADAPTER
 # =========================================================
 
 class ShopifyAdapter:
 
     def __init__(
         self,
-        domain: str,
+        domain,
+        region="US",
     ):
 
         self.domain = (
@@ -433,8 +414,96 @@ class ShopifyAdapter:
             )
         )
 
+        self.region = (
+            region
+            or "US"
+        ).upper()
+
         self.base_url = (
             f"https://{self.domain}"
+        )
+
+        self.currency = (
+            REGION_CURRENCY.get(
+                self.region,
+                "USD",
+            )
+        )
+
+
+    # =====================================================
+    # FETCH STORE CURRENCY
+    # =====================================================
+
+    async def fetch_store_currency(
+        self,
+    ):
+
+        url = (
+            f"{self.base_url}/cart.js"
+        )
+
+        timeout = (
+            aiohttp.ClientTimeout(
+                total=10
+            )
+        )
+
+        try:
+
+            async with aiohttp.ClientSession(
+                timeout=timeout
+            ) as session:
+
+                async with session.get(
+                    url,
+                    headers={
+                        "Accept":
+                            "application/json",
+                        "User-Agent":
+                            "PonDeX-Trackers/0.7.7",
+                    },
+                ) as response:
+
+                    if response.status == 200:
+
+                        data = (
+                            await response.json(
+                                content_type=None
+                            )
+                        )
+
+                        currency = (
+                            data.get(
+                                "currency"
+                            )
+                        )
+
+                        if currency:
+
+                            self.currency = (
+                                str(
+                                    currency
+                                ).upper()
+                            )
+
+                            return (
+                                self.currency
+                            )
+
+        except Exception as error:
+
+            print(
+                (
+                    "SHOPIFY CURRENCY DETECTION ERROR | "
+                    f"{self.domain} | "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+        return (
+            self.currency
         )
 
 
@@ -444,7 +513,7 @@ class ShopifyAdapter:
 
     async def fetch_products(
         self,
-        max_pages: int = 20,
+        max_pages=20,
     ):
 
         products = []
@@ -461,7 +530,7 @@ class ShopifyAdapter:
                 "application/json",
 
             "User-Agent":
-                "PonDeX-Trackers/0.7.6",
+                "PonDeX-Trackers/0.7.7",
         }
 
         async with aiohttp.ClientSession(
@@ -486,14 +555,11 @@ class ShopifyAdapter:
                     allow_redirects=True,
                 ) as response:
 
-                    if (
-                        response.status
-                        != 200
-                    ):
+                    if response.status != 200:
 
                         raise RuntimeError(
                             (
-                                f"Shopify HTTP "
+                                "Shopify HTTP "
                                 f"{response.status}"
                             )
                         )
@@ -519,9 +585,12 @@ class ShopifyAdapter:
                         page_products
                     )
 
-                    if len(
-                        page_products
-                    ) < 250:
+                    if (
+                        len(
+                            page_products
+                        )
+                        < 250
+                    ):
 
                         break
 
@@ -529,12 +598,12 @@ class ShopifyAdapter:
 
 
     # =====================================================
-    # NORMALIZE PRODUCT
+    # NORMALIZE
     # =====================================================
 
     def normalize_product(
         self,
-        product: dict,
+        product,
     ):
 
         title = (
@@ -565,13 +634,11 @@ class ShopifyAdapter:
         )
 
         available = any(
-
             bool(
                 variant.get(
                     "available"
                 )
             )
-
             for variant in variants
         )
 
@@ -603,65 +670,42 @@ class ShopifyAdapter:
                 continue
 
         price = (
-
             min(
                 prices
             )
-
             if prices
-
             else None
         )
 
         url = (
-
             (
                 f"{self.base_url}"
                 f"/products/{handle}"
             )
-
             if handle
-
             else self.base_url
-        )
-
-        raw_type = (
-            product.get(
-                "product_type"
-            )
         )
 
         product_type = (
             infer_product_type(
                 title,
-                raw_type,
+                product.get(
+                    "product_type"
+                ),
             )
-        )
-
-        image_url = (
-            extract_image_url(
-                product
-            )
-        )
-
-        lower_title = (
-            title.lower()
         )
 
         if (
             "preorder"
-            in lower_title
+            in title.lower()
             or
             "pre-order"
-            in lower_title
+            in title.lower()
         ):
 
             product_state = (
-
                 "PREORDER_LIVE"
-
                 if available
-
                 else "PREORDER_PAGE"
             )
 
@@ -699,6 +743,9 @@ class ShopifyAdapter:
             "price":
                 price,
 
+            "currency":
+                self.currency,
+
             "available":
                 available,
 
@@ -709,7 +756,9 @@ class ShopifyAdapter:
                 product_state,
 
             "image_url":
-                image_url,
+                extract_image_url(
+                    product
+                ),
 
             "vendor":
                 product.get(
