@@ -22,13 +22,11 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 0.7.5
+# Version 0.7.8
 # =========================================================
 
 
-class Base(
-    DeclarativeBase
-):
+class Base(DeclarativeBase):
     pass
 
 
@@ -162,6 +160,72 @@ class UserGamePreference(Base):
 
 
 # =========================================================
+# PRODUCT-TYPE ALERT PREFERENCES
+#
+# SEALED
+# SINGLE
+# ACCESSORY
+# UNKNOWN
+# =========================================================
+
+class UserProductPreference(Base):
+
+    __tablename__ = "user_product_preferences"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "discord_user_id",
+            "game",
+            "product_category",
+            name="uq_user_product_preference",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    discord_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        index=True,
+        nullable=False,
+    )
+
+    game: Mapped[str] = mapped_column(
+        String(150),
+        index=True,
+        nullable=False,
+    )
+
+    product_category: Mapped[str] = mapped_column(
+        String(50),
+        index=True,
+        nullable=False,
+    )
+
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
 # STORES
 # =========================================================
 
@@ -207,10 +271,6 @@ class Store(Base):
         nullable=True,
     )
 
-    # =====================================================
-    # STORE HEALTH
-    # =====================================================
-
     health_status: Mapped[str] = mapped_column(
         String(50),
         default="HEALTHY",
@@ -237,11 +297,6 @@ class Store(Base):
         Text,
         nullable=True,
     )
-
-    # None
-    # MANUAL
-    # HEALTH
-    # REMOVED
 
     disabled_reason: Mapped[str | None] = mapped_column(
         String(50),
@@ -290,6 +345,15 @@ class Product(Base):
         nullable=True,
     )
 
+    # SEALED / SINGLE / ACCESSORY / UNKNOWN
+
+    product_category: Mapped[str] = mapped_column(
+        String(50),
+        default="UNKNOWN",
+        nullable=False,
+        index=True,
+    )
+
     region: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
@@ -335,17 +399,13 @@ class StoreProduct(Base):
     )
 
     store_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            "stores.id"
-        ),
+        ForeignKey("stores.id"),
         nullable=False,
         index=True,
     )
 
     product_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            "products.id"
-        ),
+        ForeignKey("products.id"),
         nullable=False,
         index=True,
     )
@@ -357,6 +417,21 @@ class StoreProduct(Base):
 
     sku: Mapped[str | None] = mapped_column(
         String(255),
+        nullable=True,
+    )
+
+    # Shopify variant used for Smart Quick Cart.
+
+    variant_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    # Retailer-advertised quantity restriction if known.
+
+    purchase_limit: Mapped[int | None] = mapped_column(
+        Integer,
         nullable=True,
     )
 
@@ -404,17 +479,13 @@ class Alert(Base):
     )
 
     product_id: Mapped[int | None] = mapped_column(
-        ForeignKey(
-            "products.id"
-        ),
+        ForeignKey("products.id"),
         nullable=True,
         index=True,
     )
 
     store_id: Mapped[int | None] = mapped_column(
-        ForeignKey(
-            "stores.id"
-        ),
+        ForeignKey("stores.id"),
         nullable=True,
         index=True,
     )
@@ -545,9 +616,7 @@ class PriceHistory(Base):
     )
 
     store_product_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            "store_products.id"
-        ),
+        ForeignKey("store_products.id"),
         nullable=False,
         index=True,
     )
@@ -614,10 +683,6 @@ class PokemonCenterProduct(Base):
         nullable=False,
     )
 
-    # =====================================================
-    # PRODUCT STATE
-    # =====================================================
-
     last_state: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
@@ -633,15 +698,6 @@ class PokemonCenterProduct(Base):
         default=False,
         nullable=False,
     )
-
-    # =====================================================
-    # SCAN DIAGNOSTICS
-    #
-    # NOT_SCANNED
-    # SUCCESS
-    # BLOCKED
-    # ERROR
-    # =====================================================
 
     scan_status: Mapped[str] = mapped_column(
         String(50),
@@ -669,10 +725,6 @@ class PokemonCenterProduct(Base):
         default=0,
         nullable=False,
     )
-
-    # =====================================================
-    # HISTORY
-    # =====================================================
 
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime,
