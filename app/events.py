@@ -6,12 +6,12 @@ from enum import Enum
 # =========================================================
 # LOTUS PRODUCT EVENTS
 # PonDeX Trackers
-# Version 1.0.0
+# Version 1.0.2
 #
-# Historical Pricing
+# Product Family Support
+# Pricing Intelligence
 # MSRP Intelligence
 # Scalper Protection
-# Deal Score
 # Smart Quick Cart
 # =========================================================
 
@@ -20,6 +20,7 @@ class ProductEventType(
     str,
     Enum,
 ):
+
     DISCOVERED = "DISCOVERED"
 
     PAGE_LIVE = "PAGE_LIVE"
@@ -58,6 +59,10 @@ class ProductEventType(
 @dataclass
 class ProductEvent:
 
+    # =====================================================
+    # CORE EVENT
+    # =====================================================
+
     event_type: ProductEventType
 
     game: str
@@ -70,7 +75,7 @@ class ProductEvent:
 
 
     # =====================================================
-    # CURRENT PRICING
+    # CURRENT PRICE
     # =====================================================
 
     price: float | None = None
@@ -81,15 +86,89 @@ class ProductEvent:
 
 
     # =====================================================
-    # HISTORICAL PRICING
+    # STOCK
+    # =====================================================
+
+    in_stock: bool = False
+
+
+    # =====================================================
+    # REGION / LANGUAGE
+    # =====================================================
+
+    region: str = "US"
+
+    language: str = "English"
+
+
+    # =====================================================
+    # PRODUCT IDENTITY
     #
-    # Used for:
+    # product_type examples:
     #
-    # - 30-day low
-    # - 30-day average
-    # - 30-day high
-    # - price-drop calculations
-    # - historical deal score
+    # Booster Box
+    # Booster Bundle
+    # Elite Trainer Box
+    # Starter Deck
+    #
+    # product_category:
+    #
+    # SEALED
+    # SINGLE
+    # ACCESSORY
+    # UNKNOWN
+    #
+    # product_family:
+    #
+    # GLOBAL_STANDARD
+    # JP
+    # KR
+    # CN
+    # UNKNOWN
+    # =====================================================
+
+    product_type: str = "Unknown"
+
+    product_category: str = "UNKNOWN"
+
+    product_family: str = "UNKNOWN"
+
+
+    # =====================================================
+    # SOURCE ROUTING
+    #
+    # shopify
+    # major_retailer
+    # pokemon_center
+    # queue
+    # simulation
+    # =====================================================
+
+    source_type: str = "unknown"
+
+    retailer_key: str | None = None
+
+
+    # =====================================================
+    # PRODUCT IMAGE
+    # =====================================================
+
+    image_url: str | None = None
+
+
+    # =====================================================
+    # SMART QUICK CART
+    # =====================================================
+
+    variant_id: str | None = None
+
+    purchase_limit: int | None = None
+
+    cart_base_url: str | None = None
+
+
+    # =====================================================
+    # HISTORICAL PRICE INTELLIGENCE
     # =====================================================
 
     price_window_days: int | None = None
@@ -112,30 +191,7 @@ class ProductEvent:
 
 
     # =====================================================
-    # MSRP / REFERENCE PRICING
-    #
-    # msrp:
-    # MSRP converted into the store's current native
-    # currency when conversion is required.
-    #
-    # msrp_original:
-    # Original verified reference amount.
-    #
-    # Example:
-    #
-    # Verified MSRP:
-    # $59.99 USD
-    #
-    # Hobbiesville listing:
-    # C$89.99 CAD
-    #
-    # Event stores:
-    #
-    # msrp = ~82.75
-    # msrp_currency = CAD
-    #
-    # msrp_original = 59.99
-    # msrp_original_currency = USD
+    # MSRP INTELLIGENCE
     # =====================================================
 
     msrp: float | None = None
@@ -145,6 +201,28 @@ class ProductEvent:
     msrp_source: str | None = None
 
     msrp_confidence: str | None = None
+
+
+    # -----------------------------------------------------
+    # Original MSRP before conversion.
+    #
+    # Example:
+    #
+    # MSRP:
+    # $119.99 USD
+    #
+    # Shopify store:
+    # CAD
+    #
+    # msrp_original:
+    # 119.99
+    #
+    # msrp_original_currency:
+    # USD
+    #
+    # msrp:
+    # converted CAD reference
+    # -----------------------------------------------------
 
     msrp_original: float | None = None
 
@@ -163,11 +241,16 @@ class ProductEvent:
 
     msrp_price_state: str | None = None
 
+
+    # =====================================================
+    # SCALPER PROTECTION
+    # =====================================================
+
     scalper_risk: str | None = None
 
 
     # =====================================================
-    # FINAL DEAL SCORE
+    # COMBINED DEAL INTELLIGENCE
     # =====================================================
 
     deal_score: float | None = None
@@ -178,50 +261,6 @@ class ProductEvent:
 
 
     # =====================================================
-    # INVENTORY
-    # =====================================================
-
-    in_stock: bool = False
-
-
-    # =====================================================
-    # PRODUCT / REGION
-    # =====================================================
-
-    region: str = "US"
-
-    language: str = "English"
-
-    product_type: str = "Unknown"
-
-    # SEALED / SINGLE / ACCESSORY / UNKNOWN
-
-    product_category: str = "UNKNOWN"
-
-
-    # =====================================================
-    # SOURCE
-    # =====================================================
-
-    source_type: str = "unknown"
-
-    retailer_key: str | None = None
-
-    image_url: str | None = None
-
-
-    # =====================================================
-    # SMART QUICK CART
-    # =====================================================
-
-    variant_id: str | None = None
-
-    purchase_limit: int | None = None
-
-    cart_base_url: str | None = None
-
-
-    # =====================================================
     # TIME
     # =====================================================
 
@@ -229,16 +268,12 @@ class ProductEvent:
 
 
     # =====================================================
-    # NORMALIZATION
+    # POST INIT
     # =====================================================
 
     def __post_init__(
         self,
     ):
-
-        # -------------------------------------------------
-        # Timestamp
-        # -------------------------------------------------
 
         if self.timestamp is None:
 
@@ -247,72 +282,137 @@ class ProductEvent:
             )
 
 
-        # -------------------------------------------------
-        # Product Category
-        # -------------------------------------------------
+        # =================================================
+        # NORMALIZE PRODUCT CATEGORY
+        # =================================================
 
-        if self.product_category:
-
-            self.product_category = (
-                str(
-                    self.product_category
-                )
-                .strip()
-                .upper()
+        self.product_category = (
+            str(
+                self.product_category
+                or "UNKNOWN"
             )
+            .strip()
+            .upper()
+        )
 
-        else:
+
+        if self.product_category not in {
+
+            "SEALED",
+            "SINGLE",
+            "ACCESSORY",
+            "UNKNOWN",
+
+        }:
 
             self.product_category = (
                 "UNKNOWN"
             )
 
 
-        # -------------------------------------------------
-        # Store Currency
-        # -------------------------------------------------
+        # =================================================
+        # NORMALIZE PRODUCT FAMILY
+        # =================================================
 
-        if self.currency:
+        self.product_family = (
+            str(
+                self.product_family
+                or "UNKNOWN"
+            )
+            .strip()
+            .upper()
+            .replace(
+                "-",
+                "_",
+            )
+            .replace(
+                " ",
+                "_",
+            )
+        )
 
-            self.currency = (
-                str(
-                    self.currency
-                )
-                .strip()
-                .upper()
+
+        family_aliases = {
+
+            "GLOBAL":
+                "GLOBAL_STANDARD",
+
+            "STANDARD":
+                "GLOBAL_STANDARD",
+
+            "ENGLISH":
+                "GLOBAL_STANDARD",
+
+            "INTERNATIONAL":
+                "GLOBAL_STANDARD",
+
+            "JAPAN":
+                "JP",
+
+            "JAPANESE":
+                "JP",
+
+            "JPN":
+                "JP",
+
+            "KOREA":
+                "KR",
+
+            "KOREAN":
+                "KR",
+
+            "KOR":
+                "KR",
+
+            "CHINA":
+                "CN",
+
+            "CHINESE":
+                "CN",
+
+            "SIMPLIFIED_CHINESE":
+                "CN",
+        }
+
+
+        self.product_family = (
+            family_aliases.get(
+
+                self.product_family,
+
+                self.product_family,
+            )
+        )
+
+
+        if self.product_family not in {
+
+            "GLOBAL_STANDARD",
+            "JP",
+            "KR",
+            "CN",
+            "UNKNOWN",
+
+        }:
+
+            self.product_family = (
+                "UNKNOWN"
             )
 
-        else:
 
-            self.currency = (
-                "USD"
+        # =================================================
+        # NORMALIZE CURRENCIES
+        # =================================================
+
+        self.currency = (
+            str(
+                self.currency
+                or "USD"
             )
+            .strip()
+            .upper()
+        )
 
-
-        # -------------------------------------------------
-        # Region
-        # -------------------------------------------------
-
-        if self.region:
-
-            self.region = (
-                str(
-                    self.region
-                )
-                .strip()
-                .upper()
-            )
-
-        else:
-
-            self.region = (
-                "US"
-            )
-
-
-        # -------------------------------------------------
-        # Converted MSRP Currency
-        # -------------------------------------------------
 
         if self.msrp_currency:
 
@@ -325,10 +425,6 @@ class ProductEvent:
             )
 
 
-        # -------------------------------------------------
-        # Original MSRP Currency
-        # -------------------------------------------------
-
         if self.msrp_original_currency:
 
             self.msrp_original_currency = (
@@ -340,91 +436,15 @@ class ProductEvent:
             )
 
 
-        # -------------------------------------------------
-        # MSRP Confidence
-        # -------------------------------------------------
+        # =================================================
+        # NORMALIZE SOURCE
+        # =================================================
 
-        if self.msrp_confidence:
-
-            self.msrp_confidence = (
-                str(
-                    self.msrp_confidence
-                )
-                .strip()
-                .upper()
+        self.source_type = (
+            str(
+                self.source_type
+                or "unknown"
             )
-
-
-        # -------------------------------------------------
-        # MSRP Price State
-        # -------------------------------------------------
-
-        if self.msrp_price_state:
-
-            self.msrp_price_state = (
-                str(
-                    self.msrp_price_state
-                )
-                .strip()
-                .upper()
-            )
-
-
-        # -------------------------------------------------
-        # Deal Confidence
-        # -------------------------------------------------
-
-        if self.deal_confidence:
-
-            self.deal_confidence = (
-                str(
-                    self.deal_confidence
-                )
-                .strip()
-                .upper()
-            )
-
-
-        # -------------------------------------------------
-        # Scalper Risk
-        # -------------------------------------------------
-
-        if self.scalper_risk:
-
-            self.scalper_risk = (
-                str(
-                    self.scalper_risk
-                )
-                .strip()
-                .upper()
-            )
-
-
-        # -------------------------------------------------
-        # Source Type
-        # -------------------------------------------------
-
-        if self.source_type:
-
-            self.source_type = (
-                str(
-                    self.source_type
-                )
-                .strip()
-                .lower()
-            )
-
-        else:
-
-            self.source_type = (
-                "unknown"
-            )
-
-
-        # -------------------------------------------------
-        # Boolean MSRP Conversion Flag
-        # -------------------------------------------------
-
-        self.msrp_conversion_used = bool(
-            self.msrp_conversion_used
+            .strip()
+            .lower()
         )
