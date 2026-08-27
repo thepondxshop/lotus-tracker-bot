@@ -163,6 +163,11 @@ class UserGamePreference(Base):
 
 # =========================================================
 # PRODUCT-TYPE ALERT PREFERENCES
+#
+# SEALED
+# SINGLE
+# ACCESSORY
+# UNKNOWN
 # =========================================================
 
 class UserProductPreference(Base):
@@ -205,6 +210,75 @@ class UserProductPreference(Base):
     enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# =========================================================
+# PRODUCT FAMILY ALERT PREFERENCES
+#
+# Per-user, per-game product configuration preferences.
+#
+# GLOBAL_STANDARD
+# JP
+# KR
+# CN
+# UNKNOWN
+# =========================================================
+
+class UserProductFamilyPreference(Base):
+
+    __tablename__ = "user_product_family_preferences"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "discord_user_id",
+            "game",
+            "product_family",
+            name="uq_user_product_family_preference",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    discord_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        index=True,
+        nullable=False,
+    )
+
+    game: Mapped[str] = mapped_column(
+        String(150),
+        index=True,
+        nullable=False,
+    )
+
+    product_family: Mapped[str] = mapped_column(
+        String(50),
+        index=True,
+        nullable=False,
+    )
+
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
         nullable=False,
     )
 
@@ -342,6 +416,8 @@ class Product(Base):
         nullable=True,
     )
 
+    # SEALED / SINGLE / ACCESSORY / UNKNOWN
+
     product_category: Mapped[str] = mapped_column(
         String(50),
         default="UNKNOWN",
@@ -428,11 +504,15 @@ class StoreProduct(Base):
         nullable=True,
     )
 
+    # Shopify variant used for Smart Quick Cart.
+
     variant_id: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
         index=True,
     )
+
+    # Retailer-advertised purchase restriction if known.
 
     purchase_limit: Mapped[int | None] = mapped_column(
         Integer,
@@ -651,6 +731,20 @@ class PriceHistory(Base):
 
 # =========================================================
 # PRICING REFERENCES
+#
+# MSRP hierarchy:
+#
+# EXACT_PRODUCT
+# PRODUCT_TYPE
+# GAME_DEFAULT
+#
+# Product families:
+#
+# GLOBAL_STANDARD
+# JP
+# KR
+# CN
+# UNKNOWN
 # =========================================================
 
 class PricingReference(Base):
@@ -728,6 +822,8 @@ class PricingReference(Base):
         nullable=False,
         index=True,
     )
+
+    # EXACT_PRODUCT / PRODUCT_TYPE / GAME_DEFAULT
 
     scope_type: Mapped[str] = mapped_column(
         String(50),
