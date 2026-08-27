@@ -69,6 +69,7 @@ from app.events import (
 from app.event_service import (
     process_product_event,
     get_queue_size,
+    clear_event_queue,
 )
 
 
@@ -139,21 +140,11 @@ from app.pokemon_center_products import (
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 0.7.6
-#
-# Shopify Source Routing
-# Pokémon Structured Parsing
-# Product Image Support
+# Version 0.7.8-hotfix
 # =========================================================
 
 
-# =========================================================
-# INTENTS
-# =========================================================
-
-intents = (
-    discord.Intents.default()
-)
+intents = discord.Intents.default()
 
 intents.members = True
 
@@ -326,7 +317,7 @@ async def save_member_to_database(
 
 
 # =========================================================
-# GAME ROLE UPDATE
+# GAME ROLES
 # =========================================================
 
 async def update_game_roles(
@@ -371,7 +362,6 @@ async def update_game_roles(
         )
 
         if not role_id:
-
             continue
 
         role = (
@@ -381,7 +371,6 @@ async def update_game_roles(
         )
 
         if role is None:
-
             continue
 
         try:
@@ -391,25 +380,18 @@ async def update_game_roles(
                 in selected_games
             ):
 
-                if (
-                    role
-                    not in member.roles
-                ):
+                if role not in member.roles:
 
                     await member.add_roles(
                         role,
-                        reason=(
-                            "Lotus game selection"
-                        ),
+                        reason="Lotus game selection",
                     )
 
             elif role in member.roles:
 
                 await member.remove_roles(
                     role,
-                    reason=(
-                        "Lotus game selection"
-                    ),
+                    reason="Lotus game selection",
                 )
 
         except Exception as error:
@@ -420,6 +402,7 @@ async def update_game_roles(
                     f"{type(error).__name__}"
                 )
             )
+
 
     database_saved = False
 
@@ -445,15 +428,18 @@ async def update_game_roles(
             "Database save failed"
         )
 
+
     current_games = (
         get_followed_games(
             member
         )
     )
 
+
     message = (
         "✅ **Game preferences updated.**\n\n"
     )
+
 
     if current_games:
 
@@ -472,11 +458,13 @@ async def update_game_roles(
             "No games currently selected."
         )
 
+
     if database_saved:
 
         message += (
             "\n\n💾 Preferences saved to Lotus."
         )
+
 
     if errors:
 
@@ -489,6 +477,7 @@ async def update_game_roles(
             for error in errors
         )
 
+
     return (
         True,
         message,
@@ -496,7 +485,7 @@ async def update_game_roles(
 
 
 # =========================================================
-# GAME SELECTOR
+# GAME SELECT
 # =========================================================
 
 class GameSelect(
@@ -511,7 +500,6 @@ class GameSelect(
         current_ids = {
 
             role.id
-
             for role in member.roles
         }
 
@@ -548,6 +536,7 @@ class GameSelect(
                     ),
                 )
             )
+
 
         super().__init__(
 
@@ -605,7 +594,7 @@ class GameSelectView(
 
 
 # =========================================================
-# PERSISTENT GAME SELECTOR
+# PERSISTENT SELECTOR
 # =========================================================
 
 class PersistentGameSelect(
@@ -637,6 +626,7 @@ class PersistentGameSelect(
                     emoji=emoji,
                 )
             )
+
 
         super().__init__(
 
@@ -711,15 +701,11 @@ class LotusTrackerBot(
         )
 
         self.database_ready = False
-
         self.redis_ready = False
 
         self.event_worker_task = None
-
         self.shopify_monitor_task = None
-
         self.pokemon_center_task = None
-
         self.pokemon_product_task = None
 
 
@@ -731,9 +717,8 @@ class LotusTrackerBot(
             PersistentGameSelectView()
         )
 
-        # =================================================
+
         # DATABASE
-        # =================================================
 
         try:
 
@@ -760,9 +745,8 @@ class LotusTrackerBot(
                 )
             )
 
-        # =================================================
+
         # REDIS
-        # =================================================
 
         try:
 
@@ -786,9 +770,6 @@ class LotusTrackerBot(
                 )
             )
 
-        # =================================================
-        # EVENT WORKER
-        # =================================================
 
         self.event_worker_task = (
             asyncio.create_task(
@@ -802,9 +783,6 @@ class LotusTrackerBot(
             "Lotus Event Worker task created."
         )
 
-        # =================================================
-        # SHOPIFY MONITOR
-        # =================================================
 
         self.shopify_monitor_task = (
             asyncio.create_task(
@@ -816,9 +794,6 @@ class LotusTrackerBot(
             "Lotus Shopify Monitor task created."
         )
 
-        # =================================================
-        # POKEMON CENTER QUEUE
-        # =================================================
 
         self.pokemon_center_task = (
             asyncio.create_task(
@@ -830,9 +805,6 @@ class LotusTrackerBot(
             "Pokémon Center Queue Monitor task created."
         )
 
-        # =================================================
-        # POKEMON CENTER PRODUCTS
-        # =================================================
 
         self.pokemon_product_task = (
             asyncio.create_task(
@@ -844,9 +816,6 @@ class LotusTrackerBot(
             "Pokémon Center Product Monitor task created."
         )
 
-        # =================================================
-        # COMMAND SYNC
-        # =================================================
 
         synced = (
             await self.tree.sync()
@@ -878,10 +847,11 @@ async def on_ready():
     )
 
     print(
-        "Version: 0.7.6"
+        "Version: 0.7.8-hotfix"
     )
 
     print("=" * 60)
+
 
     await bot.change_presence(
 
@@ -899,7 +869,7 @@ async def on_ready():
 
 
 # =========================================================
-# /PING
+# BASIC COMMANDS
 # =========================================================
 
 @bot.tree.command(
@@ -922,10 +892,6 @@ async def ping(
     )
 
 
-# =========================================================
-# /GAMES
-# =========================================================
-
 @bot.tree.command(
     name="games",
     description="Choose your TCGs.",
@@ -934,16 +900,14 @@ async def games(
     interaction,
 ):
 
-    member = (
-        interaction.user
-    )
+    member = interaction.user
 
     if not isinstance(
         member,
         discord.Member,
     ):
-
         return
+
 
     embed = discord.Embed(
 
@@ -954,6 +918,7 @@ async def games(
             "Lotus alerts for."
         ),
     )
+
 
     await interaction.response.send_message(
 
@@ -966,10 +931,6 @@ async def games(
         ephemeral=True,
     )
 
-
-# =========================================================
-# /SETUPGAMES
-# =========================================================
 
 @bot.tree.command(
     name="setupgames",
@@ -987,8 +948,8 @@ async def setupgames(
     )
 
     if interaction.guild is None:
-
         return
+
 
     channel_id = safe_int(
         CHANNEL_ROLES
@@ -1005,6 +966,7 @@ async def setupgames(
         else None
     )
 
+
     if channel is None:
 
         await interaction.followup.send(
@@ -1013,6 +975,7 @@ async def setupgames(
         )
 
         return
+
 
     embed = discord.Embed(
 
@@ -1024,10 +987,14 @@ async def setupgames(
         ),
     )
 
+
     await channel.send(
+
         embed=embed,
+
         view=PersistentGameSelectView(),
     )
+
 
     await interaction.followup.send(
 
@@ -1041,7 +1008,7 @@ async def setupgames(
 
 
 # =========================================================
-# /SUBSCRIPTION
+# SUBSCRIPTION
 # =========================================================
 
 @bot.tree.command(
@@ -1052,16 +1019,14 @@ async def subscription(
     interaction,
 ):
 
-    member = (
-        interaction.user
-    )
+    member = interaction.user
 
     if not isinstance(
         member,
         discord.Member,
     ):
-
         return
+
 
     tier = (
         get_subscription(
@@ -1074,6 +1039,7 @@ async def subscription(
             member
         )
     )
+
 
     tier_details = {
 
@@ -1126,6 +1092,7 @@ async def subscription(
         ),
     }
 
+
     icon, price, features = (
         tier_details.get(
             tier,
@@ -1134,6 +1101,7 @@ async def subscription(
             ],
         )
     )
+
 
     embed = discord.Embed(
 
@@ -1147,11 +1115,13 @@ async def subscription(
         ),
     )
 
+
     embed.add_field(
         name="Your Access",
         value=features,
         inline=False,
     )
+
 
     embed.add_field(
 
@@ -1169,6 +1139,7 @@ async def subscription(
         inline=False,
     )
 
+
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,
@@ -1176,7 +1147,7 @@ async def subscription(
 
 
 # =========================================================
-# /SETTINGS
+# SETTINGS
 # =========================================================
 
 @bot.tree.command(
@@ -1187,28 +1158,23 @@ async def settings(
     interaction,
 ):
 
-    member = (
-        interaction.user
-    )
+    member = interaction.user
 
     if not isinstance(
         member,
         discord.Member,
     ):
-
         return
 
-    tier = (
-        get_subscription(
-            member
-        )
+
+    tier = get_subscription(
+        member
     )
 
-    games = (
-        get_followed_games(
-            member
-        )
+    games = get_followed_games(
+        member
     )
+
 
     features = [
 
@@ -1258,6 +1224,7 @@ async def settings(
         ),
     ]
 
+
     feature_text = "\n".join(
 
         (
@@ -1268,13 +1235,16 @@ async def settings(
             )
             else "🔒"
         )
+
         + f" {name}"
 
         for (
             name,
             required,
-        ) in features
+        )
+        in features
     )
+
 
     embed = discord.Embed(
 
@@ -1284,6 +1254,7 @@ async def settings(
             f"**Subscription:** {tier}"
         ),
     )
+
 
     embed.add_field(
 
@@ -1301,11 +1272,16 @@ async def settings(
         inline=False,
     )
 
+
     embed.add_field(
+
         name="Features",
+
         value=feature_text,
+
         inline=False,
     )
+
 
     await interaction.response.send_message(
         embed=embed,
@@ -1314,7 +1290,7 @@ async def settings(
 
 
 # =========================================================
-# /DBME
+# DATABASE PROFILE
 # =========================================================
 
 @bot.tree.command(
@@ -1329,15 +1305,20 @@ async def dbme(
         ephemeral=True
     )
 
+
     profile = (
         await load_user_preferences(
             interaction.user.id
         )
     )
 
+
     if (
         profile is None
-        and isinstance(
+
+        and
+
+        isinstance(
             interaction.user,
             discord.Member,
         )
@@ -1353,6 +1334,7 @@ async def dbme(
             )
         )
 
+
     if profile is None:
 
         await interaction.followup.send(
@@ -1361,6 +1343,7 @@ async def dbme(
         )
 
         return
+
 
     games_text = (
 
@@ -1379,6 +1362,7 @@ async def dbme(
         else "None"
     )
 
+
     await interaction.followup.send(
 
         (
@@ -1396,7 +1380,7 @@ async def dbme(
 
 
 # =========================================================
-# /DBSTATUS
+# DB STATUS
 # =========================================================
 
 @bot.tree.command(
@@ -1411,6 +1395,7 @@ async def dbstatus(
         ephemeral=True
     )
 
+
     try:
 
         if SessionLocal is None:
@@ -1418,6 +1403,7 @@ async def dbstatus(
             raise RuntimeError(
                 "Database unavailable."
             )
+
 
         async with SessionLocal() as session:
 
@@ -1427,16 +1413,20 @@ async def dbstatus(
                 )
             )
 
+
         bot.database_ready = True
+
 
         await interaction.followup.send(
             "🟢 PostgreSQL is online.",
             ephemeral=True,
         )
 
+
     except Exception as error:
 
         bot.database_ready = False
+
 
         await interaction.followup.send(
 
@@ -1452,7 +1442,7 @@ async def dbstatus(
 
 
 # =========================================================
-# /REDISSTATUS
+# REDIS
 # =========================================================
 
 @bot.tree.command(
@@ -1467,9 +1457,8 @@ async def redisstatus(
         await check_redis()
     )
 
-    bot.redis_ready = (
-        online
-    )
+    bot.redis_ready = online
+
 
     await interaction.response.send_message(
 
@@ -1484,7 +1473,7 @@ async def redisstatus(
 
 
 # =========================================================
-# /EVENTSTATUS
+# EVENT STATUS
 # =========================================================
 
 @bot.tree.command(
@@ -1509,6 +1498,7 @@ async def eventstatus(
         not bot.event_worker_task.done()
     )
 
+
     embed = discord.Embed(
 
         title="📡 Lotus Event Engine",
@@ -1528,14 +1518,60 @@ async def eventstatus(
 
             "**Source Routing:** ✅\n"
 
+            "**Game Validation:** ✅\n"
+
             "**Product Images:** ✅\n"
 
             "**Affiliate Pipeline:** ✅"
         ),
     )
 
+
     await interaction.response.send_message(
         embed=embed,
+        ephemeral=True,
+    )
+
+
+# =========================================================
+# CLEAR STALE EVENT QUEUE
+# =========================================================
+
+@bot.tree.command(
+    name="cleareventqueue",
+    description="Clear stale Lotus product events from Redis.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def cleareventqueue(
+    interaction,
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+
+    removed = (
+        await clear_event_queue()
+    )
+
+
+    await interaction.followup.send(
+
+        (
+            "🧹 **Lotus event queue cleared.**\n\n"
+
+            f"Removed: "
+            f"`{removed}` stale event(s)\n\n"
+
+            "✅ PostgreSQL history preserved\n"
+            "✅ Stores preserved\n"
+            "✅ Products preserved\n"
+            "✅ Preferences preserved"
+        ),
+
         ephemeral=True,
     )
 
@@ -1562,15 +1598,20 @@ async def addshopifystore(
         ephemeral=True
     )
 
+
     try:
 
         store, created = (
             await add_shopify_store(
+
                 name=name,
+
                 domain=domain,
+
                 region=region,
             )
         )
+
 
         await interaction.followup.send(
 
@@ -1583,6 +1624,7 @@ async def addshopifystore(
 
             ephemeral=True,
         )
+
 
     except Exception as error:
 
@@ -1599,10 +1641,6 @@ async def addshopifystore(
         )
 
 
-# =========================================================
-# /STORES
-# =========================================================
-
 @bot.tree.command(
     name="stores",
     description="List monitored Shopify stores.",
@@ -1618,9 +1656,11 @@ async def stores(
         ephemeral=True
     )
 
+
     store_list = (
         await list_shopify_stores()
     )
+
 
     if not store_list:
 
@@ -1631,7 +1671,9 @@ async def stores(
 
         return
 
+
     lines = []
+
 
     for store in store_list:
 
@@ -1654,23 +1696,18 @@ async def stores(
             )
         )
 
+
     await interaction.followup.send(
 
         (
             "\n\n".join(
                 lines
             )
-        )[
-            :1900
-        ],
+        )[:1900],
 
         ephemeral=True,
     )
 
-
-# =========================================================
-# /STOREINFO
-# =========================================================
 
 @bot.tree.command(
     name="storeinfo",
@@ -1690,6 +1727,7 @@ async def storeinfo(
         )
     )
 
+
     if store is None:
 
         await interaction.response.send_message(
@@ -1699,11 +1737,11 @@ async def storeinfo(
 
         return
 
+
     embed = discord.Embed(
-        title=(
-            f"🏪 {store.name}"
-        )
+        title=f"🏪 {store.name}"
     )
+
 
     embed.add_field(
         name="Store ID",
@@ -1779,24 +1817,19 @@ async def storeinfo(
     embed.add_field(
         name="Last Error",
         value=(
-            store.last_error[
-                :1000
-            ]
+            store.last_error[:1000]
             if store.last_error
             else "None ✅"
         ),
         inline=False,
     )
 
+
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,
     )
 
-
-# =========================================================
-# /DISABLESTORE
-# =========================================================
 
 @bot.tree.command(
     name="disablestore",
@@ -1817,6 +1850,7 @@ async def disablestore(
         )
     )
 
+
     if store is None:
 
         await interaction.response.send_message(
@@ -1825,6 +1859,7 @@ async def disablestore(
         )
 
         return
+
 
     await interaction.response.send_message(
 
@@ -1838,10 +1873,6 @@ async def disablestore(
         ephemeral=True,
     )
 
-
-# =========================================================
-# /ENABLESTORE
-# =========================================================
 
 @bot.tree.command(
     name="enablestore",
@@ -1862,6 +1893,7 @@ async def enablestore(
         )
     )
 
+
     if store is None:
 
         await interaction.response.send_message(
@@ -1871,15 +1903,12 @@ async def enablestore(
 
         return
 
+
     await interaction.response.send_message(
         f"🟢 **{store.name}** enabled.",
         ephemeral=True,
     )
 
-
-# =========================================================
-# /REMOVESTORE
-# =========================================================
 
 @bot.tree.command(
     name="removestore",
@@ -1899,6 +1928,7 @@ async def removestore(
         )
     )
 
+
     if store is None:
 
         await interaction.response.send_message(
@@ -1907,6 +1937,7 @@ async def removestore(
         )
 
         return
+
 
     await interaction.response.send_message(
 
@@ -1920,10 +1951,6 @@ async def removestore(
         ephemeral=True,
     )
 
-
-# =========================================================
-# /RESTORESTORE
-# =========================================================
 
 @bot.tree.command(
     name="restorestore",
@@ -1943,6 +1970,7 @@ async def restorestore(
         )
     )
 
+
     if store is None:
 
         await interaction.response.send_message(
@@ -1951,6 +1979,7 @@ async def restorestore(
         )
 
         return
+
 
     await interaction.response.send_message(
 
@@ -1982,6 +2011,7 @@ async def healthstatus(
         await get_health_overview()
     )
 
+
     await interaction.response.send_message(
 
         (
@@ -2007,10 +2037,6 @@ async def healthstatus(
     )
 
 
-# =========================================================
-# RETRY STORE
-# =========================================================
-
 @bot.tree.command(
     name="retrystore",
     description="Immediately retry a store health check.",
@@ -2027,17 +2053,17 @@ async def retrystore(
         ephemeral=True
     )
 
+
     result = (
         await retry_shopify_store(
             store_id
         )
     )
 
-    reason = (
-        result[
-            "reason"
-        ]
-    )
+    reason = result[
+        "reason"
+    ]
+
 
     if reason == "NOT_FOUND":
 
@@ -2047,6 +2073,7 @@ async def retrystore(
         )
 
         return
+
 
     if reason == "MANUAL":
 
@@ -2062,6 +2089,7 @@ async def retrystore(
 
         return
 
+
     if reason == "REMOVED":
 
         await interaction.followup.send(
@@ -2075,6 +2103,7 @@ async def retrystore(
         )
 
         return
+
 
     if result[
         "success"
@@ -2122,9 +2151,11 @@ async def scanshopify(
         ephemeral=True
     )
 
+
     results = (
         await scan_all_shopify_stores()
     )
+
 
     if not results:
 
@@ -2140,7 +2171,9 @@ async def scanshopify(
 
         return
 
+
     lines = []
+
 
     for result in results:
 
@@ -2174,23 +2207,18 @@ async def scanshopify(
             )
         )
 
+
     await interaction.followup.send(
 
         (
             "\n\n".join(
                 lines
             )
-        )[
-            :1900
-        ],
+        )[:1900],
 
         ephemeral=True,
     )
 
-
-# =========================================================
-# SHOPIFY STATUS
-# =========================================================
 
 @bot.tree.command(
     name="shopifystatus",
@@ -2204,6 +2232,7 @@ async def shopifystatus(
         get_shopify_monitor_status()
     )
 
+
     worker_online = (
 
         bot.shopify_monitor_task
@@ -2213,6 +2242,7 @@ async def shopifystatus(
 
         not bot.shopify_monitor_task.done()
     )
+
 
     embed = discord.Embed(
 
@@ -2239,11 +2269,20 @@ async def shopifystatus(
             f"{data['flickers_detected']}\n"
 
             f"**Recovered Stores:** "
-            f"{data['stores_recovered']}\n"
+            f"{data['stores_recovered']}\n\n"
 
-            "**Alert Route:** `#shopify-drops`"
+            "**Routing:**\n"
+
+            "Page Discovery → Early Page Detection\n"
+
+            "Preorders → Preorder Alerts\n"
+
+            "Stock → Shopify Drops\n"
+
+            "Price Changes → Deals"
         ),
     )
+
 
     embed.add_field(
 
@@ -2259,6 +2298,7 @@ async def shopifystatus(
         inline=False,
     )
 
+
     embed.add_field(
 
         name="Last Error",
@@ -2273,6 +2313,7 @@ async def shopifystatus(
         inline=False,
     )
 
+
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,
@@ -2280,7 +2321,7 @@ async def shopifystatus(
 
 
 # =========================================================
-# POKEMON CENTER QUEUE STATUS
+# POKEMON CENTER QUEUE
 # =========================================================
 
 @bot.tree.command(
@@ -2295,6 +2336,7 @@ async def pokemoncenterstatus(
         get_pokemon_center_status()
     )
 
+
     worker_online = (
 
         bot.pokemon_center_task
@@ -2304,6 +2346,7 @@ async def pokemoncenterstatus(
 
         not bot.pokemon_center_task.done()
     )
+
 
     embed = discord.Embed(
 
@@ -2328,6 +2371,7 @@ async def pokemoncenterstatus(
         ),
     )
 
+
     embed.add_field(
 
         name="Last Scan",
@@ -2341,6 +2385,7 @@ async def pokemoncenterstatus(
 
         inline=False,
     )
+
 
     embed.add_field(
 
@@ -2356,15 +2401,12 @@ async def pokemoncenterstatus(
         inline=False,
     )
 
+
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,
     )
 
-
-# =========================================================
-# SCAN POKEMON CENTER QUEUE
-# =========================================================
 
 @bot.tree.command(
     name="scanpokemoncenter",
@@ -2381,11 +2423,13 @@ async def scanpokemoncenter(
         ephemeral=True
     )
 
+
     try:
 
         results = (
             await scan_pokemon_center()
         )
+
 
         if not results:
 
@@ -2401,7 +2445,9 @@ async def scanpokemoncenter(
 
             return
 
+
         lines = []
+
 
         for result in results:
 
@@ -2418,18 +2464,18 @@ async def scanpokemoncenter(
                 )
             )
 
+
         await interaction.followup.send(
 
             (
                 "\n\n".join(
                     lines
                 )
-            )[
-                :1900
-            ],
+            )[:1900],
 
             ephemeral=True,
         )
+
 
     except Exception as error:
 
@@ -2447,7 +2493,7 @@ async def scanpokemoncenter(
 
 
 # =========================================================
-# ADD POKEMON PRODUCT
+# POKEMON PRODUCTS
 # =========================================================
 
 @bot.tree.command(
@@ -2467,6 +2513,7 @@ async def addpokemonproduct(
         ephemeral=True
     )
 
+
     try:
 
         product, created = (
@@ -2475,6 +2522,7 @@ async def addpokemonproduct(
                 region,
             )
         )
+
 
         await interaction.followup.send(
 
@@ -2501,6 +2549,7 @@ async def addpokemonproduct(
             ephemeral=True,
         )
 
+
     except Exception as error:
 
         await interaction.followup.send(
@@ -2515,10 +2564,6 @@ async def addpokemonproduct(
             ephemeral=True,
         )
 
-
-# =========================================================
-# POKEMON PRODUCTS
-# =========================================================
 
 @bot.tree.command(
     name="pokemonproducts",
@@ -2535,11 +2580,13 @@ async def pokemonproducts(
         ephemeral=True
     )
 
+
     products = (
         await list_pokemon_products(
             active_only=False
         )
     )
+
 
     if not products:
 
@@ -2550,13 +2597,11 @@ async def pokemonproducts(
 
         return
 
+
     lines = []
 
-    for product in products:
 
-        # =================================================
-        # STATE DISPLAY
-        # =================================================
+    for product in products:
 
         if product.last_state:
 
@@ -2573,19 +2618,12 @@ async def pokemonproducts(
             )
         ):
 
-            state_text = (
-                "UNKNOWN"
-            )
+            state_text = "UNKNOWN"
 
         else:
 
-            state_text = (
-                "NOT_SCANNED"
-            )
+            state_text = "NOT_SCANNED"
 
-        # =================================================
-        # ICON
-        # =================================================
 
         if (
             product.scan_status
@@ -2619,6 +2657,7 @@ async def pokemonproducts(
 
             scan_icon = "⚪"
 
+
         lines.append(
 
             (
@@ -2651,23 +2690,18 @@ async def pokemonproducts(
             )
         )
 
+
     await interaction.followup.send(
 
         (
             "\n\n".join(
                 lines
             )
-        )[
-            :1900
-        ],
+        )[:1900],
 
         ephemeral=True,
     )
 
-
-# =========================================================
-# REMOVE POKEMON PRODUCT
-# =========================================================
 
 @bot.tree.command(
     name="removepokemonproduct",
@@ -2687,6 +2721,7 @@ async def removepokemonproduct(
         )
     )
 
+
     if product is None:
 
         await interaction.response.send_message(
@@ -2695,6 +2730,7 @@ async def removepokemonproduct(
         )
 
         return
+
 
     await interaction.response.send_message(
 
@@ -2708,10 +2744,6 @@ async def removepokemonproduct(
         ephemeral=True,
     )
 
-
-# =========================================================
-# RESTORE POKEMON PRODUCT
-# =========================================================
 
 @bot.tree.command(
     name="restorepokemonproduct",
@@ -2731,6 +2763,7 @@ async def restorepokemonproduct(
         )
     )
 
+
     if product is None:
 
         await interaction.response.send_message(
@@ -2739,6 +2772,7 @@ async def restorepokemonproduct(
         )
 
         return
+
 
     await interaction.response.send_message(
 
@@ -2751,10 +2785,6 @@ async def restorepokemonproduct(
         ephemeral=True,
     )
 
-
-# =========================================================
-# DISCOVER POKEMON PRODUCTS
-# =========================================================
 
 @bot.tree.command(
     name="discoverpokemonproducts",
@@ -2771,11 +2801,13 @@ async def discoverpokemonproducts(
         ephemeral=True
     )
 
+
     try:
 
         count = (
             await discover_pokemon_products()
         )
+
 
         await interaction.followup.send(
 
@@ -2788,6 +2820,7 @@ async def discoverpokemonproducts(
 
             ephemeral=True,
         )
+
 
     except Exception as error:
 
@@ -2804,10 +2837,6 @@ async def discoverpokemonproducts(
         )
 
 
-# =========================================================
-# SCAN POKEMON PRODUCTS
-# =========================================================
-
 @bot.tree.command(
     name="scanpokemonproducts",
     description="Scan known Pokémon Center products now.",
@@ -2823,11 +2852,13 @@ async def scanpokemonproducts(
         ephemeral=True
     )
 
+
     try:
 
         result = (
             await scan_pokemon_center_products()
         )
+
 
         await interaction.followup.send(
 
@@ -2859,6 +2890,7 @@ async def scanpokemonproducts(
             ephemeral=True,
         )
 
+
     except Exception as error:
 
         await interaction.followup.send(
@@ -2874,10 +2906,6 @@ async def scanpokemonproducts(
         )
 
 
-# =========================================================
-# POKEMON PRODUCT STATUS
-# =========================================================
-
 @bot.tree.command(
     name="pokemonproductstatus",
     description="View Pokémon Center product intelligence.",
@@ -2890,6 +2918,7 @@ async def pokemonproductstatus(
         get_pokemon_product_status()
     )
 
+
     worker_online = (
 
         bot.pokemon_product_task
@@ -2899,6 +2928,7 @@ async def pokemonproductstatus(
 
         not bot.pokemon_product_task.done()
     )
+
 
     embed = discord.Embed(
 
@@ -2949,6 +2979,7 @@ async def pokemonproductstatus(
         ),
     )
 
+
     embed.add_field(
 
         name="Last Product Scan",
@@ -2962,6 +2993,7 @@ async def pokemonproductstatus(
 
         inline=False,
     )
+
 
     embed.add_field(
 
@@ -2977,6 +3009,7 @@ async def pokemonproductstatus(
         inline=False,
     )
 
+
     embed.add_field(
 
         name="Last Error",
@@ -2991,15 +3024,12 @@ async def pokemonproductstatus(
         inline=False,
     )
 
+
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,
     )
 
-
-# =========================================================
-# POKEMON BURST
-# =========================================================
 
 @bot.tree.command(
     name="pokemonburst",
@@ -3021,6 +3051,7 @@ async def pokemonburst(
             )
         )
 
+
         if not success:
 
             await interaction.response.send_message(
@@ -3035,6 +3066,7 @@ async def pokemonburst(
 
             return
 
+
         await interaction.response.send_message(
 
             (
@@ -3045,6 +3077,7 @@ async def pokemonburst(
 
             ephemeral=True,
         )
+
 
     except Exception as error:
 
@@ -3086,23 +3119,13 @@ async def simulateproduct(
         ephemeral=True
     )
 
+
     queue_event = (
         event.value.startswith(
             "QUEUE_"
         )
     )
 
-    # -----------------------------------------------------
-    # Simulation events need an explicit source.
-    #
-    # Queue simulation:
-    #   source_type=queue
-    #
-    # Normal simulation:
-    #   source_type=major_retailer
-    #
-    # This keeps stock-event routing testable.
-    # -----------------------------------------------------
 
     source_type = (
 
@@ -3113,88 +3136,99 @@ async def simulateproduct(
         else "major_retailer"
     )
 
-    product_event = (
-        ProductEvent(
 
-            event_type=(
-                ProductEventType(
-                    event.value
-                )
-            ),
+    product_event = ProductEvent(
 
-            game=(
-                "Pokemon"
-                if queue_event
-                else game.value
-            ),
-
-            product_name=(
-                "Pokémon Center Test"
-                if queue_event
-                else (
-                    f"{game.value} "
-                    "Test Product"
-                )
-            ),
-
-            store_name=(
-                "Pokémon Center"
-                if queue_event
-                else "Lotus Simulation Store"
-            ),
-
-            product_url=(
-                "https://www.pokemoncenter.com/"
-                if queue_event
-                else "https://example.com/test"
-            ),
-
-            price=(
-                None
-                if queue_event
-                else 119.99
-            ),
-
-            currency="USD",
-
-            in_stock=(
+        event_type=(
+            ProductEventType(
                 event.value
-                in (
-                    "STOCK_AVAILABLE",
-                    "RESTOCK",
-                    "INVENTORY_FLICKER",
-                )
-            ),
+            )
+        ),
 
-            region="US",
+        game=(
+            "Pokemon"
+            if queue_event
+            else game.value
+        ),
 
-            language="English",
+        product_name=(
+            "Pokémon Center Test"
+            if queue_event
+            else (
+                f"{game.value} "
+                "Test Product"
+            )
+        ),
 
-            product_type=(
-                "Virtual Queue"
-                if queue_event
-                else "Booster Box"
-            ),
+        store_name=(
+            "Pokémon Center"
+            if queue_event
+            else "Lotus Simulation Store"
+        ),
 
-            source_type=(
-                source_type
-            ),
+        product_url=(
+            "https://www.pokemoncenter.com/"
+            if queue_event
+            else "https://example.com/test"
+        ),
 
-            retailer_key=(
-                "pokemon_center"
-                if queue_event
-                else "simulation"
-            ),
+        price=(
+            None
+            if queue_event
+            else 119.99
+        ),
 
-            image_url=None,
-        )
+        currency="USD",
+
+        in_stock=(
+            event.value
+            in (
+                "STOCK_AVAILABLE",
+                "RESTOCK",
+                "INVENTORY_FLICKER",
+            )
+        ),
+
+        region="US",
+
+        language="English",
+
+        product_type=(
+            "Virtual Queue"
+            if queue_event
+            else "Booster Box"
+        ),
+
+        product_category=(
+            "UNKNOWN"
+            if queue_event
+            else "SEALED"
+        ),
+
+        source_type=source_type,
+
+        retailer_key=(
+            "pokemon_center"
+            if queue_event
+            else "simulation"
+        ),
+
+        image_url=None,
+
+        variant_id=None,
+
+        purchase_limit=None,
+
+        cart_base_url=None,
     )
+
 
     result = (
         await process_product_event(
             product_event
         )
     )
+
 
     await interaction.followup.send(
 
@@ -3242,15 +3276,17 @@ async def testalert(
         ephemeral=True
     )
 
-    if interaction.guild is None:
 
+    if interaction.guild is None:
         return
+
 
     config = (
         ALERT_ACCESS.get(
             alert_type
         )
     )
+
 
     if not config:
 
@@ -3285,6 +3321,7 @@ async def testalert(
 
         return
 
+
     channel_id = safe_int(
         CHANNEL_MAP.get(
             config[
@@ -3292,6 +3329,7 @@ async def testalert(
             ]
         )
     )
+
 
     channel = (
 
@@ -3304,6 +3342,7 @@ async def testalert(
         else None
     )
 
+
     if channel is None:
 
         await interaction.followup.send(
@@ -3313,11 +3352,13 @@ async def testalert(
 
         return
 
+
     role_id = safe_int(
         GAME_ROLES.get(
             game.value
         )
     )
+
 
     role = (
 
@@ -3329,6 +3370,7 @@ async def testalert(
 
         else None
     )
+
 
     await channel.send(
 
@@ -3353,12 +3395,16 @@ async def testalert(
 
         allowed_mentions=(
             discord.AllowedMentions(
+
                 roles=True,
+
                 users=False,
+
                 everyone=False,
             )
         ),
     )
+
 
     await interaction.followup.send(
 
@@ -3391,6 +3437,7 @@ async def status(
         await get_health_overview()
     )
 
+
     event_worker_online = (
 
         bot.event_worker_task
@@ -3400,6 +3447,7 @@ async def status(
 
         not bot.event_worker_task.done()
     )
+
 
     shopify_online = (
 
@@ -3411,6 +3459,7 @@ async def status(
         not bot.shopify_monitor_task.done()
     )
 
+
     pokemon_queue_online = (
 
         bot.pokemon_center_task
@@ -3421,6 +3470,7 @@ async def status(
         not bot.pokemon_center_task.done()
     )
 
+
     pokemon_products_online = (
 
         bot.pokemon_product_task
@@ -3430,6 +3480,7 @@ async def status(
 
         not bot.pokemon_product_task.done()
     )
+
 
     embed = discord.Embed(
 
@@ -3457,13 +3508,15 @@ async def status(
 
             "**Source-Aware Routing:** ✅\n"
 
-            "**Shopify → Shopify Drops:** ✅\n"
+            "**Strict Game Classification:** ✅\n"
 
-            "**Major Retailer Routing:** ✅\n"
+            "**Worker Game Validation:** ✅\n"
+
+            "**Early Page Routing:** ✅\n"
 
             "**Product Image Support:** ✅\n"
 
-            "**Structured Product Parsing:** ✅\n"
+            "**Currency Conversion:** ✅\n"
 
             "**Affiliate Pipeline:** ✅\n"
 
@@ -3472,8 +3525,6 @@ async def status(
             "**Inventory Flicker:** ✅\n"
 
             "**Pokémon Indexed Discovery:** ✅\n"
-
-            "**Pokémon Block Backoff:** ✅\n"
 
             f"**Healthy Stores:** "
             f"{health['healthy']}\n"
@@ -3487,9 +3538,10 @@ async def status(
             f"**Redis Queue:** "
             f"{queue}\n\n"
 
-            "**Version:** 0.7.6"
+            "**Version:** 0.7.8-hotfix"
         ),
     )
+
 
     await interaction.response.send_message(
         embed=embed,
@@ -3498,7 +3550,7 @@ async def status(
 
 
 # =========================================================
-# GLOBAL ERROR HANDLER
+# ERROR HANDLER
 # =========================================================
 
 @bot.tree.error
@@ -3534,6 +3586,7 @@ async def on_app_command_error(
             f"`{type(error).__name__}: "
             f"{error}`"
         )
+
 
     if interaction.response.is_done():
 
