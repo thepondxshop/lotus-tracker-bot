@@ -16,30 +16,36 @@ from app.redis_client import (
     get_redis,
 )
 
-
 # =========================================================
 # LOTUS EVENT SERVICE
 # PonDeX Trackers
-# Version 0.7.8-hotfix
+# Version 0.7.9
 # =========================================================
 
 
-EVENT_QUEUE_KEY = "lotus:product_events"
+EVENT_QUEUE_KEY = (
+    "lotus:product_events"
+)
 
 
 # =========================================================
 # ENUM VALUE
 # =========================================================
 
-def enum_value(value):
+def enum_value(
+    value,
+):
 
     if isinstance(
         value,
         ProductEventType,
     ):
+
         return value.value
 
-    return str(value)
+    return str(
+        value
+    )
 
 
 # =========================================================
@@ -69,14 +75,33 @@ def serialize_product_event(
         "product_url":
             event.product_url,
 
+        # =================================================
+        # PRICE DATA
+        # =================================================
+
         "price":
             event.price,
+
+        "old_price":
+            getattr(
+                event,
+                "old_price",
+                None,
+            ),
 
         "currency":
             event.currency,
 
+        # =================================================
+        # INVENTORY
+        # =================================================
+
         "in_stock":
             event.in_stock,
+
+        # =================================================
+        # PRODUCT METADATA
+        # =================================================
 
         "region":
             event.region,
@@ -94,6 +119,10 @@ def serialize_product_event(
                 "UNKNOWN",
             ),
 
+        # =================================================
+        # SOURCE
+        # =================================================
+
         "source_type":
             event.source_type,
 
@@ -102,6 +131,10 @@ def serialize_product_event(
 
         "image_url":
             event.image_url,
+
+        # =================================================
+        # QUICK CART / SMART CART
+        # =================================================
 
         "variant_id":
             getattr(
@@ -124,6 +157,10 @@ def serialize_product_event(
                 None,
             ),
 
+        # =================================================
+        # TIMESTAMP
+        # =================================================
+
         "timestamp": (
             event.timestamp.isoformat()
             if event.timestamp
@@ -141,6 +178,7 @@ async def save_product_event(
 ):
 
     if SessionLocal is None:
+
         return False
 
     try:
@@ -149,7 +187,9 @@ async def save_product_event(
 
             record = ProductEventRecord(
 
-                game=event.game,
+                game=(
+                    event.game
+                ),
 
                 product_name=(
                     event.product_name
@@ -169,7 +209,9 @@ async def save_product_event(
                     )
                 ),
 
-                price=event.price,
+                price=(
+                    event.price
+                ),
 
                 currency=(
                     event.currency
@@ -228,7 +270,10 @@ async def push_product_event(
     if redis_client is None:
 
         print(
-            "EVENT REDIS SAVE ERROR | Redis unavailable"
+            (
+                "EVENT REDIS SAVE ERROR | "
+                "Redis unavailable"
+            )
         )
 
         return False
@@ -258,6 +303,8 @@ async def push_product_event(
                 f"Source={payload['source_type']} | "
                 f"Store={payload['store_name']} | "
                 f"Category={payload['product_category']} | "
+                f"Price={payload['price']} | "
+                f"OldPrice={payload['old_price']} | "
                 f"Variant={payload['variant_id']} | "
                 f"Limit={payload['purchase_limit']} | "
                 f"Image={bool(payload['image_url'])}"
@@ -322,6 +369,7 @@ async def pop_next_event(
     )
 
     if redis_client is None:
+
         return None
 
     result = (
@@ -332,9 +380,12 @@ async def pop_next_event(
     )
 
     if not result:
+
         return None
 
-    _, raw_payload = result
+    _, raw_payload = (
+        result
+    )
 
     try:
 
@@ -366,6 +417,7 @@ async def get_queue_size():
     )
 
     if redis_client is None:
+
         return 0
 
     try:
@@ -377,6 +429,7 @@ async def get_queue_size():
         )
 
     except Exception:
+
         return 0
 
 
@@ -394,6 +447,7 @@ async def clear_event_queue():
     )
 
     if redis_client is None:
+
         return 0
 
     try:
@@ -443,6 +497,7 @@ async def save_alert_delivery(
 ):
 
     if SessionLocal is None:
+
         return False
 
     try:
@@ -455,7 +510,9 @@ async def save_alert_delivery(
 
                 store_id=None,
 
-                alert_type=alert_type,
+                alert_type=(
+                    alert_type
+                ),
 
                 minimum_tier=(
                     minimum_tier
