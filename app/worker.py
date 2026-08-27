@@ -34,18 +34,14 @@ from app.redis_client import (
     init_redis,
 )
 
-from app.smart_cart import (
-    build_smart_cart,
-)
-
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 0.8.0
+# Version 0.7.9
 #
 # Compact alert layout
 # Previous -> current price display
-# Smart Cart v1 URL buttons
+# Smart Cart presentation
 # Native currency + USD conversion
 # Product images
 # Affiliate links
@@ -900,27 +896,53 @@ async def build_event_embed(event):
 
     # =====================================================
     # SMART CART
-    #
-    # Actual cart/product actions are rendered as Discord
-    # URL buttons by route_event_to_discord().
     # =====================================================
 
-    smart_cart = (
-        build_smart_cart(
-            event,
-            product_url=(
-                final_url
-            ),
+    if purchase_limit:
+        try:
+            limit_number = int(
+                purchase_limit
+            )
+
+            smart_cart_text = (
+                "Detected retailer limit: "
+                f"**{limit_number}**"
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            smart_cart_text = (
+                "Detected retailer limit: "
+                f"**{purchase_limit}**"
+            )
+
+    else:
+        smart_cart_text = (
+            "Limit not detected • "
+            "retailer may adjust quantity"
         )
-    )
 
     embed.add_field(
         name="🛒 Smart Cart",
-        value=(
-            smart_cart.status_text
-        ),
+        value=smart_cart_text,
         inline=False,
     )
+
+    # =====================================================
+    # QUICK LINK
+    # =====================================================
+
+    if final_url:
+        embed.add_field(
+            name="🔗 Quick Link",
+            value=(
+                f"[**Open Product**]"
+                f"({final_url})"
+            ),
+            inline=False,
+        )
 
     # =====================================================
     # AFFILIATE DISCLOSURE
@@ -963,7 +985,6 @@ async def build_event_embed(event):
     return (
         embed,
         affiliate_used,
-        smart_cart,
     )
 
 
@@ -1087,65 +1108,11 @@ async def route_event_to_discord(
         else None
     )
 
-    (
-        embed,
-        affiliate_used,
-        smart_cart,
-    ) = (
+    embed, affiliate_used = (
         await build_event_embed(
             event
         )
     )
-
-    # =====================================================
-    # SMART CART BUTTONS
-    #
-    # Discord link buttons do not require an interaction
-    # callback. They simply open the generated retailer URL.
-    # =====================================================
-
-    view = None
-
-    if smart_cart.actions:
-        view = discord.ui.View(
-            timeout=None
-        )
-
-        for action in smart_cart.actions:
-            if action.kind == "cart":
-                button_style = (
-                    discord.ButtonStyle.success
-                )
-                emoji = "🛒"
-            else:
-                button_style = (
-                    discord.ButtonStyle.link
-                )
-                emoji = "🔗"
-
-            # URL buttons must use ButtonStyle.link.
-            # Discord does not allow success/primary styles
-            # on buttons that navigate directly to a URL.
-            button_style = (
-                discord.ButtonStyle.link
-            )
-
-            view.add_item(
-                discord.ui.Button(
-                    label=(
-                        action.label
-                    ),
-                    url=(
-                        action.url
-                    ),
-                    style=(
-                        button_style
-                    ),
-                    emoji=(
-                        emoji
-                    ),
-                )
-            )
 
     # =====================================================
     # SEND WITH RETRIES
@@ -1170,7 +1137,6 @@ async def route_event_to_discord(
                         )
                     ),
                     embed=embed,
-                    view=view,
                     allowed_mentions=(
                         discord.AllowedMentions(
                             roles=True,
@@ -1240,9 +1206,7 @@ async def route_event_to_discord(
             f"OldPrice={event.get('old_price')} | "
             f"Price={event.get('price')} | "
             f"Image={bool(event.get('image_url'))} | "
-            f"Affiliate={affiliate_used} | "
-            f"SmartCart={smart_cart.supported} | "
-            f"SmartCartActions={len(smart_cart.actions)}"
+            f"Affiliate={affiliate_used}"
         )
     )
 
@@ -1257,7 +1221,7 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v0.8.0 started."
+        "Lotus Event Worker v0.7.9 started."
     )
 
     while not bot.is_closed():
