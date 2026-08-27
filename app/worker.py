@@ -34,9 +34,18 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 0.7.1
+# Version 0.7.6
+#
+# Source-aware routing
+# Product thumbnails
+# Affiliate links
+# Deduplication
 # =========================================================
 
+
+# =========================================================
+# FEATURE ROUTES
+# =========================================================
 
 EVENT_ROUTE_MAP = {
 
@@ -51,15 +60,6 @@ EVENT_ROUTE_MAP = {
 
     "PREORDER_LIVE":
         "preorder",
-
-    "STOCK_AVAILABLE":
-        "major_retailer",
-
-    "RESTOCK":
-        "major_retailer",
-
-    "SOLD_OUT":
-        "major_retailer",
 
     "PRICE_DROP":
         "deal",
@@ -87,6 +87,10 @@ EVENT_ROUTE_MAP = {
 }
 
 
+# =========================================================
+# TITLES
+# =========================================================
+
 EVENT_TITLES = {
 
     "DISCOVERED":
@@ -102,7 +106,7 @@ EVENT_TITLES = {
         "🟣 PREORDER LIVE",
 
     "STOCK_AVAILABLE":
-        "🟢 STOCK AVAILABLE",
+        "🟢 IN STOCK",
 
     "RESTOCK":
         "🚨 RESTOCK",
@@ -136,7 +140,148 @@ EVENT_TITLES = {
 }
 
 
-REALTIME_TRANSITION_EVENTS = {
+# =========================================================
+# SOURCE ROUTING
+# =========================================================
+
+def determine_alert_route(
+    event: dict,
+):
+
+    event_type = (
+        event.get(
+            "event_type",
+            ""
+        )
+    )
+
+    source_type = (
+        event.get(
+            "source_type",
+            "unknown"
+        )
+    )
+
+    # =====================================================
+    # QUEUE ALWAYS HAS ITS OWN CHANNEL
+    # =====================================================
+
+    if event_type in {
+
+        "QUEUE_DETECTED",
+        "QUEUE_ACTIVE",
+        "QUEUE_CLEARED",
+
+    }:
+
+        return (
+            "pokemon_queue"
+        )
+
+    # =====================================================
+    # FEATURE-SPECIFIC ROUTES
+    # =====================================================
+
+    if event_type in {
+
+        "PREORDER_LIVE",
+        "PAGE_LIVE",
+        "COMING_SOON",
+        "PRICE_DROP",
+        "PRICE_INCREASE",
+        "PRICE_ERROR",
+        "INVENTORY_FLICKER",
+        "RELEASE_DATE_CHANGED",
+        "DISCOVERED",
+
+    }:
+
+        route = (
+            EVENT_ROUTE_MAP.get(
+                event_type
+            )
+        )
+
+        if route:
+
+            return route
+
+    # =====================================================
+    # STOCK EVENTS MUST LOOK AT SOURCE
+    # =====================================================
+
+    if event_type in {
+
+        "STOCK_AVAILABLE",
+        "RESTOCK",
+        "SOLD_OUT",
+
+    }:
+
+        # ---------------------------------------------
+        # Shopify stores
+        #
+        # Saga Concepts
+        # Hobbiesville
+        # etc.
+        # ---------------------------------------------
+
+        if (
+            source_type
+            == "shopify"
+        ):
+
+            return (
+                "shopify"
+            )
+
+        # ---------------------------------------------
+        # Pokémon Center product
+        # ---------------------------------------------
+
+        if (
+            source_type
+            == "pokemon_center"
+        ):
+
+            return (
+                "major_retailer"
+            )
+
+        # ---------------------------------------------
+        # Target/Walmart/etc.
+        # ---------------------------------------------
+
+        if (
+            source_type
+            == "major_retailer"
+        ):
+
+            return (
+                "major_retailer"
+            )
+
+        # ---------------------------------------------
+        # Safe fallback:
+        #
+        # unknown source does NOT automatically become
+        # Target. This prevents accidental contamination.
+        # ---------------------------------------------
+
+        return None
+
+    return (
+        EVENT_ROUTE_MAP.get(
+            event_type
+        )
+    )
+
+
+# =========================================================
+# DEDUPE
+# =========================================================
+
+REALTIME_EVENTS = {
 
     "RESTOCK",
 
@@ -159,14 +304,11 @@ async def should_suppress_duplicate(
     event_type = (
         event.get(
             "event_type",
-            "UNKNOWN",
+            "UNKNOWN"
         )
     )
 
-    if (
-        event_type
-        in REALTIME_TRANSITION_EVENTS
-    ):
+    if event_type in REALTIME_EVENTS:
 
         return False
 
@@ -179,35 +321,48 @@ async def should_suppress_duplicate(
         return False
 
     identity = "|".join(
+
         [
+
             str(
                 event.get(
                     "event_type",
-                    "",
+                    ""
                 )
             ),
+
+            str(
+                event.get(
+                    "source_type",
+                    ""
+                )
+            ),
+
             str(
                 event.get(
                     "game",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "store_name",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "product_url",
-                    "",
+                    ""
                 )
             ),
+
             str(
                 event.get(
                     "price",
-                    "",
+                    ""
                 )
             ),
         ]
@@ -223,16 +378,18 @@ async def should_suppress_duplicate(
 
     try:
 
-        result = (
-            await redis_client.set(
-                (
-                    f"lotus:dedupe:"
-                    f"{digest}"
-                ),
-                "1",
-                nx=True,
-                ex=120,
-            )
+        result = await redis_client.set(
+
+            (
+                f"lotus:dedupe:"
+                f"{digest}"
+            ),
+
+            "1",
+
+            nx=True,
+
+            ex=120,
         )
 
         return (
@@ -252,6 +409,10 @@ async def should_suppress_duplicate(
         return False
 
 
+# =========================================================
+# EMBED
+# =========================================================
+
 def build_event_embed(
     event: dict,
 ):
@@ -259,35 +420,42 @@ def build_event_embed(
     event_type = (
         event.get(
             "event_type",
-            "UNKNOWN",
+            "UNKNOWN"
         )
     )
 
     title = (
         EVENT_TITLES.get(
             event_type,
-            "📡 LOTUS PRODUCT EVENT",
+            "📡 LOTUS PRODUCT EVENT"
         )
     )
 
     product_name = (
         event.get(
-            "product_name",
-            "Unknown Product",
+            "product_name"
         )
+        or "Unknown Product"
     )
 
     store_name = (
         event.get(
-            "store_name",
-            "Unknown Store",
+            "store_name"
         )
+        or "Unknown Store"
     )
 
     original_url = (
         event.get(
             "product_url",
-            "",
+            ""
+        )
+    )
+
+    source_type = (
+        event.get(
+            "source_type",
+            "unknown"
         )
     )
 
@@ -299,10 +467,13 @@ def build_event_embed(
     )
 
     embed = discord.Embed(
+
         title=title,
+
         description=(
             f"**{product_name}**"
         ),
+
         url=(
             final_url
             if final_url
@@ -310,11 +481,47 @@ def build_event_embed(
         ),
     )
 
+
+    # =====================================================
+    # PRODUCT IMAGE
+    # =====================================================
+
+    image_url = (
+        event.get(
+            "image_url"
+        )
+    )
+
+    if image_url:
+
+        try:
+
+            embed.set_thumbnail(
+                url=image_url
+            )
+
+        except Exception:
+
+            pass
+
+
+    # =====================================================
+    # STORE
+    # =====================================================
+
     embed.add_field(
+
         name="Store",
+
         value=store_name,
+
         inline=True,
     )
+
+
+    # =====================================================
+    # GAME
+    # =====================================================
 
     game = (
         event.get(
@@ -325,10 +532,18 @@ def build_event_embed(
     if game:
 
         embed.add_field(
+
             name="Game",
+
             value=game,
+
             inline=True,
         )
+
+
+    # =====================================================
+    # TYPE
+    # =====================================================
 
     product_type = (
         event.get(
@@ -339,10 +554,18 @@ def build_event_embed(
     if product_type:
 
         embed.add_field(
+
             name="Type",
+
             value=product_type,
+
             inline=True,
         )
+
+
+    # =====================================================
+    # PRICE
+    # =====================================================
 
     price = (
         event.get(
@@ -353,7 +576,7 @@ def build_event_embed(
     currency = (
         event.get(
             "currency",
-            "USD",
+            "USD"
         )
     )
 
@@ -362,8 +585,10 @@ def build_event_embed(
         try:
 
             price_text = (
-                f"{float(price):.2f} "
-                f"{currency}"
+                f"${float(price):.2f}"
+                if currency == "USD"
+                else
+                f"{float(price):.2f} {currency}"
             )
 
         except (
@@ -372,15 +597,56 @@ def build_event_embed(
         ):
 
             price_text = (
-                f"{price} "
-                f"{currency}"
+                f"{price} {currency}"
             )
 
         embed.add_field(
+
             name="Price",
+
             value=price_text,
+
             inline=True,
         )
+
+
+    # =====================================================
+    # STOCK
+    # =====================================================
+
+    if event_type in {
+
+        "STOCK_AVAILABLE",
+        "RESTOCK",
+        "SOLD_OUT",
+        "INVENTORY_FLICKER",
+
+    }:
+
+        embed.add_field(
+
+            name="Status",
+
+            value=(
+
+                "🟢 IN STOCK"
+
+                if event.get(
+                    "in_stock"
+                )
+
+                else
+
+                "🔴 OUT OF STOCK"
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
+    # REGION
+    # =====================================================
 
     region = (
         event.get(
@@ -391,99 +657,91 @@ def build_event_embed(
     if region:
 
         embed.add_field(
+
             name="Region",
+
             value=region,
+
             inline=True,
         )
 
-    if event_type in {
 
-        "STOCK_AVAILABLE",
+    # =====================================================
+    # SOURCE LABEL
+    # =====================================================
 
-        "RESTOCK",
+    source_labels = {
 
-        "SOLD_OUT",
+        "shopify":
+            "Shopify / TCG Store",
 
-        "INVENTORY_FLICKER",
-    }:
+        "major_retailer":
+            "Major Retailer",
 
-        embed.add_field(
-            name="Availability",
-            value=(
-                "🟢 In Stock"
-                if event.get(
-                    "in_stock"
-                )
-                else "🔴 Out of Stock"
-            ),
-            inline=True,
-        )
+        "pokemon_center":
+            "Pokémon Center",
 
-    if event_type in {
+        "queue":
+            "Queue Intelligence",
 
-        "QUEUE_DETECTED",
+        "simulation":
+            "Simulation",
+    }
 
-        "QUEUE_ACTIVE",
+    embed.add_field(
 
-        "QUEUE_CLEARED",
-    }:
+        name="Source",
 
-        embed.add_field(
-            name="⚡ Queue Intelligence",
-            value=(
-                "This is an early Pokémon Center "
-                "traffic/queue signal. It does not "
-                "guarantee that a specific product "
-                "is launching."
-            ),
-            inline=False,
-        )
+        value=(
+            source_labels.get(
+                source_type,
+                source_type
+            )
+        ),
 
-    if (
-        store_name
-        == "Pokémon Center"
-        and event_type
-        not in {
-            "QUEUE_DETECTED",
-            "QUEUE_ACTIVE",
-            "QUEUE_CLEARED",
-        }
-    ):
+        inline=True,
+    )
 
-        embed.add_field(
-            name="Pokémon Center Product Intelligence",
-            value=(
-                "This alert is based on a publicly "
-                "observable Pokémon Center product-page "
-                "state change."
-            ),
-            inline=False,
-        )
+
+    # =====================================================
+    # LINK
+    # =====================================================
 
     if final_url:
 
         embed.add_field(
-            name="Link",
+
+            name="Quick Link",
+
             value=(
-                f"[Open Product]({final_url})"
+                f"[🛒 Open Product]({final_url})"
             ),
+
             inline=False,
         )
+
+
+    # =====================================================
+    # AFFILIATE
+    # =====================================================
 
     if affiliate_used:
 
         embed.add_field(
+
             name="Affiliate Disclosure",
+
             value=(
                 AFFILIATE_DISCLOSURE
             ),
+
             inline=False,
         )
 
+
     embed.set_footer(
         text=(
-            "Lotus Tracker Bot "
-            "• PonDeX Trackers"
+            "Lotus Tracker Bot • PonDeX Trackers"
         )
     )
 
@@ -493,6 +751,10 @@ def build_event_embed(
     )
 
 
+# =========================================================
+# GUILD
+# =========================================================
+
 def get_primary_guild(
     bot,
 ):
@@ -501,10 +763,16 @@ def get_primary_guild(
 
         return None
 
-    return bot.guilds[
-        0
-    ]
+    return (
+        bot.guilds[
+            0
+        ]
+    )
 
+
+# =========================================================
+# ROUTING
+# =========================================================
 
 async def route_event_to_discord(
     bot,
@@ -523,7 +791,7 @@ async def route_event_to_discord(
 
         print(
             (
-                "DUPLICATE EVENT SUPPRESSED: "
+                "DUPLICATE EVENT SUPPRESSED | "
                 f"{event_type} | "
                 f"{event.get('product_name')}"
             )
@@ -531,9 +799,14 @@ async def route_event_to_discord(
 
         return True
 
+
+    # =====================================================
+    # DETERMINE SOURCE-AWARE ROUTE
+    # =====================================================
+
     alert_type = (
-        EVENT_ROUTE_MAP.get(
-            event_type
+        determine_alert_route(
+            event
         )
     )
 
@@ -541,12 +814,17 @@ async def route_event_to_discord(
 
         print(
             (
-                "NO ROUTE FOR EVENT: "
-                f"{event_type}"
+                "NO SAFE ROUTE FOR EVENT | "
+                f"Event={event_type} | "
+                f"Source="
+                f"{event.get('source_type')} | "
+                f"Store="
+                f"{event.get('store_name')}"
             )
         )
 
         return False
+
 
     access = (
         ALERT_ACCESS.get(
@@ -556,7 +834,15 @@ async def route_event_to_discord(
 
     if not access:
 
+        print(
+            (
+                "NO ALERT ACCESS CONFIG | "
+                f"Route={alert_type}"
+            )
+        )
+
         return False
+
 
     channel_variable = (
         access.get(
@@ -567,7 +853,7 @@ async def route_event_to_discord(
     minimum_tier = (
         access.get(
             "minimum_tier",
-            "Free",
+            "Free"
         )
     )
 
@@ -581,12 +867,15 @@ async def route_event_to_discord(
 
         print(
             (
-                "MISSING ALERT CHANNEL: "
+                "MISSING ALERT CHANNEL | "
+                f"Route={alert_type} | "
+                f"Variable="
                 f"{channel_variable}"
             )
         )
 
         return False
+
 
     guild = (
         get_primary_guild(
@@ -598,6 +887,7 @@ async def route_event_to_discord(
 
         return False
 
+
     channel = (
         guild.get_channel(
             channel_id
@@ -606,7 +896,19 @@ async def route_event_to_discord(
 
     if channel is None:
 
+        print(
+            (
+                "DISCORD CHANNEL NOT FOUND | "
+                f"ID={channel_id}"
+            )
+        )
+
         return False
+
+
+    # =====================================================
+    # ROLE
+    # =====================================================
 
     game = (
         event.get(
@@ -621,12 +923,20 @@ async def route_event_to_discord(
     )
 
     role = (
+
         guild.get_role(
             role_id
         )
+
         if role_id
+
         else None
     )
+
+
+    # =====================================================
+    # EMBED
+    # =====================================================
 
     embed, affiliate_used = (
         build_event_embed(
@@ -634,36 +944,53 @@ async def route_event_to_discord(
         )
     )
 
+
+    # =====================================================
+    # SEND
+    # =====================================================
+
     try:
 
-        message = (
-            await channel.send(
-                content=(
-                    role.mention
-                    if role
-                    else (
-                        f"**{game}**"
-                        if game
-                        else ""
-                    )
-                ),
-                embed=embed,
-                allowed_mentions=(
-                    discord.AllowedMentions(
-                        roles=True,
-                        users=False,
-                        everyone=False,
-                    )
-                ),
-            )
+        message = await channel.send(
+
+            content=(
+
+                role.mention
+
+                if role
+
+                else (
+                    f"**{game}**"
+                    if game
+                    else ""
+                )
+            ),
+
+            embed=embed,
+
+            allowed_mentions=(
+                discord.AllowedMentions(
+                    roles=True,
+                    users=False,
+                    everyone=False,
+                )
+            ),
         )
 
         await save_alert_delivery(
-            alert_type=alert_type,
-            minimum_tier=minimum_tier,
+
+            alert_type=(
+                alert_type
+            ),
+
+            minimum_tier=(
+                minimum_tier
+            ),
+
             discord_channel_id=(
                 channel.id
             ),
+
             discord_message_id=(
                 message.id
             ),
@@ -671,11 +998,18 @@ async def route_event_to_discord(
 
         print(
             (
-                "ALERT SENT: "
-                f"{event_type} | "
-                f"{game} | "
-                f"{channel.name} | "
-                f"Affiliate={affiliate_used}"
+                "ALERT SENT | "
+                f"Event={event_type} | "
+                f"Source="
+                f"{event.get('source_type')} | "
+                f"Store="
+                f"{event.get('store_name')} | "
+                f"Route={alert_type} | "
+                f"Channel={channel.name} | "
+                f"Image="
+                f"{bool(event.get('image_url'))} | "
+                f"Affiliate="
+                f"{affiliate_used}"
             )
         )
 
@@ -685,7 +1019,7 @@ async def route_event_to_discord(
 
         print(
             (
-                "DISCORD ALERT ERROR: "
+                "DISCORD ALERT ERROR | "
                 f"{type(error).__name__}: "
                 f"{error}"
             )
@@ -694,6 +1028,10 @@ async def route_event_to_discord(
         return False
 
 
+# =========================================================
+# WORKER
+# =========================================================
+
 async def run_event_worker(
     bot,
 ):
@@ -701,7 +1039,7 @@ async def run_event_worker(
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker started."
+        "Lotus Event Worker v0.7.6 started."
     )
 
     while not bot.is_closed():
@@ -716,9 +1054,17 @@ async def run_event_worker(
 
                     bot.redis_ready = True
 
-                except Exception:
+                except Exception as error:
 
                     bot.redis_ready = False
+
+                    print(
+                        (
+                            "EVENT WORKER REDIS RECONNECT ERROR | "
+                            f"{type(error).__name__}: "
+                            f"{error}"
+                        )
+                    )
 
                     await asyncio.sleep(
                         5
@@ -749,7 +1095,7 @@ async def run_event_worker(
 
             print(
                 (
-                    "EVENT WORKER ERROR: "
+                    "EVENT WORKER ERROR | "
                     f"{type(error).__name__}: "
                     f"{error}"
                 )
