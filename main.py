@@ -48,7 +48,7 @@ from app.database import (
 
 
 # =========================================================
-# ALERT PREFERENCES
+# CATEGORY ALERT PREFERENCES
 # =========================================================
 
 from app.preference_service import (
@@ -56,6 +56,17 @@ from app.preference_service import (
     get_product_preferences,
     initialize_game_alert_roles,
     save_product_preferences,
+)
+
+
+# =========================================================
+# PRODUCT FAMILY ALERT PREFERENCES
+# =========================================================
+
+from app.family_preference_service import (
+    ensure_family_preferences,
+    get_family_preferences,
+    save_family_preferences,
 )
 
 
@@ -163,12 +174,14 @@ from app.pokemon_center_products import (
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 1.0.1
+# Version 1.0.2
 #
+# Regional Product Families
+# Family Alert Preferences
+# Hierarchical MSRP
+# Cross-Currency MSRP
 # Historical Pricing
 # Deal Score
-# MSRP Intelligence
-# Hierarchical MSRP Rules
 # Scalper Protection
 # Smart Quick Cart
 # =========================================================
@@ -178,7 +191,9 @@ from app.pokemon_center_products import (
 # INTENTS
 # =========================================================
 
-intents = discord.Intents.default()
+intents = (
+    discord.Intents.default()
+)
 
 intents.members = True
 
@@ -242,6 +257,94 @@ GAME_CHOICES = [
 
 
 # =========================================================
+# PRODUCT FAMILY CHOICES
+# =========================================================
+
+PRODUCT_FAMILY_CHOICES = [
+
+    app_commands.Choice(
+        name="English / Global Standard",
+        value="GLOBAL_STANDARD",
+    ),
+
+    app_commands.Choice(
+        name="Japanese",
+        value="JP",
+    ),
+
+    app_commands.Choice(
+        name="Korean",
+        value="KR",
+    ),
+
+    app_commands.Choice(
+        name="Simplified Chinese",
+        value="CN",
+    ),
+
+    app_commands.Choice(
+        name="Unknown / Unclassified",
+        value="UNKNOWN",
+    ),
+]
+
+
+# =========================================================
+# MSRP FAMILY CHOICES
+#
+# UNKNOWN is intentionally excluded from MSRP administration.
+# If Lotus cannot determine the product family, it should
+# not guess a trusted MSRP.
+# =========================================================
+
+MSRP_FAMILY_CHOICES = [
+
+    app_commands.Choice(
+        name="English / Global Standard",
+        value="GLOBAL_STANDARD",
+    ),
+
+    app_commands.Choice(
+        name="Japanese",
+        value="JP",
+    ),
+
+    app_commands.Choice(
+        name="Korean",
+        value="KR",
+    ),
+
+    app_commands.Choice(
+        name="Simplified Chinese",
+        value="CN",
+    ),
+]
+
+
+# =========================================================
+# MSRP SCOPE CHOICES
+# =========================================================
+
+MSRP_SCOPE_CHOICES = [
+
+    app_commands.Choice(
+        name="Exact Product",
+        value="EXACT_PRODUCT",
+    ),
+
+    app_commands.Choice(
+        name="Product Type",
+        value="PRODUCT_TYPE",
+    ),
+
+    app_commands.Choice(
+        name="Game Default",
+        value="GAME_DEFAULT",
+    ),
+]
+
+
+# =========================================================
 # MSRP CONFIDENCE CHOICES
 # =========================================================
 
@@ -260,35 +363,6 @@ MSRP_CONFIDENCE_CHOICES = [
     app_commands.Choice(
         name="Low — Unconfirmed Reference",
         value="LOW",
-    ),
-]
-
-
-# =========================================================
-# MSRP SCOPE CHOICES
-#
-# Resolution priority:
-#
-# EXACT_PRODUCT
-# PRODUCT_TYPE
-# GAME_DEFAULT
-# =========================================================
-
-MSRP_SCOPE_CHOICES = [
-
-    app_commands.Choice(
-        name="Exact Product",
-        value="EXACT_PRODUCT",
-    ),
-
-    app_commands.Choice(
-        name="Product Type",
-        value="PRODUCT_TYPE",
-    ),
-
-    app_commands.Choice(
-        name="Game Default",
-        value="GAME_DEFAULT",
     ),
 ]
 
@@ -377,6 +451,42 @@ EVENT_CHOICES = [
 
 
 # =========================================================
+# LABEL HELPERS
+# =========================================================
+
+PRODUCT_FAMILY_LABELS = {
+
+    "GLOBAL_STANDARD":
+        "🌎 English / Global Standard",
+
+    "JP":
+        "🇯🇵 Japanese",
+
+    "KR":
+        "🇰🇷 Korean",
+
+    "CN":
+        "🇨🇳 Simplified Chinese",
+
+    "UNKNOWN":
+        "❓ Unknown / Unclassified",
+}
+
+
+MSRP_SCOPE_LABELS = {
+
+    "EXACT_PRODUCT":
+        "Exact Product",
+
+    "PRODUCT_TYPE":
+        "Product Type",
+
+    "GAME_DEFAULT":
+        "Game Default",
+}
+
+
+# =========================================================
 # SAVE MEMBER
 # =========================================================
 
@@ -411,7 +521,9 @@ async def update_game_roles(
     selected_games,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -441,16 +553,20 @@ async def update_game_roles(
         role_value,
     ) in GAME_ROLES.items():
 
-        role_id = safe_int(
-            role_value
+        role_id = (
+            safe_int(
+                role_value
+            )
         )
 
         if not role_id:
 
             continue
 
-        role = interaction.guild.get_role(
-            role_id
+        role = (
+            interaction.guild.get_role(
+                role_id
+            )
         )
 
         if role is None:
@@ -477,6 +593,32 @@ async def update_game_roles(
                             "Lotus game selection"
                         ),
                     )
+
+                    # -------------------------------------
+                    # Initialize family defaults for newly
+                    # followed game.
+                    # -------------------------------------
+
+                    try:
+
+                        await ensure_family_preferences(
+
+                            member.id,
+
+                            game_name,
+                        )
+
+                    except Exception as error:
+
+                        print(
+                            (
+                                "FAMILY PREF INIT ERROR | "
+                                f"User={member.id} | "
+                                f"Game={game_name} | "
+                                f"{type(error).__name__}: "
+                                f"{error}"
+                            )
+                        )
 
             elif (
                 role
@@ -521,8 +663,10 @@ async def update_game_roles(
             "Database save failed"
         )
 
-    current_games = get_followed_games(
-        member
+    current_games = (
+        get_followed_games(
+            member
+        )
     )
 
     message = (
@@ -545,6 +689,11 @@ async def update_game_roles(
         message += (
             "No games currently selected."
         )
+
+    message += (
+        "\n\n🌎 Use `/familyprefs` to choose "
+        "English, Japanese, Korean, and Chinese alerts."
+    )
 
     if errors:
 
@@ -594,9 +743,11 @@ class GameSelect(
             description,
         ) in GAME_DATA:
 
-            role_id = safe_int(
-                GAME_ROLES.get(
-                    game
+            role_id = (
+                safe_int(
+                    GAME_ROLES.get(
+                        game
+                    )
                 )
             )
 
@@ -943,7 +1094,9 @@ class LotusTrackerBot(
         )
 
 
-bot = LotusTrackerBot()
+bot = (
+    LotusTrackerBot()
+)
 
 
 # =========================================================
@@ -966,7 +1119,7 @@ async def on_ready():
     )
 
     print(
-        "Version: 1.0.1"
+        "Version: 1.0.2"
     )
 
     print(
@@ -1006,7 +1159,9 @@ async def ping(
             "🏓 **Lotus is online.**\n"
 
             f"Latency: "
-            f"`{round(bot.latency * 1000)}ms`"
+            f"`{round(bot.latency * 1000)}ms`\n"
+
+            "**Version:** `1.0.2`"
         ),
 
         ephemeral=True,
@@ -1025,7 +1180,9 @@ async def games(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -1040,7 +1197,9 @@ async def games(
 
         description=(
             "Select every game you want "
-            "Lotus alerts for."
+            "Lotus alerts for.\n\n"
+            "After choosing a game, use `/alertprefs` "
+            "and `/familyprefs` to customize its alerts."
         ),
     )
 
@@ -1079,8 +1238,10 @@ async def setupgames(
 
         return
 
-    channel_id = safe_int(
-        CHANNEL_ROLES
+    channel_id = (
+        safe_int(
+            CHANNEL_ROLES
+        )
     )
 
     channel = (
@@ -1110,8 +1271,9 @@ async def setupgames(
         title="🎴 Choose Your Games",
 
         description=(
-            "Select every TCG you want "
-            "Lotus alerts for."
+            "Select every TCG you want Lotus alerts for.\n\n"
+            "You can customize product types with `/alertprefs` "
+            "and languages/regions with `/familyprefs`."
         ),
     )
 
@@ -1153,7 +1315,9 @@ async def alertprefs(
     unknown: bool = True,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -1173,8 +1337,10 @@ async def alertprefs(
         ephemeral=True
     )
 
-    followed_games = get_followed_games(
-        member
+    followed_games = (
+        get_followed_games(
+            member
+        )
     )
 
     if (
@@ -1241,7 +1407,7 @@ async def alertprefs(
 
         message = (
 
-            f"⚙️ **{game.value} Alert Preferences**\n\n"
+            f"⚙️ **{game.value} Product Preferences**\n\n"
 
             f"{'✅' if sealed else '❌'} "
             "Sealed Products\n"
@@ -1253,9 +1419,12 @@ async def alertprefs(
             "Accessories\n"
 
             f"{'✅' if unknown else '❌'} "
-            "Unknown / New Product Types\n\n"
+            "Unknown Product Types\n\n"
 
-            "💾 Saved to Lotus."
+            "💾 Saved to Lotus.\n\n"
+
+            "Use `/familyprefs` to separately choose "
+            "English, Japanese, Korean, and Chinese products."
         )
 
         if role_errors:
@@ -1284,11 +1453,10 @@ async def alertprefs(
         await interaction.followup.send(
 
             (
-                "❌ Lotus cannot manage the alert roles.\n\n"
+                "❌ Lotus cannot manage its alert roles.\n\n"
 
                 "Give the Lotus bot role **Manage Roles** "
-                "and place the Lotus bot role above "
-                "its alert preference roles."
+                "and place it above the Lotus alert roles."
             ),
 
             ephemeral=True,
@@ -1315,7 +1483,7 @@ async def alertprefs(
 
 @bot.tree.command(
     name="myprefs",
-    description="View your Lotus product alert preferences.",
+    description="View your Lotus product-type preferences.",
 )
 @app_commands.choices(
     game=GAME_CHOICES,
@@ -1337,7 +1505,7 @@ async def myprefs(
     await interaction.response.send_message(
 
         (
-            f"⚙️ **{game.value} Alert Preferences**\n\n"
+            f"⚙️ **{game.value} Product Preferences**\n\n"
 
             f"{'✅' if preferences['SEALED'] else '❌'} "
             "Sealed Products\n"
@@ -1349,11 +1517,246 @@ async def myprefs(
             "Accessories\n"
 
             f"{'✅' if preferences['UNKNOWN'] else '❌'} "
-            "Unknown / New Product Types"
+            "Unknown Product Types"
         ),
 
         ephemeral=True,
     )
+
+
+# =========================================================
+# /FAMILYPREFS
+#
+# These are PER GAME.
+#
+# Example:
+#
+# One Piece:
+# English ✅
+# Japanese ✅
+#
+# Pokemon:
+# English ✅
+# Japanese ❌
+#
+# Family != store currency.
+# =========================================================
+
+@bot.tree.command(
+    name="familyprefs",
+    description="Choose product languages/regions for a TCG.",
+)
+@app_commands.choices(
+    game=GAME_CHOICES,
+)
+async def familyprefs(
+    interaction,
+    game: app_commands.Choice[str],
+    english: bool = True,
+    japanese: bool = False,
+    korean: bool = False,
+    chinese: bool = False,
+    unknown: bool = False,
+):
+
+    member = (
+        interaction.user
+    )
+
+    if not isinstance(
+        member,
+        discord.Member,
+    ):
+
+        await interaction.response.send_message(
+
+            "❌ Use this inside the server.",
+
+            ephemeral=True,
+        )
+
+        return
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    followed_games = (
+        get_followed_games(
+            member
+        )
+    )
+
+    if (
+        game.value
+        not in followed_games
+    ):
+
+        await interaction.followup.send(
+
+            (
+                f"❌ You are not currently following "
+                f"**{game.value}**.\n\n"
+
+                "Use `/games` first."
+            ),
+
+            ephemeral=True,
+        )
+
+        return
+
+    preferences = {
+
+        "GLOBAL_STANDARD":
+            english,
+
+        "JP":
+            japanese,
+
+        "KR":
+            korean,
+
+        "CN":
+            chinese,
+
+        "UNKNOWN":
+            unknown,
+    }
+
+    try:
+
+        saved = (
+            await save_family_preferences(
+
+                discord_user_id=(
+                    member.id
+                ),
+
+                game=(
+                    game.value
+                ),
+
+                preferences=(
+                    preferences
+                ),
+            )
+        )
+
+        message = (
+
+            f"🌎 **{game.value} Product Family Preferences**\n\n"
+
+            f"{'✅' if saved['GLOBAL_STANDARD'] else '❌'} "
+            "English / Global Standard\n"
+
+            f"{'✅' if saved['JP'] else '❌'} "
+            "Japanese\n"
+
+            f"{'✅' if saved['KR'] else '❌'} "
+            "Korean\n"
+
+            f"{'✅' if saved['CN'] else '❌'} "
+            "Simplified Chinese\n"
+
+            f"{'✅' if saved['UNKNOWN'] else '❌'} "
+            "Unknown / Unclassified\n\n"
+
+            "💾 Saved to Lotus.\n\n"
+
+            "These preferences are specific to "
+            f"**{game.value}**."
+        )
+
+        await interaction.followup.send(
+
+            message,
+
+            ephemeral=True,
+        )
+
+    except Exception as error:
+
+        await interaction.followup.send(
+
+            (
+                "❌ Family preferences could not be saved.\n\n"
+
+                f"`{type(error).__name__}: "
+                f"{error}`"
+            ),
+
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# /MYFAMILYPREFS
+# =========================================================
+
+@bot.tree.command(
+    name="myfamilyprefs",
+    description="View your language/region preferences for a TCG.",
+)
+@app_commands.choices(
+    game=GAME_CHOICES,
+)
+async def myfamilyprefs(
+    interaction,
+    game: app_commands.Choice[str],
+):
+
+    try:
+
+        preferences = (
+            await get_family_preferences(
+
+                interaction.user.id,
+
+                game.value,
+            )
+        )
+
+        await interaction.response.send_message(
+
+            (
+                f"🌎 **{game.value} Product Family Preferences**\n\n"
+
+                f"{'✅' if preferences['GLOBAL_STANDARD'] else '❌'} "
+                "English / Global Standard\n"
+
+                f"{'✅' if preferences['JP'] else '❌'} "
+                "Japanese\n"
+
+                f"{'✅' if preferences['KR'] else '❌'} "
+                "Korean\n"
+
+                f"{'✅' if preferences['CN'] else '❌'} "
+                "Simplified Chinese\n"
+
+                f"{'✅' if preferences['UNKNOWN'] else '❌'} "
+                "Unknown / Unclassified\n\n"
+
+                "Product family is based on the actual product, "
+                "not the currency the retailer charges."
+            ),
+
+            ephemeral=True,
+        )
+
+    except Exception as error:
+
+        await interaction.response.send_message(
+
+            (
+                "❌ Family preferences could not be loaded.\n\n"
+
+                f"`{type(error).__name__}: "
+                f"{error}`"
+            ),
+
+            ephemeral=True,
+        )
 
 
 # =========================================================
@@ -1394,15 +1797,75 @@ async def setupalertprefs(
             )
         )
 
+        initialized_family_members = 0
+
+        # -------------------------------------------------
+        # Initialize family defaults for people who
+        # currently follow this game.
+        # -------------------------------------------------
+
+        role_id = (
+            safe_int(
+                GAME_ROLES.get(
+                    game.value
+                )
+            )
+        )
+
+        game_role = (
+
+            interaction.guild.get_role(
+                role_id
+            )
+
+            if role_id
+
+            else None
+        )
+
+        if game_role:
+
+            for member in game_role.members:
+
+                if member.bot:
+
+                    continue
+
+                try:
+
+                    await ensure_family_preferences(
+
+                        member.id,
+
+                        game.value,
+                    )
+
+                    initialized_family_members += 1
+
+                except Exception as error:
+
+                    print(
+                        (
+                            "FAMILY PREF INIT ERROR | "
+                            f"User={member.id} | "
+                            f"Game={game.value} | "
+                            f"{type(error).__name__}: "
+                            f"{error}"
+                        )
+                    )
+
         await interaction.followup.send(
 
             (
                 f"✅ **{game.value} alert preferences initialized.**\n\n"
 
-                f"Members initialized: "
-                f"`{result['members']}`\n\n"
+                f"Category members initialized: "
+                f"`{result['members']}`\n"
 
-                "**Default preferences:**\n"
+                f"Family members initialized: "
+                f"`{initialized_family_members}`\n\n"
+
+                "**Default category preferences:**\n"
 
                 "✅ Sealed Products\n"
 
@@ -1410,9 +1873,22 @@ async def setupalertprefs(
 
                 "❌ Accessories\n"
 
-                "✅ Unknown / New Types\n\n"
+                "✅ Unknown Product Types\n\n"
 
-                "Members can change these using `/alertprefs`."
+                "**Default family preferences:**\n"
+
+                "✅ English / Global Standard\n"
+
+                "❌ Japanese\n"
+
+                "❌ Korean\n"
+
+                "❌ Simplified Chinese\n"
+
+                "❌ Unknown / Unclassified\n\n"
+
+                "Members can customize these using "
+                "`/alertprefs` and `/familyprefs`."
             ),
 
             ephemeral=True,
@@ -1426,7 +1902,7 @@ async def setupalertprefs(
                 "❌ Lotus needs **Manage Roles**.\n\n"
 
                 "Also make sure the Lotus bot Discord role "
-                "is above the new Lotus alert roles."
+                "is above its alert roles."
             ),
 
             ephemeral=True,
@@ -1449,15 +1925,16 @@ async def setupalertprefs(
 
 # =========================================================
 # MSRP ADMINISTRATION
-# Lotus v1.0.1
 #
-# Resolution hierarchy:
+# Product family is REQUIRED.
 #
-# Exact Product
-#     ↓
-# Product Type
-#     ↓
-# Game Default
+# This prevents:
+#
+# JP box sold in USD
+#
+# from accidentally matching:
+#
+# GLOBAL_STANDARD Booster Box $119.99
 # =========================================================
 
 
@@ -1474,13 +1951,15 @@ async def setupalertprefs(
 )
 @app_commands.choices(
     game=GAME_CHOICES,
-    confidence=MSRP_CONFIDENCE_CHOICES,
     scope=MSRP_SCOPE_CHOICES,
+    family=MSRP_FAMILY_CHOICES,
+    confidence=MSRP_CONFIDENCE_CHOICES,
 )
 async def setmsrp(
     interaction,
     game: app_commands.Choice[str],
     scope: app_commands.Choice[str],
+    family: app_commands.Choice[str],
     amount: float,
     match_value: str = "",
     currency: str = "USD",
@@ -1576,6 +2055,10 @@ async def setmsrp(
                         scope.value
                     ),
 
+                    product_family=(
+                        family.value
+                    ),
+
                     match_value=(
                         actual_match_value
                     ),
@@ -1604,17 +2087,19 @@ async def setmsrp(
                 )
             )
 
-        scope_labels = {
+        family_label = (
+            PRODUCT_FAMILY_LABELS.get(
+                family.value,
+                family.value,
+            )
+        )
 
-            "EXACT_PRODUCT":
-                "Exact Product",
-
-            "PRODUCT_TYPE":
-                "Product Type",
-
-            "GAME_DEFAULT":
-                "Game Default",
-        }
+        scope_label = (
+            MSRP_SCOPE_LABELS.get(
+                scope.value,
+                scope.value,
+            )
+        )
 
         await interaction.followup.send(
 
@@ -1624,8 +2109,11 @@ async def setmsrp(
 
                 f"**Game:** {row.game}\n"
 
+                f"**Product Family:** "
+                f"{family_label}\n"
+
                 f"**Scope:** "
-                f"{scope_labels.get(row.scope_type, row.scope_type)}\n"
+                f"{scope_label}\n"
 
                 f"**Match:** "
                 f"{row.match_value or 'All eligible products in game'}\n"
@@ -1643,8 +2131,8 @@ async def setmsrp(
                 f"**Confidence:** "
                 f"{row.confidence}\n\n"
 
-                "Lotus will use this rule on future "
-                "matching pricing events."
+                "Lotus will only apply this reference to "
+                f"**{family_label}** products."
             ),
 
             ephemeral=True,
@@ -1679,11 +2167,13 @@ async def setmsrp(
 @app_commands.choices(
     game=GAME_CHOICES,
     scope=MSRP_SCOPE_CHOICES,
+    family=MSRP_FAMILY_CHOICES,
 )
 async def viewmsrp(
     interaction,
     game: app_commands.Choice[str],
     scope: app_commands.Choice[str],
+    family: app_commands.Choice[str],
     match_value: str = "",
     region: str = "GLOBAL",
 ):
@@ -1755,6 +2245,10 @@ async def viewmsrp(
                         scope.value
                     ),
 
+                    product_family=(
+                        family.value
+                    ),
+
                     match_value=(
                         actual_match_value
                     ),
@@ -1777,8 +2271,11 @@ async def viewmsrp(
                     f"**Game:** "
                     f"{game.value}\n"
 
+                    f"**Family:** "
+                    f"{PRODUCT_FAMILY_LABELS.get(family.value, family.value)}\n"
+
                     f"**Scope:** "
-                    f"{scope.value}\n"
+                    f"{MSRP_SCOPE_LABELS.get(scope.value, scope.value)}\n"
 
                     f"**Match:** "
                     f"{actual_match_value or 'Game Default'}\n"
@@ -1791,18 +2288,6 @@ async def viewmsrp(
             )
 
             return
-
-        scope_labels = {
-
-            "EXACT_PRODUCT":
-                "Exact Product",
-
-            "PRODUCT_TYPE":
-                "Product Type",
-
-            "GAME_DEFAULT":
-                "Game Default",
-        }
 
         embed = discord.Embed(
 
@@ -1826,10 +2311,24 @@ async def viewmsrp(
 
         embed.add_field(
 
+            name="Product Family",
+
+            value=(
+                PRODUCT_FAMILY_LABELS.get(
+                    row.product_family,
+                    row.product_family,
+                )
+            ),
+
+            inline=True,
+        )
+
+        embed.add_field(
+
             name="Scope",
 
             value=(
-                scope_labels.get(
+                MSRP_SCOPE_LABELS.get(
                     row.scope_type,
                     row.scope_type,
                 )
@@ -1909,8 +2408,8 @@ async def viewmsrp(
         embed.set_footer(
 
             text=(
-                "Resolution priority: "
-                "Exact Product → Product Type → Game Default"
+                "MSRP isolation: "
+                "GLOBAL_STANDARD / JP / KR / CN"
             )
         )
 
@@ -1950,11 +2449,13 @@ async def viewmsrp(
 @app_commands.choices(
     game=GAME_CHOICES,
     scope=MSRP_SCOPE_CHOICES,
+    family=MSRP_FAMILY_CHOICES,
 )
 async def removemsrp(
     interaction,
     game: app_commands.Choice[str],
     scope: app_commands.Choice[str],
+    family: app_commands.Choice[str],
     match_value: str = "",
     region: str = "GLOBAL",
 ):
@@ -2026,6 +2527,10 @@ async def removemsrp(
                         scope.value
                     ),
 
+                    product_family=(
+                        family.value
+                    ),
+
                     match_value=(
                         actual_match_value
                     ),
@@ -2048,6 +2553,9 @@ async def removemsrp(
                     f"**Game:** "
                     f"{game.value}\n"
 
+                    f"**Family:** "
+                    f"{PRODUCT_FAMILY_LABELS.get(family.value, family.value)}\n"
+
                     f"**Scope:** "
                     f"{scope.value}\n"
 
@@ -2068,8 +2576,11 @@ async def removemsrp(
                 f"**Game:** "
                 f"{row.game}\n"
 
+                f"**Family:** "
+                f"{PRODUCT_FAMILY_LABELS.get(row.product_family, row.product_family)}\n"
+
                 f"**Scope:** "
-                f"{row.scope_type}\n"
+                f"{MSRP_SCOPE_LABELS.get(row.scope_type, row.scope_type)}\n"
 
                 f"**Match:** "
                 f"{row.match_value or 'Game Default'}\n"
@@ -2078,7 +2589,7 @@ async def removemsrp(
                 f"{row.amount:.2f} "
                 f"{row.currency}\n\n"
 
-                "The rule remains in historical data "
+                "The historical rule remains stored "
                 "but will no longer be used."
             ),
 
@@ -2112,7 +2623,9 @@ async def subscription(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -2121,12 +2634,16 @@ async def subscription(
 
         return
 
-    tier = get_subscription(
-        member
+    tier = (
+        get_subscription(
+            member
+        )
     )
 
-    games = get_followed_games(
-        member
+    games = (
+        get_followed_games(
+            member
+        )
     )
 
     tier_details = {
@@ -2137,7 +2654,8 @@ async def subscription(
             (
                 "• Major retailer alerts\n"
                 "• Basic stock alerts\n"
-                "• Game role selection"
+                "• Game selection\n"
+                "• Product family preferences"
             ),
         ),
 
@@ -2162,8 +2680,8 @@ async def subscription(
                 "• Early page detection\n"
                 "• Price drops & deals\n"
                 "• International alerts\n"
-                "• Advanced discovery\n"
-                "• Pricing Intelligence"
+                "• Pricing Intelligence\n"
+                "• Advanced discovery"
             ),
         ),
 
@@ -2176,8 +2694,8 @@ async def subscription(
                 "• Release Radar\n"
                 "• Pokémon Center Queue Intelligence\n"
                 "• Global intelligence\n"
-                "• Earliest detections\n"
-                "• Scalper Protection"
+                "• Scalper Protection\n"
+                "• Earliest detections"
             ),
         ),
     }
@@ -2251,7 +2769,9 @@ async def settings(
     interaction,
 ):
 
-    member = interaction.user
+    member = (
+        interaction.user
+    )
 
     if not isinstance(
         member,
@@ -2260,12 +2780,16 @@ async def settings(
 
         return
 
-    tier = get_subscription(
-        member
+    tier = (
+        get_subscription(
+            member
+        )
     )
 
-    games = get_followed_games(
-        member
+    games = (
+        get_followed_games(
+            member
+        )
     )
 
     features = [
@@ -2354,8 +2878,10 @@ async def settings(
 
         description=(
             f"**Subscription:** {tier}\n\n"
-            "Use `/alertprefs` to control "
-            "Sealed, Singles and Accessory pings."
+
+            "`/games` — Choose TCGs\n"
+            "`/alertprefs` — Sealed / Singles / Accessories\n"
+            "`/familyprefs` — English / JP / KR / CN"
         ),
     )
 
@@ -2560,7 +3086,9 @@ async def redisstatus(
         await check_redis()
     )
 
-    bot.redis_ready = online
+    bot.redis_ready = (
+        online
+    )
 
     await interaction.response.send_message(
 
@@ -2619,39 +3147,39 @@ async def eventstatus(
 
             f"**Queue:** `{queue}`\n\n"
 
-            "**Source Routing:** ✅\n"
+            "**Strict TCG Classification:** ✅\n"
 
-            "**Strict Game Validation:** ✅\n"
+            "**Product Category Filtering:** ✅\n"
 
-            "**Product Type Preferences:** ✅\n"
+            "**Product Family Detection:** ✅\n"
+
+            "**Member Family Preferences:** ✅\n"
+
+            "**Game + Category + Family Audience:** ✅\n"
+
+            "**Native Currency:** ✅\n"
+
+            "**USD Conversion:** ✅\n"
+
+            "**Historical Pricing:** ✅\n"
+
+            "**Hierarchical MSRP:** ✅\n"
+
+            "**Regional MSRP Isolation:** ✅\n"
+
+            "**Cross-Currency MSRP:** ✅\n"
+
+            "**Deal Score:** ✅\n"
+
+            "**Scalper Protection:** ✅\n"
 
             "**Smart Quick Cart:** ✅\n"
 
             "**Product Images:** ✅\n"
 
-            "**Currency Conversion:** ✅\n"
-
-            "**30-Day Price History:** ✅\n"
-
-            "**Deal Score:** ✅\n"
-
-            "**Persistent MSRP References:** ✅\n"
-
-            "**Hierarchical MSRP Rules:** ✅\n"
-
-            "**Exact Product Overrides:** ✅\n"
-
-            "**Product Type MSRP:** ✅\n"
-
-            "**Game Default MSRP:** ✅\n"
-
-            "**Cross-Currency MSRP:** ✅\n"
-
-            "**Scalper Protection:** ✅\n"
-
             "**Affiliate Pipeline:** ✅\n\n"
 
-            "**Engine Version:** `1.0.1`"
+            "**Engine Version:** `1.0.2`"
         ),
     )
 
@@ -2742,7 +3270,9 @@ async def addshopifystore(
                 f"{'✅ Added' if created else '✅ Updated'} "
                 f"**{store.name}**\n"
 
-                f"`{store.domain}`"
+                f"`{store.domain}`\n"
+
+                f"Region: `{store.region}`"
             ),
 
             ephemeral=True,
@@ -2809,6 +3339,8 @@ async def stores(
 
                 f"`{store.domain}`\n"
 
+                f"Region: `{store.region or 'Unknown'}`\n"
+
                 f"{'🟢' if store.active else '⚫'} "
                 f"{store.health_status}"
 
@@ -2869,6 +3401,7 @@ async def storeinfo(
         return
 
     embed = discord.Embed(
+
         title=(
             f"🏪 {store.name}"
         )
@@ -2904,6 +3437,14 @@ async def storeinfo(
             or "Unknown"
         ),
         inline=False,
+    )
+
+    embed.add_field(
+        name="Region",
+        value=(
+            store.region
+            or "Unknown"
+        ),
     )
 
     embed.add_field(
@@ -3213,9 +3754,11 @@ async def retrystore(
         )
     )
 
-    reason = result[
-        "reason"
-    ]
+    reason = (
+        result[
+            "reason"
+        ]
+    )
 
     if reason == "NOT_FOUND":
 
@@ -3328,6 +3871,13 @@ async def scanshopify(
 
     for result in results:
 
+        families = (
+            result.get(
+                "families",
+                {}
+            )
+        )
+
         lines.append(
 
             (
@@ -3349,7 +3899,22 @@ async def scanshopify(
                 f"`{result['events']}`\n"
 
                 f"Flickers: "
-                f"`{result['flickers']}`"
+                f"`{result['flickers']}`\n"
+
+                f"🌎 Global: "
+                f"`{families.get('GLOBAL_STANDARD', 0)}` | "
+
+                f"🇯🇵 JP: "
+                f"`{families.get('JP', 0)}` | "
+
+                f"🇰🇷 KR: "
+                f"`{families.get('KR', 0)}` | "
+
+                f"🇨🇳 CN: "
+                f"`{families.get('CN', 0)}` | "
+
+                f"❓ Unknown: "
+                f"`{families.get('UNKNOWN', 0)}`"
 
                 + (
 
@@ -3429,11 +3994,22 @@ async def shopifystatus(
             f"**Recovered Stores:** "
             f"{data['stores_recovered']}\n\n"
 
-            "**Pricing Intelligence:** ✅\n"
+            "**Product Families:**\n"
 
-            "**Hierarchical MSRP:** ✅\n"
+            f"🌎 Global: "
+            f"`{data.get('global_family_products', 0)}`\n"
 
-            "**Scalper Protection:** ✅\n\n"
+            f"🇯🇵 Japanese: "
+            f"`{data.get('jp_family_products', 0)}`\n"
+
+            f"🇰🇷 Korean: "
+            f"`{data.get('kr_family_products', 0)}`\n"
+
+            f"🇨🇳 Chinese: "
+            f"`{data.get('cn_family_products', 0)}`\n"
+
+            f"❓ Unknown: "
+            f"`{data.get('unknown_family_products', 0)}`\n\n"
 
             "**Routing:**\n"
 
@@ -3569,7 +4145,7 @@ async def pokemoncenterstatus(
 
 
 # =========================================================
-# SCAN POKEMON CENTER QUEUE
+# /SCANPOKEMONCENTER
 # =========================================================
 
 @bot.tree.command(
@@ -3651,7 +4227,7 @@ async def scanpokemoncenter(
 
 
 # =========================================================
-# ADD POKEMON PRODUCT
+# /ADDPOKEMONPRODUCT
 # =========================================================
 
 @bot.tree.command(
@@ -3721,7 +4297,7 @@ async def addpokemonproduct(
 
 
 # =========================================================
-# POKEMON PRODUCTS
+# /POKEMONPRODUCTS
 # =========================================================
 
 @bot.tree.command(
@@ -3846,7 +4422,7 @@ async def pokemonproducts(
 
 
 # =========================================================
-# REMOVE POKEMON PRODUCT
+# /REMOVEPOKEMONPRODUCT
 # =========================================================
 
 @bot.tree.command(
@@ -3892,7 +4468,7 @@ async def removepokemonproduct(
 
 
 # =========================================================
-# RESTORE POKEMON PRODUCT
+# /RESTOREPOKEMONPRODUCT
 # =========================================================
 
 @bot.tree.command(
@@ -3937,7 +4513,7 @@ async def restorepokemonproduct(
 
 
 # =========================================================
-# DISCOVER POKEMON PRODUCTS
+# /DISCOVERPOKEMONPRODUCTS
 # =========================================================
 
 @bot.tree.command(
@@ -3989,7 +4565,7 @@ async def discoverpokemonproducts(
 
 
 # =========================================================
-# SCAN POKEMON PRODUCTS
+# /SCANPOKEMONPRODUCTS
 # =========================================================
 
 @bot.tree.command(
@@ -4059,7 +4635,7 @@ async def scanpokemonproducts(
 
 
 # =========================================================
-# POKEMON PRODUCT STATUS
+# /POKEMONPRODUCTSTATUS
 # =========================================================
 
 @bot.tree.command(
@@ -4141,7 +4717,7 @@ async def pokemonproductstatus(
 
 
 # =========================================================
-# POKEMON BURST
+# /POKEMONBURST
 # =========================================================
 
 @bot.tree.command(
@@ -4205,7 +4781,16 @@ async def pokemonburst(
 
 
 # =========================================================
-# SIMULATE PRODUCT
+# /SIMULATEPRODUCT
+#
+# family lets us test:
+#
+# English box
+# Japanese box
+# Korean box
+# Chinese box
+#
+# without relying on a live retailer.
 # =========================================================
 
 @bot.tree.command(
@@ -4218,11 +4803,13 @@ async def pokemonburst(
 @app_commands.choices(
     game=GAME_CHOICES,
     event=EVENT_CHOICES,
+    family=PRODUCT_FAMILY_CHOICES,
 )
 async def simulateproduct(
     interaction,
     game: app_commands.Choice[str],
     event: app_commands.Choice[str],
+    family: app_commands.Choice[str],
 ):
 
     await interaction.response.defer(
@@ -4244,6 +4831,36 @@ async def simulateproduct(
         else "simulation"
     )
 
+    if queue_event:
+
+        family_value = (
+            "UNKNOWN"
+        )
+
+    else:
+
+        family_value = (
+            family.value
+        )
+
+    language_map = {
+
+        "GLOBAL_STANDARD":
+            "English",
+
+        "JP":
+            "Japanese",
+
+        "KR":
+            "Korean",
+
+        "CN":
+            "Simplified Chinese",
+
+        "UNKNOWN":
+            "Unknown",
+    }
+
     product_event = ProductEvent(
 
         event_type=(
@@ -4259,10 +4876,14 @@ async def simulateproduct(
         ),
 
         product_name=(
+
             "Pokémon Center Test"
+
             if queue_event
+
             else (
                 f"{game.value} "
+                f"{PRODUCT_FAMILY_LABELS.get(family_value, family_value)} "
                 "Test Booster Box"
             )
         ),
@@ -4300,7 +4921,12 @@ async def simulateproduct(
 
         region="US",
 
-        language="English",
+        language=(
+            language_map.get(
+                family_value,
+                "Unknown",
+            )
+        ),
 
         product_type=(
             "Virtual Queue"
@@ -4312,6 +4938,10 @@ async def simulateproduct(
             "UNKNOWN"
             if queue_event
             else "SEALED"
+        ),
+
+        product_family=(
+            family_value
         ),
 
         source_type=(
@@ -4353,6 +4983,9 @@ async def simulateproduct(
             f"Category: "
             f"`{product_event.product_category}`\n"
 
+            f"Family: "
+            f"`{product_event.product_family}`\n"
+
             f"Database: "
             f"{'✅' if result['database_saved'] else '❌'}\n"
 
@@ -4365,7 +4998,7 @@ async def simulateproduct(
 
 
 # =========================================================
-# TEST ALERT
+# /TESTALERT
 # =========================================================
 
 @bot.tree.command(
@@ -4431,11 +5064,13 @@ async def testalert(
 
         return
 
-    channel_id = safe_int(
-        CHANNEL_MAP.get(
-            config[
-                "channel_variable"
-            ]
+    channel_id = (
+        safe_int(
+            CHANNEL_MAP.get(
+                config[
+                    "channel_variable"
+                ]
+            )
         )
     )
 
@@ -4472,7 +5107,9 @@ async def testalert(
                 f"**{game.value} Test Product**\n"
 
                 f"Route: "
-                f"`{alert_type}`"
+                f"`{alert_type}`\n"
+
+                "Version: `1.0.2`"
             ),
         )
     )
@@ -4578,17 +5215,15 @@ async def status(
 
             "**Singles Filtering:** ✅\n"
 
-            "**Smart Quick Cart:** ✅\n"
+            "**Product Family Detection:** ✅\n"
 
-            "**Native Currency:** ✅\n"
+            "**English / JP / KR / CN Preferences:** ✅\n"
 
-            "**USD Conversion:** ✅\n"
+            "**Game + Category + Family Audience:** ✅\n"
 
-            "**30-Day Pricing History:** ✅\n"
+            "**Currency-Independent Family Detection:** ✅\n"
 
-            "**Deal Score:** ✅\n"
-
-            "**Persistent MSRP Intelligence:** ✅\n"
+            "**Regional MSRP Isolation:** ✅\n"
 
             "**Exact Product MSRP:** ✅\n"
 
@@ -4598,7 +5233,17 @@ async def status(
 
             "**Cross-Currency MSRP:** ✅\n"
 
+            "**30-Day Pricing History:** ✅\n"
+
+            "**Deal Score:** ✅\n"
+
             "**Scalper Protection:** ✅\n"
+
+            "**Smart Quick Cart:** ✅\n"
+
+            "**Native Currency:** ✅\n"
+
+            "**USD Conversion:** ✅\n"
 
             "**Early Page Routing:** ✅\n"
 
@@ -4622,7 +5267,7 @@ async def status(
             f"**Redis Queue:** "
             f"`{queue}`\n\n"
 
-            "**Version:** `1.0.1`"
+            "**Version:** `1.0.2`"
         ),
     )
 
@@ -4635,7 +5280,7 @@ async def status(
 
 
 # =========================================================
-# ERROR HANDLER
+# GLOBAL ERROR HANDLER
 # =========================================================
 
 @bot.tree.error
@@ -4643,6 +5288,14 @@ async def on_app_command_error(
     interaction,
     error,
 ):
+
+    # Unwrap CommandInvokeError where possible.
+
+    original = getattr(
+        error,
+        "original",
+        error,
+    )
 
     if isinstance(
         error,
@@ -4658,9 +5311,9 @@ async def on_app_command_error(
 
         print(
             (
-                "APP COMMAND ERROR: "
-                f"{type(error).__name__}: "
-                f"{error}"
+                "APP COMMAND ERROR | "
+                f"{type(original).__name__}: "
+                f"{original}"
             )
         )
 
@@ -4668,26 +5321,38 @@ async def on_app_command_error(
 
             "❌ Command failed.\n\n"
 
-            f"`{type(error).__name__}: "
-            f"{error}`"
+            f"`{type(original).__name__}: "
+            f"{original}`"
         )
 
-    if interaction.response.is_done():
+    try:
 
-        await interaction.followup.send(
+        if interaction.response.is_done():
 
-            message,
+            await interaction.followup.send(
 
-            ephemeral=True,
-        )
+                message,
 
-    else:
+                ephemeral=True,
+            )
 
-        await interaction.response.send_message(
+        else:
 
-            message,
+            await interaction.response.send_message(
 
-            ephemeral=True,
+                message,
+
+                ephemeral=True,
+            )
+
+    except Exception as send_error:
+
+        print(
+            (
+                "APP ERROR RESPONSE FAILED | "
+                f"{type(send_error).__name__}: "
+                f"{send_error}"
+            )
         )
 
 
