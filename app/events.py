@@ -2,10 +2,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+
 # =========================================================
 # LOTUS PRODUCT EVENTS
 # PonDeX Trackers
-# Version 0.7.9
+# Version 0.9.0
+#
+# Historical Pricing + Deal Score v1
 # =========================================================
 
 
@@ -54,21 +57,35 @@ class ProductEvent:
 
     price: float | None = None
 
-    # Previous observed price.
-    #
-    # Used by:
-    # PRICE_DROP
-    # PRICE_INCREASE
-    # PRICE_ERROR
-    #
-    # This allows the Discord worker to display:
-    #
-    # $49.99 -> $39.99
-    # Save $10.00 • 20%
-    #
     old_price: float | None = None
 
     currency: str = "USD"
+
+    # =====================================================
+    # HISTORICAL PRICING / DEAL INTELLIGENCE
+    # =====================================================
+
+    price_window_days: int | None = None
+
+    price_30d_low: float | None = None
+
+    price_30d_average: float | None = None
+
+    price_30d_high: float | None = None
+
+    price_history_samples: int | None = None
+
+    price_vs_average_pct: float | None = None
+
+    price_vs_low_pct: float | None = None
+
+    price_drop_pct: float | None = None
+
+    deal_score: float | None = None
+
+    deal_label: str | None = None
+
+    deal_confidence: str | None = None
 
     # =====================================================
     # INVENTORY
@@ -101,7 +118,7 @@ class ProductEvent:
     image_url: str | None = None
 
     # =====================================================
-    # QUICK CART / SMART CART
+    # SMART CART
     # =====================================================
 
     variant_id: str | None = None
@@ -116,34 +133,32 @@ class ProductEvent:
 
     timestamp: datetime | None = None
 
-    # =====================================================
-    # NORMALIZATION
-    # =====================================================
 
     def __post_init__(
         self,
     ):
 
         if self.timestamp is None:
-
             self.timestamp = (
                 datetime.utcnow()
             )
 
         if self.product_category:
-
             self.product_category = (
                 self.product_category.upper()
             )
 
         if self.currency:
-
             self.currency = (
                 self.currency.upper()
             )
 
         if self.region:
-
             self.region = (
                 self.region.upper()
+            )
+
+        if self.deal_confidence:
+            self.deal_confidence = (
+                self.deal_confidence.upper()
             )
