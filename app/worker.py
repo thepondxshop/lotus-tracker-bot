@@ -1,6 +1,10 @@
 import asyncio
 import hashlib
 
+from urllib.parse import (
+    urlparse,
+)
+
 import discord
 
 from app.affiliate import (
@@ -46,11 +50,16 @@ from app.redis_client import (
     init_redis,
 )
 
+from app.smart_cart import (
+    build_smart_cart_from_event,
+    smart_cart_debug_summary,
+)
+
 
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.2
+# Version 1.0.3
 #
 # Source Routing
 # Strict Member Audience Filtering
@@ -63,7 +72,9 @@ from app.redis_client import (
 # MSRP Intelligence
 # Deal Intelligence
 # Scalper Protection
-# Smart Quick Cart
+# Smart Cart v1
+# Discord Link Buttons
+# Purchase Limit Protection
 # Affiliate Links
 # =========================================================
 
@@ -729,6 +740,50 @@ def get_event_category(
 
 
 # =========================================================
+# VALID HTTP URL
+# =========================================================
+
+def is_valid_http_url(
+    value,
+):
+
+    if not value:
+
+        return False
+
+
+    try:
+
+        parsed = (
+            urlparse(
+                str(
+                    value
+                ).strip()
+            )
+        )
+
+
+        return (
+            parsed.scheme
+            in {
+                "http",
+                "https",
+            }
+
+            and
+
+            bool(
+                parsed.netloc
+            )
+        )
+
+
+    except Exception:
+
+        return False
+
+
+# =========================================================
 # BUILD EVENT EMBED
 # =========================================================
 
@@ -792,8 +847,14 @@ async def build_event_embed(
             ),
 
             url=(
+
                 final_url
-                or None
+
+                if is_valid_http_url(
+                    final_url
+                )
+
+                else None
             ),
         )
     )
@@ -1607,9 +1668,20 @@ async def build_event_embed(
 
     # =====================================================
     # QUICK PRODUCT LINK
+    #
+    # Keep this as a text fallback even though v1.0.3 also
+    # adds an actual Discord Product Page button.
     # =====================================================
 
-    if final_url:
+    if (
+        final_url
+
+        and
+
+        is_valid_http_url(
+            final_url
+        )
+    ):
 
         embed.add_field(
 
@@ -1625,140 +1697,69 @@ async def build_event_embed(
 
 
     # =====================================================
-    # SMART QUICK CART
+    # SMART CART STATUS
+    #
+    # Actual cart links are Discord buttons now.
+    #
+    # We intentionally removed the old text-link quantity
+    # section to avoid duplicate cart interfaces.
     # =====================================================
 
-    variant_id = (
-        event.get(
-            "variant_id"
-        )
-    )
+    try:
 
-    cart_base_url = (
-        event.get(
-            "cart_base_url"
-        )
-    )
-
-
-    if (
-        variant_id
-
-        and
-
-        cart_base_url
-
-        and
-
-        event.get(
-            "in_stock"
-        )
-    ):
-
-        base = (
-            str(
-                cart_base_url
-            ).rstrip(
-                "/"
+        smart_cart = (
+            build_smart_cart_from_event(
+                event
             )
         )
 
 
-        limit = (
+        if (
+            smart_cart.supported
+
+            and
+
             event.get(
-                "purchase_limit"
+                "in_stock"
             )
-        )
+        ):
 
+            quantity_text = (
+                ", ".join(
 
-        quantities = [
-            1,
-            2,
-            3,
-            4,
-            5,
-            10,
-        ]
-
-
-        if limit:
-
-            try:
-
-                limit = int(
-                    limit
-                )
-
-
-                quantities = [
-
-                    quantity
+                    f"x{quantity}"
 
                     for quantity
-                    in quantities
-
-                    if quantity <= limit
-                ]
-
-
-                if (
-                    limit > 0
-
-                    and
-
-                    limit not in quantities
-                ):
-
-                    quantities.append(
-                        limit
-                    )
-
-
-                quantities = sorted(
-                    set(
-                        quantities
-                    )
+                    in smart_cart.quantities
                 )
-
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
-                pass
-
-
-        cart_links = []
-
-
-        for quantity in quantities:
-
-            cart_url = (
-                f"{base}/cart/"
-                f"{variant_id}:{quantity}"
             )
 
-
-            cart_links.append(
-                f"[x{quantity}]({cart_url})"
-            )
-
-
-        if cart_links:
 
             embed.add_field(
 
-                name="⚡ Quick Cart",
+                name="⚡ Smart Cart",
 
                 value=(
-                    " • ".join(
-                        cart_links
-                    )
+
+                    "✅ Ready\n"
+
+                    f"Quantities: "
+                    f"{quantity_text}"
                 ),
 
                 inline=False,
             )
+
+
+    except Exception as error:
+
+        print(
+            (
+                "SMART CART EMBED ERROR | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
 
 
     # =====================================================
@@ -1786,7 +1787,7 @@ async def build_event_embed(
     footer_parts = [
         "Lotus Tracker Bot",
         "PonDeX Trackers",
-        "v1.0.2",
+        "v1.0.3",
     ]
 
 
@@ -1817,7 +1818,308 @@ async def build_event_embed(
     return (
         embed,
         affiliate_used,
+        final_url,
     )
+
+
+# =========================================================
+# ALERT BUTTON VIEW
+#
+# Row 0:
+#
+# 🛒 Quick Cart
+# 🔗 Product Page
+#
+# Row 1+:
+#
+# Qty x1
+# Qty x2
+# Qty x3
+# ...
+#
+# Discord allows up to 5 buttons per row.
+# =========================================================
+
+def build_alert_view(
+    event,
+    *,
+    product_url=None,
+):
+
+    view = (
+        discord.ui.View(
+            timeout=None
+        )
+    )
+
+
+    buttons_added = 0
+
+
+    # =====================================================
+    # SMART CART
+    # =====================================================
+
+    try:
+
+        smart_cart = (
+            build_smart_cart_from_event(
+                event
+            )
+        )
+
+
+    except Exception as error:
+
+        print(
+            (
+                "SMART CART BUILD ERROR | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
+
+
+        smart_cart = None
+
+
+    # =====================================================
+    # QUICK CART BUTTON
+    #
+    # Only show when:
+    #
+    # - Smart Cart is supported
+    # - Product is currently in stock
+    # - Primary x1 cart URL exists
+    # =====================================================
+
+    if (
+        smart_cart is not None
+
+        and
+
+        smart_cart.supported
+
+        and
+
+        bool(
+            event.get(
+                "in_stock"
+            )
+        )
+
+        and
+
+        smart_cart.primary_cart_url
+
+        and
+
+        is_valid_http_url(
+            smart_cart.primary_cart_url
+        )
+    ):
+
+        view.add_item(
+
+            discord.ui.Button(
+
+                label="Quick Cart",
+
+                emoji="🛒",
+
+                style=(
+                    discord.ButtonStyle.link
+                ),
+
+                url=(
+                    smart_cart.primary_cart_url
+                ),
+
+                row=0,
+            )
+        )
+
+
+        buttons_added += 1
+
+
+    # =====================================================
+    # PRODUCT PAGE BUTTON
+    #
+    # Affiliate URL is used here when one exists.
+    # =====================================================
+
+    final_product_url = (
+
+        product_url
+
+        if is_valid_http_url(
+            product_url
+        )
+
+        else None
+    )
+
+
+    if final_product_url:
+
+        view.add_item(
+
+            discord.ui.Button(
+
+                label="Product Page",
+
+                emoji="🔗",
+
+                style=(
+                    discord.ButtonStyle.link
+                ),
+
+                url=(
+                    final_product_url
+                ),
+
+                row=0,
+            )
+        )
+
+
+        buttons_added += 1
+
+
+    # =====================================================
+    # QUANTITY BUTTONS
+    #
+    # These only appear while currently in stock.
+    #
+    # Purchase-limit filtering is already handled inside
+    # smart_cart.py.
+    # =====================================================
+
+    if (
+        smart_cart is not None
+
+        and
+
+        smart_cart.supported
+
+        and
+
+        bool(
+            event.get(
+                "in_stock"
+            )
+        )
+    ):
+
+        quantities = list(
+            smart_cart.quantities
+        )
+
+
+        for index, quantity in enumerate(
+            quantities
+        ):
+
+            cart_url = (
+                smart_cart.cart_links.get(
+                    quantity
+                )
+            )
+
+
+            if not (
+                cart_url
+
+                and
+
+                is_valid_http_url(
+                    cart_url
+                )
+            ):
+
+                continue
+
+
+            # -------------------------------------------------
+            # Five quantity buttons maximum on each row.
+            #
+            # 0-4  -> row 1
+            # 5-9  -> row 2
+            # -------------------------------------------------
+
+            row = (
+                1
+                + (
+                    index
+                    // 5
+                )
+            )
+
+
+            # Discord only has rows 0 through 4.
+
+            if row > 4:
+
+                break
+
+
+            view.add_item(
+
+                discord.ui.Button(
+
+                    label=(
+                        f"x{quantity}"
+                    ),
+
+                    style=(
+                        discord.ButtonStyle.link
+                    ),
+
+                    url=(
+                        cart_url
+                    ),
+
+                    row=(
+                        row
+                    ),
+                )
+            )
+
+
+            buttons_added += 1
+
+
+    # =====================================================
+    # DEBUG
+    # =====================================================
+
+    if smart_cart is not None:
+
+        print(
+            (
+                "SMART CART | "
+                f"Store={event.get('store_name')} | "
+                f"Product={event.get('product_name')} | "
+                f"{smart_cart_debug_summary(smart_cart)} | "
+                f"InStock={bool(event.get('in_stock'))} | "
+                f"Buttons={buttons_added}"
+            )
+        )
+
+
+    # =====================================================
+    # EMPTY VIEW
+    #
+    # Discord does not need an empty view attached.
+    # =====================================================
+
+    if buttons_added == 0:
+
+        return None
+
+
+    return view
 
 
 # =========================================================
@@ -2364,9 +2666,33 @@ async def route_event_to_discord(
         )
 
 
-    embed, affiliate_used = (
+    # =====================================================
+    # EMBED
+    # =====================================================
+
+    (
+        embed,
+        affiliate_used,
+        final_product_url,
+    ) = (
         await build_event_embed(
             event
+        )
+    )
+
+
+    # =====================================================
+    # SMART CART / PRODUCT BUTTONS
+    # =====================================================
+
+    alert_view = (
+        build_alert_view(
+
+            event,
+
+            product_url=(
+                final_product_url
+            ),
         )
     )
 
@@ -2409,6 +2735,10 @@ async def route_event_to_discord(
 
                     embed=(
                         embed
+                    ),
+
+                    view=(
+                        alert_view
                     ),
 
                     allowed_mentions=(
@@ -2547,6 +2877,40 @@ async def route_event_to_discord(
     )
 
 
+    # =====================================================
+    # SMART CART LOGGING
+    # =====================================================
+
+    try:
+
+        smart_cart = (
+            build_smart_cart_from_event(
+                event
+            )
+        )
+
+
+        smart_cart_ready = (
+
+            smart_cart.supported
+
+            and
+
+            bool(
+                event.get(
+                    "in_stock"
+                )
+            )
+        )
+
+
+    except Exception:
+
+        smart_cart_ready = (
+            False
+        )
+
+
     print(
         (
             "ALERT SENT | "
@@ -2558,6 +2922,7 @@ async def route_event_to_discord(
             f"Currency={event.get('currency')} | "
             f"Route={alert_type} | "
             f"Image={bool(event.get('image_url'))} | "
+            f"SmartCart={smart_cart_ready} | "
             f"Affiliate={affiliate_used}"
         )
     )
@@ -2578,7 +2943,7 @@ async def run_event_worker(
 
 
     print(
-        "Lotus Event Worker v1.0.2 started."
+        "Lotus Event Worker v1.0.3 started."
     )
 
 
