@@ -6,7 +6,7 @@ from enum import Enum
 # =========================================================
 # LOTUS PRODUCT EVENTS
 # PonDeX Trackers
-# Version 0.7.6
+# Version 0.7.8
 # =========================================================
 
 
@@ -16,33 +16,19 @@ class ProductEventType(
 ):
 
     DISCOVERED = "DISCOVERED"
-
     PAGE_LIVE = "PAGE_LIVE"
-
     COMING_SOON = "COMING_SOON"
-
     PREORDER_LIVE = "PREORDER_LIVE"
-
     STOCK_AVAILABLE = "STOCK_AVAILABLE"
-
     RESTOCK = "RESTOCK"
-
     SOLD_OUT = "SOLD_OUT"
-
     PRICE_DROP = "PRICE_DROP"
-
     PRICE_INCREASE = "PRICE_INCREASE"
-
     PRICE_ERROR = "PRICE_ERROR"
-
     INVENTORY_FLICKER = "INVENTORY_FLICKER"
-
     RELEASE_DATE_CHANGED = "RELEASE_DATE_CHANGED"
-
     QUEUE_DETECTED = "QUEUE_DETECTED"
-
     QUEUE_ACTIVE = "QUEUE_ACTIVE"
-
     QUEUE_CLEARED = "QUEUE_CLEARED"
 
 
@@ -71,25 +57,25 @@ class ProductEvent:
 
     product_type: str = "Unknown"
 
-    # =====================================================
-    # SOURCE ROUTING
-    #
-    # shopify
-    # major_retailer
-    # pokemon_center
-    # queue
-    # simulation
-    # =====================================================
+    # SEALED / SINGLE / ACCESSORY / UNKNOWN
+
+    product_category: str = "UNKNOWN"
 
     source_type: str = "unknown"
 
     retailer_key: str | None = None
 
+    image_url: str | None = None
+
     # =====================================================
-    # PRODUCT IMAGE
+    # QUICK CART
     # =====================================================
 
-    image_url: str | None = None
+    variant_id: str | None = None
+
+    purchase_limit: int | None = None
+
+    cart_base_url: str | None = None
 
     timestamp: datetime | None = None
 
@@ -102,4 +88,10 @@ class ProductEvent:
 
             self.timestamp = (
                 datetime.utcnow()
+            )
+
+        if self.product_category:
+
+            self.product_category = (
+                self.product_category.upper()
             )
