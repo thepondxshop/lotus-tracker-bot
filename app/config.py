@@ -4,7 +4,7 @@ import os
 # =========================================================
 # LOTUS CONFIGURATION
 # PonDeX Trackers
-# Version 0.7.6
+# Version 0.7.6-fixed
 # =========================================================
 
 
@@ -104,6 +104,40 @@ SUBSCRIPTION_ROLES = {
 
 
 # =========================================================
+# TIER ROLE ALIAS
+#
+# Some older helper code may still import TIER_ROLES.
+# Keeping this alias prevents version mismatch crashes.
+# =========================================================
+
+TIER_ROLES = (
+    SUBSCRIPTION_ROLES
+)
+
+
+# =========================================================
+# SUBSCRIPTION TIER LEVELS
+#
+# helpers.py uses this for tier comparisons.
+# =========================================================
+
+TIER_LEVELS = {
+
+    "Free":
+        0,
+
+    "Lite":
+        1,
+
+    "Premium":
+        2,
+
+    "Premium+":
+        3,
+}
+
+
+# =========================================================
 # GAME DATA
 # =========================================================
 
@@ -172,63 +206,103 @@ GAME_DATA = [
 
 
 # =========================================================
-# CHANNEL VARIABLES
+# CHANNELS
 # =========================================================
+
+
+# ---------------------------------------------------------
+# Roles
+# ---------------------------------------------------------
 
 CHANNEL_ROLES = os.getenv(
     "CHANNEL_ROLES"
 )
 
 
-# =========================================================
-# MAJOR RETAILER
+# ---------------------------------------------------------
+# Major Retailers
 #
 # Target / Walmart / Best Buy / GameStop etc.
-# =========================================================
+# ---------------------------------------------------------
 
 CHANNEL_TARGET = os.getenv(
     "CHANNEL_TARGET"
 )
 
 
-# =========================================================
-# SHOPIFY / SMALL TCG STORES
+# ---------------------------------------------------------
+# Shopify / Independent TCG stores
 #
-# NEW in v0.7.6
-# =========================================================
+# Saga Concepts
+# Hobbiesville
+# etc.
+#
+# Point this Railway variable to your existing
+# #shopify-drops channel.
+# ---------------------------------------------------------
 
 CHANNEL_SHOPIFY_ALERTS = os.getenv(
     "CHANNEL_SHOPIFY_ALERTS"
 )
 
 
-# =========================================================
-# FEATURE CHANNELS
-# =========================================================
+# ---------------------------------------------------------
+# Preorders
+# ---------------------------------------------------------
 
 CHANNEL_PREORDER_ALERTS = os.getenv(
     "CHANNEL_PREORDER_ALERTS"
 )
 
+
+# ---------------------------------------------------------
+# Early Page Detection
+# ---------------------------------------------------------
+
 CHANNEL_EARLY_PAGE_DETECTION = os.getenv(
     "CHANNEL_EARLY_PAGE_DETECTION"
 )
+
+
+# ---------------------------------------------------------
+# Deals
+# ---------------------------------------------------------
 
 CHANNEL_DEALS = os.getenv(
     "CHANNEL_DEALS"
 )
 
+
+# ---------------------------------------------------------
+# International
+# ---------------------------------------------------------
+
 CHANNEL_INTERNATIONAL_EXCLUSIVES = os.getenv(
     "CHANNEL_INTERNATIONAL_EXCLUSIVES"
 )
+
+
+# ---------------------------------------------------------
+# Inventory Flicker
+# ---------------------------------------------------------
 
 CHANNEL_INVENTORY_FLICKERS = os.getenv(
     "CHANNEL_INVENTORY_FLICKERS"
 )
 
+
+# ---------------------------------------------------------
+# Release Radar
+# ---------------------------------------------------------
+
 CHANNEL_RELEASE_RADAR = os.getenv(
     "CHANNEL_RELEASE_RADAR"
 )
+
+
+# ---------------------------------------------------------
+# Pokémon Center Queue
+# ---------------------------------------------------------
 
 CHANNEL_POKEMON_QUEUE = os.getenv(
     "CHANNEL_POKEMON_QUEUE"
@@ -237,6 +311,8 @@ CHANNEL_POKEMON_QUEUE = os.getenv(
 
 # =========================================================
 # CHANNEL MAP
+#
+# worker.py and main.py use symbolic channel names here.
 # =========================================================
 
 CHANNEL_MAP = {
@@ -271,13 +347,15 @@ CHANNEL_MAP = {
 
 
 # =========================================================
-# ALERT ACCESS
+# ALERT ACCESS MATRIX
 # =========================================================
 
 ALERT_ACCESS = {
 
     # -----------------------------------------------------
-    # True major retailers
+    # Major Retailers
+    #
+    # Target / Walmart / etc.
     # -----------------------------------------------------
 
     "major_retailer": {
@@ -291,7 +369,9 @@ ALERT_ACCESS = {
 
 
     # -----------------------------------------------------
-    # Shopify / independent TCG stores
+    # Shopify / Independent TCG stores
+    #
+    # Saga Concepts / Hobbiesville
     # -----------------------------------------------------
 
     "shopify": {
@@ -305,7 +385,7 @@ ALERT_ACCESS = {
 
 
     # -----------------------------------------------------
-    # Feature channels
+    # Preorders
     # -----------------------------------------------------
 
     "preorder": {
@@ -317,6 +397,11 @@ ALERT_ACCESS = {
             "CHANNEL_PREORDER_ALERTS",
     },
 
+
+    # -----------------------------------------------------
+    # Early Page Detection
+    # -----------------------------------------------------
+
     "page_live": {
 
         "minimum_tier":
@@ -325,6 +410,11 @@ ALERT_ACCESS = {
         "channel_variable":
             "CHANNEL_EARLY_PAGE_DETECTION",
     },
+
+
+    # -----------------------------------------------------
+    # Deals
+    # -----------------------------------------------------
 
     "deal": {
 
@@ -335,6 +425,11 @@ ALERT_ACCESS = {
             "CHANNEL_DEALS",
     },
 
+
+    # -----------------------------------------------------
+    # International
+    # -----------------------------------------------------
+
     "international": {
 
         "minimum_tier":
@@ -343,6 +438,11 @@ ALERT_ACCESS = {
         "channel_variable":
             "CHANNEL_INTERNATIONAL_EXCLUSIVES",
     },
+
+
+    # -----------------------------------------------------
+    # Inventory Flicker
+    # -----------------------------------------------------
 
     "inventory_flicker": {
 
@@ -353,6 +453,11 @@ ALERT_ACCESS = {
             "CHANNEL_INVENTORY_FLICKERS",
     },
 
+
+    # -----------------------------------------------------
+    # Release Radar
+    # -----------------------------------------------------
+
     "release_radar": {
 
         "minimum_tier":
@@ -361,6 +466,11 @@ ALERT_ACCESS = {
         "channel_variable":
             "CHANNEL_RELEASE_RADAR",
     },
+
+
+    # -----------------------------------------------------
+    # Pokémon Center Queue
+    # -----------------------------------------------------
 
     "pokemon_queue": {
 
