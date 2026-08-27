@@ -22,11 +22,13 @@ from sqlalchemy.orm import (
 # =========================================================
 # LOTUS TRACKER DATABASE MODELS
 # PonDeX Trackers
-# Version 1.0.0
+# Version 1.0.1
 # =========================================================
 
 
-class Base(DeclarativeBase):
+class Base(
+    DeclarativeBase
+):
     pass
 
 
@@ -345,8 +347,6 @@ class Product(Base):
         nullable=True,
     )
 
-    # SEALED / SINGLE / ACCESSORY / UNKNOWN
-
     product_category: Mapped[str] = mapped_column(
         String(50),
         default="UNKNOWN",
@@ -399,13 +399,17 @@ class StoreProduct(Base):
     )
 
     store_id: Mapped[int] = mapped_column(
-        ForeignKey("stores.id"),
+        ForeignKey(
+            "stores.id"
+        ),
         nullable=False,
         index=True,
     )
 
     product_id: Mapped[int] = mapped_column(
-        ForeignKey("products.id"),
+        ForeignKey(
+            "products.id"
+        ),
         nullable=False,
         index=True,
     )
@@ -420,15 +424,11 @@ class StoreProduct(Base):
         nullable=True,
     )
 
-    # Shopify variant used for Smart Quick Cart.
-
     variant_id: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
         index=True,
     )
-
-    # Retailer-advertised quantity restriction if known.
 
     purchase_limit: Mapped[int | None] = mapped_column(
         Integer,
@@ -479,13 +479,17 @@ class Alert(Base):
     )
 
     product_id: Mapped[int | None] = mapped_column(
-        ForeignKey("products.id"),
+        ForeignKey(
+            "products.id"
+        ),
         nullable=True,
         index=True,
     )
 
     store_id: Mapped[int | None] = mapped_column(
-        ForeignKey("stores.id"),
+        ForeignKey(
+            "stores.id"
+        ),
         nullable=True,
         index=True,
     )
@@ -616,7 +620,9 @@ class PriceHistory(Base):
     )
 
     store_product_id: Mapped[int] = mapped_column(
-        ForeignKey("store_products.id"),
+        ForeignKey(
+            "store_products.id"
+        ),
         nullable=False,
         index=True,
     )
@@ -642,14 +648,13 @@ class PriceHistory(Base):
 # =========================================================
 # PRICING REFERENCES
 #
-# Verified MSRP / reference pricing used by:
+# Scope hierarchy:
 #
-# - MSRP Intelligence
-# - Scalper Protection
-# - Deal Score
+# EXACT_PRODUCT
+# PRODUCT_TYPE
+# GAME_DEFAULT
 #
-# Lotus stores the reference in its ORIGINAL currency.
-# Currency conversion happens during pricing analysis.
+# normalized_name stores an internal scope-aware key.
 # =========================================================
 
 class PricingReference(Base):
@@ -662,7 +667,10 @@ class PricingReference(Base):
             "normalized_name",
             "region",
             "kind",
-            name="uq_pricing_reference_product_region_kind",
+            name=(
+                "uq_pricing_reference_"
+                "product_region_kind"
+            ),
         ),
     )
 
@@ -722,6 +730,19 @@ class PricingReference(Base):
         String(50),
         default="GLOBAL",
         nullable=False,
+        index=True,
+    )
+
+    scope_type: Mapped[str] = mapped_column(
+        String(50),
+        default="EXACT_PRODUCT",
+        nullable=False,
+        index=True,
+    )
+
+    match_value: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
         index=True,
     )
 
