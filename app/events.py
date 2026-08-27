@@ -2,11 +2,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-
 # =========================================================
 # LOTUS PRODUCT EVENTS
 # PonDeX Trackers
-# Version 0.7.8
+# Version 0.7.9
 # =========================================================
 
 
@@ -14,19 +13,23 @@ class ProductEventType(
     str,
     Enum,
 ):
-
     DISCOVERED = "DISCOVERED"
     PAGE_LIVE = "PAGE_LIVE"
     COMING_SOON = "COMING_SOON"
     PREORDER_LIVE = "PREORDER_LIVE"
+
     STOCK_AVAILABLE = "STOCK_AVAILABLE"
     RESTOCK = "RESTOCK"
     SOLD_OUT = "SOLD_OUT"
+
     PRICE_DROP = "PRICE_DROP"
     PRICE_INCREASE = "PRICE_INCREASE"
     PRICE_ERROR = "PRICE_ERROR"
+
     INVENTORY_FLICKER = "INVENTORY_FLICKER"
+
     RELEASE_DATE_CHANGED = "RELEASE_DATE_CHANGED"
+
     QUEUE_DETECTED = "QUEUE_DETECTED"
     QUEUE_ACTIVE = "QUEUE_ACTIVE"
     QUEUE_CLEARED = "QUEUE_CLEARED"
@@ -45,11 +48,37 @@ class ProductEvent:
 
     product_url: str
 
+    # =====================================================
+    # PRICING
+    # =====================================================
+
     price: float | None = None
+
+    # Previous observed price.
+    #
+    # Used by:
+    # PRICE_DROP
+    # PRICE_INCREASE
+    # PRICE_ERROR
+    #
+    # This allows the Discord worker to display:
+    #
+    # $49.99 -> $39.99
+    # Save $10.00 • 20%
+    #
+    old_price: float | None = None
 
     currency: str = "USD"
 
+    # =====================================================
+    # INVENTORY
+    # =====================================================
+
     in_stock: bool = False
+
+    # =====================================================
+    # PRODUCT / REGION DATA
+    # =====================================================
 
     region: str = "US"
 
@@ -61,6 +90,10 @@ class ProductEvent:
 
     product_category: str = "UNKNOWN"
 
+    # =====================================================
+    # SOURCE
+    # =====================================================
+
     source_type: str = "unknown"
 
     retailer_key: str | None = None
@@ -68,7 +101,7 @@ class ProductEvent:
     image_url: str | None = None
 
     # =====================================================
-    # QUICK CART
+    # QUICK CART / SMART CART
     # =====================================================
 
     variant_id: str | None = None
@@ -77,8 +110,15 @@ class ProductEvent:
 
     cart_base_url: str | None = None
 
+    # =====================================================
+    # EVENT TIME
+    # =====================================================
+
     timestamp: datetime | None = None
 
+    # =====================================================
+    # NORMALIZATION
+    # =====================================================
 
     def __post_init__(
         self,
@@ -94,4 +134,16 @@ class ProductEvent:
 
             self.product_category = (
                 self.product_category.upper()
+            )
+
+        if self.currency:
+
+            self.currency = (
+                self.currency.upper()
+            )
+
+        if self.region:
+
+            self.region = (
+                self.region.upper()
             )
