@@ -16,10 +16,13 @@ from app.redis_client import (
     get_redis,
 )
 
+
 # =========================================================
 # LOTUS EVENT SERVICE
 # PonDeX Trackers
-# Version 0.7.9
+# Version 0.9.0
+#
+# Historical Pricing + Deal Score v1
 # =========================================================
 
 
@@ -40,7 +43,6 @@ def enum_value(
         value,
         ProductEventType,
     ):
-
         return value.value
 
     return str(
@@ -93,6 +95,87 @@ def serialize_product_event(
             event.currency,
 
         # =================================================
+        # HISTORICAL PRICE INTELLIGENCE
+        # =================================================
+
+        "price_window_days":
+            getattr(
+                event,
+                "price_window_days",
+                None,
+            ),
+
+        "price_30d_low":
+            getattr(
+                event,
+                "price_30d_low",
+                None,
+            ),
+
+        "price_30d_average":
+            getattr(
+                event,
+                "price_30d_average",
+                None,
+            ),
+
+        "price_30d_high":
+            getattr(
+                event,
+                "price_30d_high",
+                None,
+            ),
+
+        "price_history_samples":
+            getattr(
+                event,
+                "price_history_samples",
+                None,
+            ),
+
+        "price_vs_average_pct":
+            getattr(
+                event,
+                "price_vs_average_pct",
+                None,
+            ),
+
+        "price_vs_low_pct":
+            getattr(
+                event,
+                "price_vs_low_pct",
+                None,
+            ),
+
+        "price_drop_pct":
+            getattr(
+                event,
+                "price_drop_pct",
+                None,
+            ),
+
+        "deal_score":
+            getattr(
+                event,
+                "deal_score",
+                None,
+            ),
+
+        "deal_label":
+            getattr(
+                event,
+                "deal_label",
+                None,
+            ),
+
+        "deal_confidence":
+            getattr(
+                event,
+                "deal_confidence",
+                None,
+            ),
+
+        # =================================================
         # INVENTORY
         # =================================================
 
@@ -133,7 +216,7 @@ def serialize_product_event(
             event.image_url,
 
         # =================================================
-        # QUICK CART / SMART CART
+        # SMART CART
         # =================================================
 
         "variant_id":
@@ -171,6 +254,9 @@ def serialize_product_event(
 
 # =========================================================
 # SAVE DATABASE EVENT
+#
+# Deal-intelligence metrics stay in the event payload for v1.
+# No ProductEventRecord migration is required.
 # =========================================================
 
 async def save_product_event(
@@ -178,7 +264,6 @@ async def save_product_event(
 ):
 
     if SessionLocal is None:
-
         return False
 
     try:
@@ -305,6 +390,9 @@ async def push_product_event(
                 f"Category={payload['product_category']} | "
                 f"Price={payload['price']} | "
                 f"OldPrice={payload['old_price']} | "
+                f"DealScore={payload['deal_score']} | "
+                f"Confidence={payload['deal_confidence']} | "
+                f"Samples={payload['price_history_samples']} | "
                 f"Variant={payload['variant_id']} | "
                 f"Limit={payload['purchase_limit']} | "
                 f"Image={bool(payload['image_url'])}"
@@ -369,7 +457,6 @@ async def pop_next_event(
     )
 
     if redis_client is None:
-
         return None
 
     result = (
@@ -380,7 +467,6 @@ async def pop_next_event(
     )
 
     if not result:
-
         return None
 
     _, raw_payload = (
@@ -417,7 +503,6 @@ async def get_queue_size():
     )
 
     if redis_client is None:
-
         return 0
 
     try:
@@ -435,9 +520,6 @@ async def get_queue_size():
 
 # =========================================================
 # CLEAR ONLY LOTUS PRODUCT EVENT QUEUE
-#
-# This does NOT flush Redis.
-# It does NOT delete database records.
 # =========================================================
 
 async def clear_event_queue():
@@ -447,7 +529,6 @@ async def clear_event_queue():
     )
 
     if redis_client is None:
-
         return 0
 
     try:
@@ -497,7 +578,6 @@ async def save_alert_delivery(
 ):
 
     if SessionLocal is None:
-
         return False
 
     try:
