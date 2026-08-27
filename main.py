@@ -60,6 +60,17 @@ from app.preference_service import (
 
 
 # =========================================================
+# PRICING REFERENCES
+# =========================================================
+
+from app.pricing_reference import (
+    get_pricing_reference,
+    remove_pricing_reference,
+    set_pricing_reference,
+)
+
+
+# =========================================================
 # REDIS
 # =========================================================
 
@@ -152,7 +163,13 @@ from app.pokemon_center_products import (
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 0.7.8
+# Version 1.0.0
+#
+# Historical Pricing
+# Deal Score
+# MSRP Intelligence
+# Scalper Protection
+# Smart Quick Cart
 # =========================================================
 
 
@@ -221,6 +238,29 @@ GAME_CHOICES = [
     app_commands.Choice(
         name="Hellbreak TCG",
         value="Hellbreak TCG",
+    ),
+]
+
+
+# =========================================================
+# MSRP CONFIDENCE CHOICES
+# =========================================================
+
+MSRP_CONFIDENCE_CHOICES = [
+
+    app_commands.Choice(
+        name="High — Official / Verified",
+        value="HIGH",
+    ),
+
+    app_commands.Choice(
+        name="Medium — Reliable Reference",
+        value="MEDIUM",
+    ),
+
+    app_commands.Choice(
+        name="Low — Unconfirmed Reference",
+        value="LOW",
     ),
 ]
 
@@ -934,7 +974,7 @@ async def on_ready():
     )
 
     print(
-        "Version: 0.7.8"
+        "Version: 1.0.0"
     )
 
     print(
@@ -1274,8 +1314,7 @@ async def alertprefs(
 
                 f"• {error}"
 
-                for error
-                in role_errors
+                for error in role_errors
             )
 
 
@@ -1463,6 +1502,515 @@ async def setupalertprefs(
 
 
 # =========================================================
+# MSRP ADMINISTRATION
+# =========================================================
+
+
+# =========================================================
+# /SETMSRP
+# =========================================================
+
+@bot.tree.command(
+    name="setmsrp",
+    description="Add or update a verified MSRP/reference price.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+@app_commands.choices(
+    game=GAME_CHOICES,
+    confidence=MSRP_CONFIDENCE_CHOICES,
+)
+async def setmsrp(
+    interaction,
+    game: app_commands.Choice[str],
+    product_name: str,
+    amount: float,
+    currency: str = "USD",
+    source: str = "Verified MSRP",
+    confidence: app_commands.Choice[str] = None,
+    region: str = "GLOBAL",
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+
+    if amount <= 0:
+
+        await interaction.followup.send(
+
+            "❌ MSRP amount must be greater than 0.",
+
+            ephemeral=True,
+        )
+
+        return
+
+
+    if SessionLocal is None:
+
+        await interaction.followup.send(
+
+            "❌ PostgreSQL is unavailable.",
+
+            ephemeral=True,
+        )
+
+        return
+
+
+    confidence_value = (
+
+        confidence.value
+
+        if confidence
+
+        else "HIGH"
+    )
+
+
+    try:
+
+        async with SessionLocal() as session:
+
+            row, created = (
+                await set_pricing_reference(
+
+                    session,
+
+                    game=(
+                        game.value
+                    ),
+
+                    product_name=(
+                        product_name
+                    ),
+
+                    amount=(
+                        amount
+                    ),
+
+                    currency=(
+                        currency
+                    ),
+
+                    source=(
+                        source
+                    ),
+
+                    confidence=(
+                        confidence_value
+                    ),
+
+                    kind="MSRP",
+
+                    region=(
+                        region
+                    ),
+                )
+            )
+
+
+        await interaction.followup.send(
+
+            (
+                f"{'✅ MSRP added.' if created else '✅ MSRP updated.'}\n\n"
+
+                f"**Game:** {row.game}\n"
+
+                f"**Product:** {row.product_name}\n"
+
+                f"**MSRP:** "
+                f"{row.amount:.2f} "
+                f"{row.currency}\n"
+
+                f"**Region:** {row.region}\n"
+
+                f"**Source:** {row.source}\n"
+
+                f"**Confidence:** "
+                f"{row.confidence}\n\n"
+
+                "Lotus will use this reference on future "
+                "matching pricing alerts."
+            ),
+
+            ephemeral=True,
+        )
+
+
+    except Exception as error:
+
+        await interaction.followup.send(
+
+            (
+                "❌ MSRP reference could not be saved.\n\n"
+
+                f"`{type(error).__name__}: "
+                f"{error}`"
+            ),
+
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# /VIEWMSRP
+# =========================================================
+
+@bot.tree.command(
+    name="viewmsrp",
+    description="View Lotus MSRP/reference pricing for a product.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+@app_commands.choices(
+    game=GAME_CHOICES,
+)
+async def viewmsrp(
+    interaction,
+    game: app_commands.Choice[str],
+    product_name: str,
+    region: str = "GLOBAL",
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+
+    if SessionLocal is None:
+
+        await interaction.followup.send(
+
+            "❌ PostgreSQL is unavailable.",
+
+            ephemeral=True,
+        )
+
+        return
+
+
+    try:
+
+        async with SessionLocal() as session:
+
+            row = (
+                await get_pricing_reference(
+
+                    session,
+
+                    game=(
+                        game.value
+                    ),
+
+                    product_name=(
+                        product_name
+                    ),
+
+                    region=(
+                        region
+                    ),
+
+                    kind="MSRP",
+                )
+            )
+
+
+        if row is None:
+
+            await interaction.followup.send(
+
+                (
+                    "❌ No active MSRP reference found.\n\n"
+
+                    f"**Game:** {game.value}\n"
+
+                    f"**Product:** {product_name}\n"
+
+                    f"**Region:** {region.upper()}"
+                ),
+
+                ephemeral=True,
+            )
+
+            return
+
+
+        status_text = (
+
+            "🟢 Active"
+
+            if row.active
+
+            else "⚫ Disabled"
+        )
+
+
+        embed = (
+            discord.Embed(
+
+                title="🏷️ Lotus MSRP Reference",
+
+                description=(
+                    f"**{row.product_name}**"
+                ),
+            )
+        )
+
+
+        embed.add_field(
+
+            name="Game",
+
+            value=(
+                row.game
+            ),
+
+            inline=True,
+        )
+
+
+        embed.add_field(
+
+            name="MSRP",
+
+            value=(
+                f"{row.amount:.2f} "
+                f"{row.currency}"
+            ),
+
+            inline=True,
+        )
+
+
+        embed.add_field(
+
+            name="Region",
+
+            value=(
+                row.region
+            ),
+
+            inline=True,
+        )
+
+
+        embed.add_field(
+
+            name="Confidence",
+
+            value=(
+                row.confidence
+            ),
+
+            inline=True,
+        )
+
+
+        embed.add_field(
+
+            name="Status",
+
+            value=(
+                status_text
+            ),
+
+            inline=True,
+        )
+
+
+        embed.add_field(
+
+            name="Kind",
+
+            value=(
+                row.kind
+            ),
+
+            inline=True,
+        )
+
+
+        embed.add_field(
+
+            name="Source",
+
+            value=(
+                row.source
+            ),
+
+            inline=False,
+        )
+
+
+        embed.add_field(
+
+            name="Normalized Match",
+
+            value=(
+                f"`{row.normalized_name}`"
+            ),
+
+            inline=False,
+        )
+
+
+        embed.set_footer(
+
+            text=(
+                "Lotus preserves the original reference "
+                "currency and converts only for comparisons."
+            )
+        )
+
+
+        await interaction.followup.send(
+
+            embed=embed,
+
+            ephemeral=True,
+        )
+
+
+    except Exception as error:
+
+        await interaction.followup.send(
+
+            (
+                "❌ MSRP lookup failed.\n\n"
+
+                f"`{type(error).__name__}: "
+                f"{error}`"
+            ),
+
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# /REMOVEMSRP
+# =========================================================
+
+@bot.tree.command(
+    name="removemsrp",
+    description="Disable an MSRP/reference price.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+@app_commands.choices(
+    game=GAME_CHOICES,
+)
+async def removemsrp(
+    interaction,
+    game: app_commands.Choice[str],
+    product_name: str,
+    region: str = "GLOBAL",
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+
+    if SessionLocal is None:
+
+        await interaction.followup.send(
+
+            "❌ PostgreSQL is unavailable.",
+
+            ephemeral=True,
+        )
+
+        return
+
+
+    try:
+
+        async with SessionLocal() as session:
+
+            row = (
+                await remove_pricing_reference(
+
+                    session,
+
+                    game=(
+                        game.value
+                    ),
+
+                    product_name=(
+                        product_name
+                    ),
+
+                    region=(
+                        region
+                    ),
+
+                    kind="MSRP",
+                )
+            )
+
+
+        if row is None:
+
+            await interaction.followup.send(
+
+                (
+                    "❌ MSRP reference not found.\n\n"
+
+                    f"**Game:** {game.value}\n"
+
+                    f"**Product:** {product_name}\n"
+
+                    f"**Region:** {region.upper()}"
+                ),
+
+                ephemeral=True,
+            )
+
+            return
+
+
+        await interaction.followup.send(
+
+            (
+                "🗑️ **MSRP reference disabled.**\n\n"
+
+                f"**Game:** {row.game}\n"
+
+                f"**Product:** {row.product_name}\n"
+
+                f"**Previous MSRP:** "
+                f"{row.amount:.2f} "
+                f"{row.currency}\n\n"
+
+                "Historical/reference information was preserved."
+            ),
+
+            ephemeral=True,
+        )
+
+
+    except Exception as error:
+
+        await interaction.followup.send(
+
+            (
+                "❌ MSRP reference could not be removed.\n\n"
+
+                f"`{type(error).__name__}: "
+                f"{error}`"
+            ),
+
+            ephemeral=True,
+        )
+
+
+# =========================================================
 # /SUBSCRIPTION
 # =========================================================
 
@@ -1534,7 +2082,8 @@ async def subscription(
                 "• Early page detection\n"
                 "• Price drops & deals\n"
                 "• International alerts\n"
-                "• Advanced discovery"
+                "• Advanced discovery\n"
+                "• Pricing Intelligence"
             ),
         ),
 
@@ -1547,7 +2096,8 @@ async def subscription(
                 "• Release Radar\n"
                 "• Pokémon Center Queue Intelligence\n"
                 "• Global intelligence\n"
-                "• Earliest detections"
+                "• Earliest detections\n"
+                "• Scalper Protection"
             ),
         ),
     }
@@ -1683,6 +2233,11 @@ async def settings(
         ),
 
         (
+            "Pricing Intelligence",
+            "Premium",
+        ),
+
+        (
             "International",
             "Premium",
         ),
@@ -1694,6 +2249,11 @@ async def settings(
 
         (
             "Inventory Flicker",
+            "Premium+",
+        ),
+
+        (
+            "Scalper Protection",
             "Premium+",
         ),
 
@@ -2034,7 +2594,19 @@ async def eventstatus(
 
                 "**Currency Conversion:** ✅\n"
 
-                "**Affiliate Pipeline:** ✅"
+                "**30-Day Price History:** ✅\n"
+
+                "**Deal Score:** ✅\n"
+
+                "**Persistent MSRP References:** ✅\n"
+
+                "**Cross-Currency MSRP:** ✅\n"
+
+                "**Scalper Protection:** ✅\n"
+
+                "**Affiliate Pipeline:** ✅\n\n"
+
+                "**Engine Version:** `1.0.0`"
             ),
         )
     )
@@ -2855,6 +3427,12 @@ async def shopifystatus(
 
                 f"**Recovered Stores:** "
                 f"{data['stores_recovered']}\n\n"
+
+                "**Pricing Intelligence:** ✅\n"
+
+                "**MSRP Intelligence:** ✅\n"
+
+                "**Scalper Protection:** ✅\n\n"
 
                 "**Routing:**\n"
 
@@ -3758,6 +4336,8 @@ async def simulateproduct(
                 else 119.99
             ),
 
+            old_price=None,
+
             currency="USD",
 
             in_stock=(
@@ -4077,6 +4657,16 @@ async def status(
 
                 "**USD Conversion:** ✅\n"
 
+                "**30-Day Pricing History:** ✅\n"
+
+                "**Deal Score:** ✅\n"
+
+                "**Persistent MSRP Intelligence:** ✅\n"
+
+                "**Cross-Currency MSRP:** ✅\n"
+
+                "**Scalper Protection:** ✅\n"
+
                 "**Early Page Routing:** ✅\n"
 
                 "**Product Images:** ✅\n"
@@ -4099,7 +4689,7 @@ async def status(
                 f"**Redis Queue:** "
                 f"`{queue}`\n\n"
 
-                "**Version:** 0.7.8"
+                "**Version:** `1.0.0`"
             ),
         )
     )
