@@ -1,6 +1,8 @@
 import json
 
-from app.database import SessionLocal
+from app.database import (
+    SessionLocal,
+)
 
 from app.events import (
     ProductEvent,
@@ -20,14 +22,15 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT SERVICE
 # PonDeX Trackers
-# Version 1.0.0
+# Version 1.0.2
 #
+# PostgreSQL Event History
 # Redis Event Queue
-# Product Event History
+# Product Family Serialization
+# Product Category Serialization
 # Historical Pricing
 # MSRP Intelligence
 # Scalper Protection
-# Deal Score
 # Smart Quick Cart
 # =========================================================
 
@@ -50,7 +53,9 @@ def enum_value(
         ProductEventType,
     ):
 
-        return value.value
+        return (
+            value.value
+        )
 
     return str(
         value
@@ -58,7 +63,7 @@ def enum_value(
 
 
 # =========================================================
-# SERIALIZE PRODUCT EVENT
+# EVENT -> REDIS DICTIONARY
 # =========================================================
 
 def serialize_product_event(
@@ -68,7 +73,7 @@ def serialize_product_event(
     return {
 
         # =================================================
-        # EVENT
+        # CORE EVENT
         # =================================================
 
         "event_type":
@@ -104,7 +109,73 @@ def serialize_product_event(
 
 
         # =================================================
-        # HISTORICAL PRICING
+        # INVENTORY
+        # =================================================
+
+        "in_stock":
+            event.in_stock,
+
+
+        # =================================================
+        # REGION
+        # =================================================
+
+        "region":
+            event.region,
+
+        "language":
+            event.language,
+
+
+        # =================================================
+        # PRODUCT IDENTITY
+        # =================================================
+
+        "product_type":
+            event.product_type,
+
+        "product_category":
+            event.product_category,
+
+        "product_family":
+            event.product_family,
+
+
+        # =================================================
+        # SOURCE
+        # =================================================
+
+        "source_type":
+            event.source_type,
+
+        "retailer_key":
+            event.retailer_key,
+
+
+        # =================================================
+        # IMAGE
+        # =================================================
+
+        "image_url":
+            event.image_url,
+
+
+        # =================================================
+        # SMART QUICK CART
+        # =================================================
+
+        "variant_id":
+            event.variant_id,
+
+        "purchase_limit":
+            event.purchase_limit,
+
+        "cart_base_url":
+            event.cart_base_url,
+
+
+        # =================================================
+        # HISTORICAL PRICE INTELLIGENCE
         # =================================================
 
         "price_window_days":
@@ -136,14 +207,7 @@ def serialize_product_event(
 
 
         # =================================================
-        # MSRP / REFERENCE PRICE
-        #
-        # msrp:
-        # Converted comparison MSRP in current store
-        # currency.
-        #
-        # msrp_original:
-        # Original verified reference amount.
+        # MSRP INTELLIGENCE
         # =================================================
 
         "msrp":
@@ -169,7 +233,7 @@ def serialize_product_event(
 
 
         # =================================================
-        # MSRP ANALYSIS
+        # MSRP COMPARISON
         # =================================================
 
         "price_vs_msrp_pct":
@@ -180,6 +244,11 @@ def serialize_product_event(
 
         "msrp_price_state":
             event.msrp_price_state,
+
+
+        # =================================================
+        # SCALPER PROTECTION
+        # =================================================
 
         "scalper_risk":
             event.scalper_risk,
@@ -200,59 +269,6 @@ def serialize_product_event(
 
 
         # =================================================
-        # INVENTORY
-        # =================================================
-
-        "in_stock":
-            event.in_stock,
-
-
-        # =================================================
-        # PRODUCT
-        # =================================================
-
-        "region":
-            event.region,
-
-        "language":
-            event.language,
-
-        "product_type":
-            event.product_type,
-
-        "product_category":
-            event.product_category,
-
-
-        # =================================================
-        # SOURCE
-        # =================================================
-
-        "source_type":
-            event.source_type,
-
-        "retailer_key":
-            event.retailer_key,
-
-        "image_url":
-            event.image_url,
-
-
-        # =================================================
-        # SMART QUICK CART
-        # =================================================
-
-        "variant_id":
-            event.variant_id,
-
-        "purchase_limit":
-            event.purchase_limit,
-
-        "cart_base_url":
-            event.cart_base_url,
-
-
-        # =================================================
         # TIME
         # =================================================
 
@@ -269,6 +285,18 @@ def serialize_product_event(
 
 # =========================================================
 # SAVE EVENT HISTORY
+#
+# IMPORTANT:
+#
+# The current ProductEventRecord database table stores the
+# core event history fields.
+#
+# Product-family/category/deal metadata travels through
+# Redis immediately for alert routing.
+#
+# We can extend ProductEventRecord with those additional
+# historical fields in a later migration without blocking
+# the live v1.0.2 alert system.
 # =========================================================
 
 async def save_product_event(
@@ -377,12 +405,8 @@ async def push_product_event(
     if redis_client is None:
 
         print(
-            (
-                "EVENT REDIS SAVE ERROR | "
-                "Redis unavailable"
-            )
+            "EVENT REDIS SAVE ERROR | Redis unavailable"
         )
-
 
         return False
 
@@ -410,34 +434,13 @@ async def push_product_event(
             (
                 "EVENT QUEUED | "
                 f"Event={payload['event_type']} | "
-                f"Game={payload['game']} | "
+                f"Source={payload['source_type']} | "
                 f"Store={payload['store_name']} | "
-                f"Price={payload['price']} | "
+                f"Game={payload['game']} | "
+                f"Category={payload['product_category']} | "
+                f"Family={payload['product_family']} | "
                 f"Currency={payload['currency']} | "
-                f"OldPrice={payload['old_price']} | "
-                f"MSRP={payload['msrp']} | "
-                f"MSRPCurrency={payload['msrp_currency']} | "
-                f"OriginalMSRP={payload['msrp_original']} | "
-                f"OriginalMSRPCurrency="
-                f"{payload['msrp_original_currency']} | "
-                f"MSRPConverted="
-                f"{payload['msrp_conversion_used']} | "
-                f"VsMSRP="
-                f"{payload['price_vs_msrp_pct']} | "
-                f"ScalperRisk="
-                f"{payload['scalper_risk']} | "
-                f"DealScore="
-                f"{payload['deal_score']} | "
-                f"Confidence="
-                f"{payload['deal_confidence']} | "
-                f"Samples="
-                f"{payload['price_history_samples']} | "
-                f"Category="
-                f"{payload['product_category']} | "
-                f"Variant="
-                f"{payload['variant_id']} | "
-                f"Limit="
-                f"{payload['purchase_limit']}"
+                f"Image={bool(payload['image_url'])}"
             )
         )
 
@@ -460,7 +463,7 @@ async def push_product_event(
 
 
 # =========================================================
-# PROCESS PRODUCT EVENT
+# PROCESS EVENT
 # =========================================================
 
 async def process_product_event(
@@ -514,7 +517,9 @@ async def pop_next_event(
 
             EVENT_QUEUE_KEY,
 
-            timeout=timeout,
+            timeout=(
+                timeout
+            ),
         )
     )
 
@@ -529,10 +534,28 @@ async def pop_next_event(
     )
 
 
+    # =====================================================
+    # REDIS CLIENT MAY RETURN BYTES OR STRING
+    # =====================================================
+
+    if isinstance(
+        raw_payload,
+        bytes,
+    ):
+
+        raw_payload = (
+            raw_payload.decode(
+                "utf-8"
+            )
+        )
+
+
     try:
 
-        return json.loads(
-            raw_payload
+        event = (
+            json.loads(
+                raw_payload
+            )
         )
 
 
@@ -546,8 +569,163 @@ async def pop_next_event(
             )
         )
 
-
         return None
+
+
+    # =====================================================
+    # BACKWARD COMPATIBILITY
+    #
+    # If an older queued event exists from before v1.0.2,
+    # give it safe defaults instead of crashing the worker.
+    # =====================================================
+
+    event.setdefault(
+        "product_category",
+        "UNKNOWN",
+    )
+
+    event.setdefault(
+        "product_family",
+        "UNKNOWN",
+    )
+
+    event.setdefault(
+        "old_price",
+        None,
+    )
+
+    event.setdefault(
+        "variant_id",
+        None,
+    )
+
+    event.setdefault(
+        "purchase_limit",
+        None,
+    )
+
+    event.setdefault(
+        "cart_base_url",
+        None,
+    )
+
+    event.setdefault(
+        "msrp",
+        None,
+    )
+
+    event.setdefault(
+        "msrp_currency",
+        None,
+    )
+
+    event.setdefault(
+        "msrp_source",
+        None,
+    )
+
+    event.setdefault(
+        "msrp_confidence",
+        None,
+    )
+
+    event.setdefault(
+        "msrp_original",
+        None,
+    )
+
+    event.setdefault(
+        "msrp_original_currency",
+        None,
+    )
+
+    event.setdefault(
+        "msrp_conversion_used",
+        False,
+    )
+
+    event.setdefault(
+        "price_vs_msrp_pct",
+        None,
+    )
+
+    event.setdefault(
+        "markup_amount",
+        None,
+    )
+
+    event.setdefault(
+        "msrp_price_state",
+        None,
+    )
+
+    event.setdefault(
+        "scalper_risk",
+        None,
+    )
+
+    event.setdefault(
+        "deal_score",
+        None,
+    )
+
+    event.setdefault(
+        "deal_label",
+        None,
+    )
+
+    event.setdefault(
+        "deal_confidence",
+        None,
+    )
+
+    event.setdefault(
+        "price_window_days",
+        None,
+    )
+
+    event.setdefault(
+        "price_30d_low",
+        None,
+    )
+
+    event.setdefault(
+        "price_30d_average",
+        None,
+    )
+
+    event.setdefault(
+        "price_30d_high",
+        None,
+    )
+
+    event.setdefault(
+        "price_history_samples",
+        None,
+    )
+
+    event.setdefault(
+        "price_vs_average_pct",
+        None,
+    )
+
+    event.setdefault(
+        "price_vs_low_pct",
+        None,
+    )
+
+    event.setdefault(
+        "price_drop_pct",
+        None,
+    )
+
+    event.setdefault(
+        "historical_deal_score",
+        None,
+    )
+
+
+    return event
 
 
 # =========================================================
@@ -569,7 +747,6 @@ async def get_queue_size():
     try:
 
         return int(
-
             await redis_client.llen(
                 EVENT_QUEUE_KEY
             )
@@ -583,12 +760,6 @@ async def get_queue_size():
 
 # =========================================================
 # CLEAR EVENT QUEUE
-#
-# Only removes:
-#
-# lotus:product_events
-#
-# PostgreSQL history and other Redis keys remain untouched.
 # =========================================================
 
 async def clear_event_queue():
@@ -605,8 +776,7 @@ async def clear_event_queue():
 
     try:
 
-        existing = int(
-
+        queue_size = int(
             await redis_client.llen(
                 EVENT_QUEUE_KEY
             )
@@ -621,12 +791,12 @@ async def clear_event_queue():
         print(
             (
                 "EVENT QUEUE CLEARED | "
-                f"Removed={existing}"
+                f"Removed={queue_size}"
             )
         )
 
 
-        return existing
+        return queue_size
 
 
     except Exception as error:
@@ -644,7 +814,7 @@ async def clear_event_queue():
 
 
 # =========================================================
-# SAVE DISCORD ALERT DELIVERY
+# ALERT DELIVERY RECORD
 # =========================================================
 
 async def save_alert_delivery(
