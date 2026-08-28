@@ -379,17 +379,17 @@ MSRP_SCOPE_CHOICES = [
 MSRP_CONFIDENCE_CHOICES = [
 
     app_commands.Choice(
-        name="High â Official / Verified",
+        name="High \u2014 Official / Verified",
         value="HIGH",
     ),
 
     app_commands.Choice(
-        name="Medium â Reliable Reference",
+        name="Medium \u2014 Reliable Reference",
         value="MEDIUM",
     ),
 
     app_commands.Choice(
-        name="Low â Unconfirmed Reference",
+        name="Low \u2014 Unconfirmed Reference",
         value="LOW",
     ),
 ]
@@ -498,19 +498,19 @@ EVENT_CHOICES = [
 PRODUCT_FAMILY_LABELS = {
 
     "GLOBAL_STANDARD":
-        "ð English / Global Standard",
+        "\U0001f30e English / Global Standard",
 
     "JP":
-        "ð¯ðµ Japanese",
+        "\U0001f1ef\U0001f1f5 Japanese",
 
     "KR":
-        "ð°ð· Korean",
+        "\U0001f1f0\U0001f1f7 Korean",
 
     "CN":
-        "ð¨ð³ Simplified Chinese",
+        "\U0001f1e8\U0001f1f3 Simplified Chinese",
 
     "UNKNOWN":
-        "â Unknown / Unclassified",
+        "\u2753 Unknown / Unclassified",
 }
 
 
@@ -573,14 +573,14 @@ async def update_game_roles(
 
         return (
             False,
-            "â Use this inside the server.",
+            "\u274c Use this inside the server.",
         )
 
     if interaction.guild is None:
 
         return (
             False,
-            "â Use this inside the server.",
+            "\u274c Use this inside the server.",
         )
 
     selected_games = set(
@@ -706,14 +706,14 @@ async def update_game_roles(
     )
 
     message = (
-        "â **Game preferences updated.**\n\n"
+        "\u2705 **Game preferences updated.**\n\n"
     )
 
     if current_games:
 
         message += "\n".join(
 
-            f"â¢ {game}"
+            f"\u2022 {game}"
 
             for game in sorted(
                 current_games
@@ -727,19 +727,19 @@ async def update_game_roles(
         )
 
     message += (
-        "\n\nð Use `/familyprefs` to choose "
+        "\n\n\U0001f30e Use `/familyprefs` to choose "
         "English, Japanese, Korean, and Chinese alerts."
     )
 
     if errors:
 
         message += (
-            "\n\nâ ï¸ **Warnings:**\n"
+            "\n\n\u26a0\ufe0f **Warnings:**\n"
         )
 
         message += "\n".join(
 
-            f"â¢ {error}"
+            f"\u2022 {error}"
 
             for error in errors
         )
@@ -1080,7 +1080,7 @@ class LotusTrackerBot(
         )
 
         print(
-            "PokÃ©mon Center Queue Monitor task created."
+            "Pok\xe9mon Center Queue Monitor task created."
         )
 
         self.pokemon_product_task = (
@@ -1090,7 +1090,7 @@ class LotusTrackerBot(
         )
 
         print(
-            "PokÃ©mon Center Product Monitor task created."
+            "Pok\xe9mon Center Product Monitor task created."
         )
 
         # NOTE:
@@ -1148,7 +1148,7 @@ async def on_ready():
             ),
 
             name=(
-                "TCG drops worldwide ð"
+                "TCG drops worldwide \U0001f30e"
             ),
         )
     )
@@ -1169,7 +1169,7 @@ async def ping(
     await interaction.response.send_message(
 
         (
-            "ð **Lotus is online.**\n"
+            "\U0001f3d3 **Lotus is online.**\n"
 
             f"Latency: "
             f"`{round(bot.latency * 1000)}ms`\n"
@@ -1206,7 +1206,7 @@ async def games(
 
     embed = discord.Embed(
 
-        title="ð´ Choose Your TCGs",
+        title="\U0001f3b4 Choose Your TCGs",
 
         description=(
             "Select every game you want "
@@ -1272,7 +1272,7 @@ async def setupgames(
 
         await interaction.followup.send(
 
-            "â Roles channel not found.",
+            "\u274c Roles channel not found.",
 
             ephemeral=True,
         )
@@ -1281,7 +1281,7 @@ async def setupgames(
 
     embed = discord.Embed(
 
-        title="ð´ Choose Your Games",
+        title="\U0001f3b4 Choose Your Games",
 
         description=(
             "Select every TCG you want Lotus alerts for.\n\n"
@@ -1300,7 +1300,7 @@ async def setupgames(
     await interaction.followup.send(
 
         (
-            f"â Selector posted "
+            f"\u2705 Selector posted "
             f"in {channel.mention}."
         ),
 
@@ -1339,7 +1339,7 @@ async def alertprefs(
 
         await interaction.response.send_message(
 
-            "â Use this inside the server.",
+            "\u274c Use this inside the server.",
 
             ephemeral=True,
         )
@@ -1364,7 +1364,7 @@ async def alertprefs(
         await interaction.followup.send(
 
             (
-                f"â You are not currently following "
+                f"\u274c You are not currently following "
                 f"**{game.value}**.\n\n"
 
                 "Use `/games` first."
@@ -1420,21 +1420,21 @@ async def alertprefs(
 
         message = (
 
-            f"âï¸ **{game.value} Product Preferences**\n\n"
+            f"\u2699\ufe0f **{game.value} Product Preferences**\n\n"
 
-            f"{'â' if sealed else 'â'} "
+            f"{'\u2705' if sealed else '\u274c'} "
             "Sealed Products\n"
 
-            f"{'â' if singles else 'â'} "
+            f"{'\u2705' if singles else '\u274c'} "
             "Singles\n"
 
-            f"{'â' if accessories else 'â'} "
+            f"{'\u2705' if accessories else '\u274c'} "
             "Accessories\n"
 
-            f"{'â' if unknown else 'â'} "
+            f"{'\u2705' if unknown else '\u274c'} "
             "Unknown Product Types\n\n"
 
-            "ð¾ Saved to Lotus.\n\n"
+            "\U0001f4be Saved to Lotus.\n\n"
 
             "Use `/familyprefs` to separately choose "
             "English, Japanese, Korean, and Chinese products."
@@ -1443,12 +1443,12 @@ async def alertprefs(
         if role_errors:
 
             message += (
-                "\n\nâ ï¸ **Role warnings:**\n"
+                "\n\n\u26a0\ufe0f **Role warnings:**\n"
             )
 
             message += "\n".join(
 
-                f"â¢ {error}"
+                f"\u2022 {error}"
 
                 for error
                 in role_errors
@@ -1466,7 +1466,7 @@ async def alertprefs(
         await interaction.followup.send(
 
             (
-                "â Lotus cannot manage its alert roles.\n\n"
+                "\u274c Lotus cannot manage its alert roles.\n\n"
 
                 "Give the Lotus bot role **Manage Roles** "
                 "and place it above the Lotus alert roles."
@@ -1480,7 +1480,7 @@ async def alertprefs(
         await interaction.followup.send(
 
             (
-                "â Preferences could not be saved.\n\n"
+                "\u274c Preferences could not be saved.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -1518,18 +1518,18 @@ async def myprefs(
     await interaction.response.send_message(
 
         (
-            f"âï¸ **{game.value} Product Preferences**\n\n"
+            f"\u2699\ufe0f **{game.value} Product Preferences**\n\n"
 
-            f"{'â' if preferences['SEALED'] else 'â'} "
+            f"{'\u2705' if preferences['SEALED'] else '\u274c'} "
             "Sealed Products\n"
 
-            f"{'â' if preferences['SINGLE'] else 'â'} "
+            f"{'\u2705' if preferences['SINGLE'] else '\u274c'} "
             "Singles\n"
 
-            f"{'â' if preferences['ACCESSORY'] else 'â'} "
+            f"{'\u2705' if preferences['ACCESSORY'] else '\u274c'} "
             "Accessories\n"
 
-            f"{'â' if preferences['UNKNOWN'] else 'â'} "
+            f"{'\u2705' if preferences['UNKNOWN'] else '\u274c'} "
             "Unknown Product Types"
         ),
 
@@ -1569,7 +1569,7 @@ async def familyprefs(
 
         await interaction.response.send_message(
 
-            "â Use this inside the server.",
+            "\u274c Use this inside the server.",
 
             ephemeral=True,
         )
@@ -1594,7 +1594,7 @@ async def familyprefs(
         await interaction.followup.send(
 
             (
-                f"â You are not currently following "
+                f"\u274c You are not currently following "
                 f"**{game.value}**.\n\n"
 
                 "Use `/games` first."
@@ -1644,24 +1644,24 @@ async def familyprefs(
 
         message = (
 
-            f"ð **{game.value} Product Family Preferences**\n\n"
+            f"\U0001f30e **{game.value} Product Family Preferences**\n\n"
 
-            f"{'â' if saved['GLOBAL_STANDARD'] else 'â'} "
+            f"{'\u2705' if saved['GLOBAL_STANDARD'] else '\u274c'} "
             "English / Global Standard\n"
 
-            f"{'â' if saved['JP'] else 'â'} "
+            f"{'\u2705' if saved['JP'] else '\u274c'} "
             "Japanese\n"
 
-            f"{'â' if saved['KR'] else 'â'} "
+            f"{'\u2705' if saved['KR'] else '\u274c'} "
             "Korean\n"
 
-            f"{'â' if saved['CN'] else 'â'} "
+            f"{'\u2705' if saved['CN'] else '\u274c'} "
             "Simplified Chinese\n"
 
-            f"{'â' if saved['UNKNOWN'] else 'â'} "
+            f"{'\u2705' if saved['UNKNOWN'] else '\u274c'} "
             "Unknown / Unclassified\n\n"
 
-            "ð¾ Saved to Lotus.\n\n"
+            "\U0001f4be Saved to Lotus.\n\n"
 
             "These preferences are specific to "
             f"**{game.value}**."
@@ -1679,7 +1679,7 @@ async def familyprefs(
         await interaction.followup.send(
 
             (
-                "â Family preferences could not be saved.\n\n"
+                "\u274c Family preferences could not be saved.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -1719,21 +1719,21 @@ async def myfamilyprefs(
         await interaction.response.send_message(
 
             (
-                f"ð **{game.value} Product Family Preferences**\n\n"
+                f"\U0001f30e **{game.value} Product Family Preferences**\n\n"
 
-                f"{'â' if preferences['GLOBAL_STANDARD'] else 'â'} "
+                f"{'\u2705' if preferences['GLOBAL_STANDARD'] else '\u274c'} "
                 "English / Global Standard\n"
 
-                f"{'â' if preferences['JP'] else 'â'} "
+                f"{'\u2705' if preferences['JP'] else '\u274c'} "
                 "Japanese\n"
 
-                f"{'â' if preferences['KR'] else 'â'} "
+                f"{'\u2705' if preferences['KR'] else '\u274c'} "
                 "Korean\n"
 
-                f"{'â' if preferences['CN'] else 'â'} "
+                f"{'\u2705' if preferences['CN'] else '\u274c'} "
                 "Simplified Chinese\n"
 
-                f"{'â' if preferences['UNKNOWN'] else 'â'} "
+                f"{'\u2705' if preferences['UNKNOWN'] else '\u274c'} "
                 "Unknown / Unclassified\n\n"
 
                 "Product family is based on the actual product, "
@@ -1748,7 +1748,7 @@ async def myfamilyprefs(
         await interaction.response.send_message(
 
             (
-                "â Family preferences could not be loaded.\n\n"
+                "\u274c Family preferences could not be loaded.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -1851,7 +1851,7 @@ async def setupalertprefs(
         await interaction.followup.send(
 
             (
-                f"â **{game.value} alert preferences initialized.**\n\n"
+                f"\u2705 **{game.value} alert preferences initialized.**\n\n"
 
                 f"Category members initialized: "
                 f"`{result['members']}`\n"
@@ -1861,25 +1861,25 @@ async def setupalertprefs(
 
                 "**Default category preferences:**\n"
 
-                "â Sealed Products\n"
+                "\u2705 Sealed Products\n"
 
-                "â Singles\n"
+                "\u274c Singles\n"
 
-                "â Accessories\n"
+                "\u274c Accessories\n"
 
-                "â Unknown Product Types\n\n"
+                "\u2705 Unknown Product Types\n\n"
 
                 "**Default family preferences:**\n"
 
-                "â English / Global Standard\n"
+                "\u2705 English / Global Standard\n"
 
-                "â Japanese\n"
+                "\u274c Japanese\n"
 
-                "â Korean\n"
+                "\u274c Korean\n"
 
-                "â Simplified Chinese\n"
+                "\u274c Simplified Chinese\n"
 
-                "â Unknown / Unclassified\n\n"
+                "\u274c Unknown / Unclassified\n\n"
 
                 "Members can customize these using "
                 "`/alertprefs` and `/familyprefs`."
@@ -1893,7 +1893,7 @@ async def setupalertprefs(
         await interaction.followup.send(
 
             (
-                "â Lotus needs **Manage Roles**.\n\n"
+                "\u274c Lotus needs **Manage Roles**.\n\n"
 
                 "Also make sure the Lotus bot Discord role "
                 "is above its alert roles."
@@ -1907,7 +1907,7 @@ async def setupalertprefs(
         await interaction.followup.send(
 
             (
-                "â Alert preference setup failed.\n"
+                "\u274c Alert preference setup failed.\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -1960,7 +1960,7 @@ async def setmsrp(
 
         await interaction.followup.send(
 
-            "â MSRP must be greater than 0.",
+            "\u274c MSRP must be greater than 0.",
 
             ephemeral=True,
         )
@@ -1971,7 +1971,7 @@ async def setmsrp(
 
         await interaction.followup.send(
 
-            "â PostgreSQL is unavailable.",
+            "\u274c PostgreSQL is unavailable.",
 
             ephemeral=True,
         )
@@ -1990,7 +1990,7 @@ async def setmsrp(
         await interaction.followup.send(
 
             (
-                "â A Match Value is required for "
+                "\u274c A Match Value is required for "
                 "Exact Product and Product Type rules."
             ),
 
@@ -2088,7 +2088,7 @@ async def setmsrp(
         await interaction.followup.send(
 
             (
-                f"{'â MSRP rule added.' if created else 'â MSRP rule updated.'}"
+                f"{'\u2705 MSRP rule added.' if created else '\u2705 MSRP rule updated.'}"
                 "\n\n"
 
                 f"**Game:** {row.game}\n"
@@ -2127,7 +2127,7 @@ async def setmsrp(
         await interaction.followup.send(
 
             (
-                "â MSRP rule could not be saved.\n\n"
+                "\u274c MSRP rule could not be saved.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -2170,7 +2170,7 @@ async def viewmsrp(
 
         await interaction.followup.send(
 
-            "â PostgreSQL is unavailable.",
+            "\u274c PostgreSQL is unavailable.",
 
             ephemeral=True,
         )
@@ -2189,7 +2189,7 @@ async def viewmsrp(
         await interaction.followup.send(
 
             (
-                "â A Match Value is required for "
+                "\u274c A Match Value is required for "
                 "Exact Product and Product Type rules."
             ),
 
@@ -2250,7 +2250,7 @@ async def viewmsrp(
             await interaction.followup.send(
 
                 (
-                    "â No matching MSRP rule found.\n\n"
+                    "\u274c No matching MSRP rule found.\n\n"
 
                     f"**Game:** "
                     f"{game.value}\n"
@@ -2275,7 +2275,7 @@ async def viewmsrp(
 
         embed = discord.Embed(
 
-            title="ð·ï¸ Lotus MSRP Rule",
+            title="\U0001f3f7\ufe0f Lotus MSRP Rule",
 
             description=(
                 f"**{row.product_name}**"
@@ -2371,7 +2371,7 @@ async def viewmsrp(
         await interaction.followup.send(
 
             (
-                "â MSRP lookup failed.\n\n"
+                "\u274c MSRP lookup failed.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -2414,7 +2414,7 @@ async def removemsrp(
 
         await interaction.followup.send(
 
-            "â PostgreSQL is unavailable.",
+            "\u274c PostgreSQL is unavailable.",
 
             ephemeral=True,
         )
@@ -2433,7 +2433,7 @@ async def removemsrp(
         await interaction.followup.send(
 
             (
-                "â A Match Value is required for "
+                "\u274c A Match Value is required for "
                 "Exact Product and Product Type rules."
             ),
 
@@ -2494,7 +2494,7 @@ async def removemsrp(
             await interaction.followup.send(
 
                 (
-                    "â MSRP rule not found.\n\n"
+                    "\u274c MSRP rule not found.\n\n"
 
                     f"**Game:** "
                     f"{game.value}\n"
@@ -2517,7 +2517,7 @@ async def removemsrp(
         await interaction.followup.send(
 
             (
-                "ðï¸ **MSRP rule disabled.**\n\n"
+                "\U0001f5d1\ufe0f **MSRP rule disabled.**\n\n"
 
                 f"**Game:** "
                 f"{row.game}\n"
@@ -2547,7 +2547,7 @@ async def removemsrp(
         await interaction.followup.send(
 
             (
-                "â MSRP rule could not be removed.\n\n"
+                "\u274c MSRP rule could not be removed.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -2595,53 +2595,53 @@ async def subscription(
     tier_details = {
 
         "Free": (
-            "âª",
+            "\u26aa",
             "$0",
             (
-                "â¢ Major retailer alerts\n"
-                "â¢ Basic stock alerts\n"
-                "â¢ Game selection\n"
-                "â¢ Product family preferences"
+                "\u2022 Major retailer alerts\n"
+                "\u2022 Basic stock alerts\n"
+                "\u2022 Game selection\n"
+                "\u2022 Product family preferences"
             ),
         ),
 
         "Lite": (
-            "ð¿",
+            "\U0001f33f",
             "$1.99/month",
             (
-                "â¢ Everything in Free\n"
-                "â¢ Preorder alerts\n"
-                "â¢ Preorder calendar\n"
-                "â¢ Priority support\n"
-                "â¢ 14-day free trial"
+                "\u2022 Everything in Free\n"
+                "\u2022 Preorder alerts\n"
+                "\u2022 Preorder calendar\n"
+                "\u2022 Priority support\n"
+                "\u2022 14-day free trial"
             ),
         ),
 
         "Premium": (
-            "ð",
+            "\U0001f451",
             "$17.99/month",
             (
-                "â¢ Everything in Lite\n"
-                "â¢ Shopify / TCG shops\n"
-                "â¢ Early page detection\n"
-                "â¢ Price drops & deals\n"
-                "â¢ International alerts\n"
-                "â¢ Pricing Intelligence\n"
-                "â¢ Advanced discovery"
+                "\u2022 Everything in Lite\n"
+                "\u2022 Shopify / TCG shops\n"
+                "\u2022 Early page detection\n"
+                "\u2022 Price drops & deals\n"
+                "\u2022 International alerts\n"
+                "\u2022 Pricing Intelligence\n"
+                "\u2022 Advanced discovery"
             ),
         ),
 
         "Premium+": (
-            "ð",
+            "\U0001f48e",
             "$44.99/month",
             (
-                "â¢ Everything in Premium\n"
-                "â¢ Inventory Flicker â¡\n"
-                "â¢ Release Radar\n"
-                "â¢ PokÃ©mon Center Queue Intelligence\n"
-                "â¢ Global intelligence\n"
-                "â¢ Scalper Protection\n"
-                "â¢ Earliest detections"
+                "\u2022 Everything in Premium\n"
+                "\u2022 Inventory Flicker \u26a1\n"
+                "\u2022 Release Radar\n"
+                "\u2022 Pok\xe9mon Center Queue Intelligence\n"
+                "\u2022 Global intelligence\n"
+                "\u2022 Scalper Protection\n"
+                "\u2022 Earliest detections"
             ),
         ),
     }
@@ -2680,7 +2680,7 @@ async def subscription(
         value=(
 
             "\n".join(
-                f"â¢ {game}"
+                f"\u2022 {game}"
                 for game in games
             )
 
@@ -2786,7 +2786,7 @@ async def settings(
         ),
 
         (
-            "PokÃ©mon Center Queue",
+            "Pok\xe9mon Center Queue",
             "Premium+",
         ),
     ]
@@ -2794,14 +2794,14 @@ async def settings(
     feature_text = "\n".join(
 
         (
-            "â"
+            "\u2705"
 
             if tier_allows(
                 tier,
                 required
             )
 
-            else "ð"
+            else "\U0001f512"
         )
 
         + f" {name}"
@@ -2815,14 +2815,14 @@ async def settings(
 
     embed = discord.Embed(
 
-        title="âï¸ Lotus Settings",
+        title="\u2699\ufe0f Lotus Settings",
 
         description=(
             f"**Subscription:** {tier}\n\n"
 
-            "`/games` â Choose TCGs\n"
-            "`/alertprefs` â Sealed / Singles / Accessories\n"
-            "`/familyprefs` â English / JP / KR / CN"
+            "`/games` \u2014 Choose TCGs\n"
+            "`/alertprefs` \u2014 Sealed / Singles / Accessories\n"
+            "`/familyprefs` \u2014 English / JP / KR / CN"
         ),
     )
 
@@ -2833,7 +2833,7 @@ async def settings(
         value=(
 
             "\n".join(
-                f"â {game}"
+                f"\u2705 {game}"
                 for game in games
             )
 
@@ -2906,7 +2906,7 @@ async def dbme(
 
         await interaction.followup.send(
 
-            "â Profile could not be loaded.",
+            "\u274c Profile could not be loaded.",
 
             ephemeral=True,
         )
@@ -2917,7 +2917,7 @@ async def dbme(
 
         "\n".join(
 
-            f"â¢ {game}"
+            f"\u2022 {game}"
 
             for game
             in profile[
@@ -2935,7 +2935,7 @@ async def dbme(
     await interaction.followup.send(
 
         (
-            "ð¾ **Lotus Database Profile**\n\n"
+            "\U0001f4be **Lotus Database Profile**\n\n"
 
             f"Tier: "
             f"**{profile['subscription']}**\n\n"
@@ -2984,7 +2984,7 @@ async def dbstatus(
 
         await interaction.followup.send(
 
-            "ð¢ PostgreSQL is online.",
+            "\U0001f7e2 PostgreSQL is online.",
 
             ephemeral=True,
         )
@@ -2996,7 +2996,7 @@ async def dbstatus(
         await interaction.followup.send(
 
             (
-                "ð´ PostgreSQL failed.\n"
+                "\U0001f534 PostgreSQL failed.\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -3029,11 +3029,11 @@ async def redisstatus(
     await interaction.response.send_message(
 
         (
-            "ð¢ Redis is online."
+            "\U0001f7e2 Redis is online."
 
             if online
 
-            else "ð´ Redis is offline."
+            else "\U0001f534 Redis is offline."
         ),
 
         ephemeral=True,
@@ -3068,54 +3068,54 @@ async def eventstatus(
 
     embed = discord.Embed(
 
-        title="ð¡ Lotus Event Engine",
+        title="\U0001f4e1 Lotus Event Engine",
 
         description=(
 
             f"**PostgreSQL:** "
-            f"{'â' if bot.database_ready else 'â'}\n"
+            f"{'\u2705' if bot.database_ready else '\u274c'}\n"
 
             f"**Redis:** "
-            f"{'â' if bot.redis_ready else 'â'}\n"
+            f"{'\u2705' if bot.redis_ready else '\u274c'}\n"
 
             f"**Event Worker:** "
-            f"{'â' if worker_online else 'â'}\n"
+            f"{'\u2705' if worker_online else '\u274c'}\n"
 
             f"**Queue:** `{queue}`\n\n"
 
-            "**Strict TCG Classification:** â\n"
+            "**Strict TCG Classification:** \u2705\n"
 
-            "**Product Category Filtering:** â\n"
+            "**Product Category Filtering:** \u2705\n"
 
-            "**Product Family Detection:** â\n"
+            "**Product Family Detection:** \u2705\n"
 
-            "**Member Family Preferences:** â\n"
+            "**Member Family Preferences:** \u2705\n"
 
-            "**Game + Category + Family Audience:** â\n"
+            "**Game + Category + Family Audience:** \u2705\n"
 
-            "**Native Currency:** â\n"
+            "**Native Currency:** \u2705\n"
 
-            "**USD Conversion:** â\n"
+            "**USD Conversion:** \u2705\n"
 
-            "**Historical Pricing:** â\n"
+            "**Historical Pricing:** \u2705\n"
 
-            "**Hierarchical MSRP:** â\n"
+            "**Hierarchical MSRP:** \u2705\n"
 
-            "**Regional MSRP Isolation:** â\n"
+            "**Regional MSRP Isolation:** \u2705\n"
 
-            "**Cross-Currency MSRP:** â\n"
+            "**Cross-Currency MSRP:** \u2705\n"
 
-            "**Deal Score:** â\n"
+            "**Deal Score:** \u2705\n"
 
-            "**Scalper Protection:** â\n"
+            "**Scalper Protection:** \u2705\n"
 
-            "**Smart Quick Cart:** â\n"
+            "**Smart Quick Cart:** \u2705\n"
 
-            "**Product Images:** â\n"
+            "**Product Images:** \u2705\n"
 
-            "**Affiliate Pipeline:** â\n"
+            "**Affiliate Pipeline:** \u2705\n"
 
-            "**Universal Retailer Foundation:** â\n\n"
+            "**Universal Retailer Foundation:** \u2705\n\n"
 
             "**Engine Version:** `1.0.4`"
         ),
@@ -3153,7 +3153,7 @@ async def cleareventqueue(
     await interaction.followup.send(
 
         (
-            "ð§¹ **Lotus event queue cleared.**\n\n"
+            "\U0001f9f9 **Lotus event queue cleared.**\n\n"
 
             f"Removed: "
             f"`{removed}` stale event(s)\n\n"
@@ -3272,7 +3272,7 @@ async def addretailer(
     if SessionLocal is None:
 
         await interaction.followup.send(
-            "â PostgreSQL is unavailable.",
+            "\u274c PostgreSQL is unavailable.",
             ephemeral=True,
         )
 
@@ -3309,7 +3309,7 @@ async def addretailer(
     if not clean_name:
 
         await interaction.followup.send(
-            "â Retailer name is required.",
+            "\u274c Retailer name is required.",
             ephemeral=True,
         )
 
@@ -3318,7 +3318,7 @@ async def addretailer(
     if not clean_domain:
 
         await interaction.followup.send(
-            "â Retailer domain is required.",
+            "\u274c Retailer domain is required.",
             ephemeral=True,
         )
 
@@ -3333,7 +3333,7 @@ async def addretailer(
         await interaction.followup.send(
 
             (
-                "â Retailer adapters could not be loaded.\n\n"
+                "\u274c Retailer adapters could not be loaded.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -3353,7 +3353,7 @@ async def addretailer(
         await interaction.followup.send(
 
             (
-                "â No Lotus adapter is currently registered "
+                "\u274c No Lotus adapter is currently registered "
                 f"for `{clean_platform}`."
             ),
 
@@ -3367,7 +3367,7 @@ async def addretailer(
         await interaction.followup.send(
 
             (
-                "â That retailer platform has not yet passed "
+                "\u274c That retailer platform has not yet passed "
                 "Lotus universal-retailer validation."
             ),
 
@@ -3416,7 +3416,7 @@ async def addretailer(
                 await interaction.followup.send(
 
                     (
-                        "â ï¸ **Retailer already registered.**\n\n"
+                        "\u26a0\ufe0f **Retailer already registered.**\n\n"
 
                         f"**Store ID:** "
                         f"`{existing.id}`\n"
@@ -3499,7 +3499,7 @@ async def addretailer(
         embed = discord.Embed(
 
             title=(
-                "ð Universal Retailer Staged"
+                "\U0001f310 Universal Retailer Staged"
             ),
 
             description=(
@@ -3540,13 +3540,13 @@ async def addretailer(
 
         embed.add_field(
             name="Monitoring",
-            value="â« Staged / Inactive",
+            value="\u26ab Staged / Inactive",
             inline=True,
         )
 
         embed.add_field(
             name="Discord Alerts",
-            value="ð Disabled",
+            value="\U0001f507 Disabled",
             inline=True,
         )
 
@@ -3564,7 +3564,7 @@ async def addretailer(
 
         embed.set_footer(
             text=(
-                "Lotus Universal Retailer Foundation â¢ v1.0.4"
+                "Lotus Universal Retailer Foundation \u2022 v1.0.4"
             )
         )
 
@@ -3578,7 +3578,7 @@ async def addretailer(
         await interaction.followup.send(
 
             (
-                "â Retailer could not be added.\n\n"
+                "\u274c Retailer could not be added.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -3611,7 +3611,7 @@ async def scanretailer(
     if SessionLocal is None:
 
         await interaction.followup.send(
-            "â PostgreSQL is unavailable.",
+            "\u274c PostgreSQL is unavailable.",
             ephemeral=True,
         )
 
@@ -3648,7 +3648,7 @@ async def scanretailer(
             if store is None:
 
                 await interaction.followup.send(
-                    "â Retailer Store ID not found.",
+                    "\u274c Retailer Store ID not found.",
                     ephemeral=True,
                 )
 
@@ -3702,7 +3702,7 @@ async def scanretailer(
             await interaction.followup.send(
 
                 (
-                    "â This is a Shopify store.\n\n"
+                    "\u274c This is a Shopify store.\n\n"
 
                     "Use `/scanshopify` instead."
                 ),
@@ -3717,7 +3717,7 @@ async def scanretailer(
             await interaction.followup.send(
 
                 (
-                    "â PokÃ©mon Center uses its dedicated "
+                    "\u274c Pok\xe9mon Center uses its dedicated "
                     "monitor."
                 ),
 
@@ -3731,7 +3731,7 @@ async def scanretailer(
             await interaction.followup.send(
 
                 (
-                    "â Major retailers use their dedicated "
+                    "\u274c Major retailers use their dedicated "
                     "monitoring pipeline."
                 ),
 
@@ -3745,7 +3745,7 @@ async def scanretailer(
             await interaction.followup.send(
 
                 (
-                    "â This platform is not yet approved "
+                    "\u274c This platform is not yet approved "
                     "for Universal Retailer scanning.\n\n"
 
                     f"Platform: `{platform}`"
@@ -3768,7 +3768,7 @@ async def scanretailer(
             await interaction.followup.send(
 
                 (
-                    "â The Square / Weebly adapter "
+                    "\u274c The Square / Weebly adapter "
                     "is not registered."
                 ),
 
@@ -3801,7 +3801,7 @@ async def scanretailer(
             await interaction.followup.send(
 
                 (
-                    "â **Universal Retailer Scan Failed**\n\n"
+                    "\u274c **Universal Retailer Scan Failed**\n\n"
 
                     f"**Store:** "
                     f"{scan_store_object.name}\n"
@@ -3872,7 +3872,7 @@ async def scanretailer(
         embed = discord.Embed(
 
             title=(
-                "ð Universal Retailer Scan"
+                "\U0001f310 Universal Retailer Scan"
             ),
 
             description=(
@@ -3941,13 +3941,13 @@ async def scanretailer(
 
             value=(
 
-                "ð± Initial Baseline"
+                "\U0001f331 Initial Baseline"
 
                 if scan_result.get(
                     "baseline_mode"
                 )
 
-                else "â Existing Baseline"
+                else "\u2705 Existing Baseline"
             ),
 
             inline=True,
@@ -3990,7 +3990,7 @@ async def scanretailer(
             name="Safety Mode",
 
             value=(
-                "ð **Forced Silent Scan**\n"
+                "\U0001f507 **Forced Silent Scan**\n"
                 "No product events were allowed "
                 "to reach Discord."
             ),
@@ -4008,7 +4008,7 @@ async def scanretailer(
 
             embed.add_field(
 
-                name="â ï¸ Safety Warning",
+                name="\u26a0\ufe0f Safety Warning",
 
                 value=(
                     "The controlled scan reported a non-zero "
@@ -4024,14 +4024,14 @@ async def scanretailer(
             embed.add_field(
                 name="Status",
                 value=(
-                    "â Scan completed with alerts suppressed."
+                    "\u2705 Scan completed with alerts suppressed."
                 ),
                 inline=False,
             )
 
         embed.set_footer(
             text=(
-                "Lotus Universal Retailer Foundation â¢ v1.0.4"
+                "Lotus Universal Retailer Foundation \u2022 v1.0.4"
             )
         )
 
@@ -4045,7 +4045,7 @@ async def scanretailer(
         await interaction.followup.send(
 
             (
-                "â Universal retailer scan failed.\n\n"
+                "\u274c Universal retailer scan failed.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -4093,7 +4093,7 @@ async def addshopifystore(
         await interaction.followup.send(
 
             (
-                f"{'â Added' if created else 'â Updated'} "
+                f"{'\u2705 Added' if created else '\u2705 Updated'} "
                 f"**{store.name}**\n"
 
                 f"`{store.domain}`\n"
@@ -4109,7 +4109,7 @@ async def addshopifystore(
         await interaction.followup.send(
 
             (
-                "â Store could not be added.\n\n"
+                "\u274c Store could not be added.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -4158,19 +4158,19 @@ async def stores(
         lines.append(
 
             (
-                f"**ID {store.id} â "
+                f"**ID {store.id} \u2014 "
                 f"{store.name}**\n"
 
                 f"`{store.domain}`\n"
 
                 f"Region: `{store.region or 'Unknown'}`\n"
 
-                f"{'ð¢' if store.active else 'â«'} "
+                f"{'\U0001f7e2' if store.active else '\u26ab'} "
                 f"{store.health_status}"
 
                 + (
 
-                    f" â¢ {store.disabled_reason}"
+                    f" \u2022 {store.disabled_reason}"
 
                     if store.disabled_reason
 
@@ -4216,7 +4216,7 @@ async def storeinfo(
     if store is None:
 
         await interaction.response.send_message(
-            "â Store ID not found.",
+            "\u274c Store ID not found.",
             ephemeral=True,
         )
 
@@ -4224,7 +4224,7 @@ async def storeinfo(
 
     embed = discord.Embed(
         title=(
-            f"ðª {store.name}"
+            f"\U0001f3ea {store.name}"
         )
     )
 
@@ -4245,9 +4245,9 @@ async def storeinfo(
     embed.add_field(
         name="Active",
         value=(
-            "Yes â"
+            "Yes \u2705"
             if store.active
-            else "No â"
+            else "No \u274c"
         ),
     )
 
@@ -4314,7 +4314,7 @@ async def storeinfo(
                 :1000
             ]
             if store.last_error
-            else "None â"
+            else "None \u2705"
         ),
         inline=False,
     )
@@ -4351,7 +4351,7 @@ async def disablestore(
     if store is None:
 
         await interaction.response.send_message(
-            "â Store not found.",
+            "\u274c Store not found.",
             ephemeral=True,
         )
 
@@ -4360,7 +4360,7 @@ async def disablestore(
     await interaction.response.send_message(
 
         (
-            f"â« **{store.name}** manually disabled.\n\n"
+            f"\u26ab **{store.name}** manually disabled.\n\n"
 
             "It will not automatically reactivate."
         ),
@@ -4395,14 +4395,14 @@ async def enablestore(
     if store is None:
 
         await interaction.response.send_message(
-            "â Store not found.",
+            "\u274c Store not found.",
             ephemeral=True,
         )
 
         return
 
     await interaction.response.send_message(
-        f"ð¢ **{store.name}** enabled.",
+        f"\U0001f7e2 **{store.name}** enabled.",
         ephemeral=True,
     )
 
@@ -4432,7 +4432,7 @@ async def removestore(
     if store is None:
 
         await interaction.response.send_message(
-            "â Store not found.",
+            "\u274c Store not found.",
             ephemeral=True,
         )
 
@@ -4441,7 +4441,7 @@ async def removestore(
     await interaction.response.send_message(
 
         (
-            f"ðï¸ **{store.name}** removed "
+            f"\U0001f5d1\ufe0f **{store.name}** removed "
             "from active monitoring.\n\n"
 
             "Historical data remains preserved."
@@ -4476,7 +4476,7 @@ async def restorestore(
     if store is None:
 
         await interaction.response.send_message(
-            "â Store not found.",
+            "\u274c Store not found.",
             ephemeral=True,
         )
 
@@ -4485,7 +4485,7 @@ async def restorestore(
     await interaction.response.send_message(
 
         (
-            f"â»ï¸ **{store.name}** restored "
+            f"\u267b\ufe0f **{store.name}** restored "
             "to active monitoring."
         ),
 
@@ -4515,21 +4515,21 @@ async def healthstatus(
     await interaction.response.send_message(
 
         (
-            "ð©º **Lotus Store Health**\n\n"
+            "\U0001fa7a **Lotus Store Health**\n\n"
 
-            f"ð¢ Healthy: "
+            f"\U0001f7e2 Healthy: "
             f"`{overview['healthy']}`\n"
 
-            f"ð¡ Degraded: "
+            f"\U0001f7e1 Degraded: "
             f"`{overview['degraded']}`\n"
 
-            f"ð´ Unhealthy: "
+            f"\U0001f534 Unhealthy: "
             f"`{overview['unhealthy']}`\n"
 
-            f"â« Disabled: "
+            f"\u26ab Disabled: "
             f"`{overview['disabled']}`\n"
 
-            f"ðï¸ Removed: "
+            f"\U0001f5d1\ufe0f Removed: "
             f"`{overview['removed']}`"
         ),
 
@@ -4572,7 +4572,7 @@ async def retrystore(
     if reason == "NOT_FOUND":
 
         await interaction.followup.send(
-            "â Store not found.",
+            "\u274c Store not found.",
             ephemeral=True,
         )
 
@@ -4583,7 +4583,7 @@ async def retrystore(
         await interaction.followup.send(
 
             (
-                "â ï¸ This store was manually disabled.\n"
+                "\u26a0\ufe0f This store was manually disabled.\n"
 
                 "Use `/enablestore`."
             ),
@@ -4598,7 +4598,7 @@ async def retrystore(
         await interaction.followup.send(
 
             (
-                "â ï¸ This store was removed.\n"
+                "\u26a0\ufe0f This store was removed.\n"
 
                 "Use `/restorestore`."
             ),
@@ -4615,7 +4615,7 @@ async def retrystore(
         await interaction.followup.send(
 
             (
-                "ð¢ Store responded successfully.\n"
+                "\U0001f7e2 Store responded successfully.\n"
 
                 "Health restored and monitoring enabled."
             ),
@@ -4628,7 +4628,7 @@ async def retrystore(
         await interaction.followup.send(
 
             (
-                "ð´ Store health check failed.\n"
+                "\U0001f534 Store health check failed.\n"
 
                 f"`{reason}`"
             ),
@@ -4665,7 +4665,7 @@ async def scanshopify(
         await interaction.followup.send(
 
             (
-                "â ï¸ No active stores "
+                "\u26a0\ufe0f No active stores "
                 "were successfully scanned."
             ),
 
@@ -4708,24 +4708,24 @@ async def scanshopify(
                 f"Flickers: "
                 f"`{result['flickers']}`\n"
 
-                f"ð Global: "
+                f"\U0001f30e Global: "
                 f"`{families.get('GLOBAL_STANDARD', 0)}` | "
 
-                f"ð¯ðµ JP: "
+                f"\U0001f1ef\U0001f1f5 JP: "
                 f"`{families.get('JP', 0)}` | "
 
-                f"ð°ð· KR: "
+                f"\U0001f1f0\U0001f1f7 KR: "
                 f"`{families.get('KR', 0)}` | "
 
-                f"ð¨ð³ CN: "
+                f"\U0001f1e8\U0001f1f3 CN: "
                 f"`{families.get('CN', 0)}` | "
 
-                f"â Unknown: "
+                f"\u2753 Unknown: "
                 f"`{families.get('UNKNOWN', 0)}`"
 
                 + (
 
-                    "\nð± Initial baseline"
+                    "\n\U0001f331 Initial baseline"
 
                     if result[
                         "initial_seed"
@@ -4776,15 +4776,15 @@ async def shopifystatus(
 
     embed = discord.Embed(
 
-        title="ðï¸ Lotus Shopify Monitor",
+        title="\U0001f6cd\ufe0f Lotus Shopify Monitor",
 
         description=(
 
             f"**Worker:** "
-            f"{'â Online' if worker_online else 'â Offline'}\n"
+            f"{'\u2705 Online' if worker_online else '\u274c Offline'}\n"
 
             f"**Running:** "
-            f"{'â' if data['running'] else 'â'}\n"
+            f"{'\u2705' if data['running'] else '\u274c'}\n"
 
             f"**Stores Scanned:** "
             f"{data['stores_scanned']}\n"
@@ -4803,30 +4803,30 @@ async def shopifystatus(
 
             "**Product Families:**\n"
 
-            f"ð Global: "
+            f"\U0001f30e Global: "
             f"`{data.get('global_family_products', 0)}`\n"
 
-            f"ð¯ðµ Japanese: "
+            f"\U0001f1ef\U0001f1f5 Japanese: "
             f"`{data.get('jp_family_products', 0)}`\n"
 
-            f"ð°ð· Korean: "
+            f"\U0001f1f0\U0001f1f7 Korean: "
             f"`{data.get('kr_family_products', 0)}`\n"
 
-            f"ð¨ð³ Chinese: "
+            f"\U0001f1e8\U0001f1f3 Chinese: "
             f"`{data.get('cn_family_products', 0)}`\n"
 
-            f"â Unknown: "
+            f"\u2753 Unknown: "
             f"`{data.get('unknown_family_products', 0)}`\n\n"
 
             "**Routing:**\n"
 
-            "ð¡ Discovery/Page â Early Page Detection\n"
+            "\U0001f4e1 Discovery/Page \u2192 Early Page Detection\n"
 
-            "ð£ Preorders â Preorder Alerts\n"
+            "\U0001f7e3 Preorders \u2192 Preorder Alerts\n"
 
-            "ð¢ Stock/Restocks â Shopify Drops\n"
+            "\U0001f7e2 Stock/Restocks \u2192 Shopify Drops\n"
 
-            "ð¥ Prices â Deals"
+            "\U0001f525 Prices \u2192 Deals"
         ),
     )
 
@@ -4852,7 +4852,7 @@ async def shopifystatus(
             data[
                 "last_error"
             ]
-            or "None â"
+            or "None \u2705"
         ),
 
         inline=False,
@@ -4870,7 +4870,7 @@ async def shopifystatus(
 
 @bot.tree.command(
     name="pokemoncenterstatus",
-    description="View PokÃ©mon Center queue status.",
+    description="View Pok\xe9mon Center queue status.",
 )
 async def pokemoncenterstatus(
     interaction,
@@ -4892,15 +4892,15 @@ async def pokemoncenterstatus(
 
     embed = discord.Embed(
 
-        title="â¡ PokÃ©mon Center Queue Intelligence",
+        title="\u26a1 Pok\xe9mon Center Queue Intelligence",
 
         description=(
 
             f"**Worker:** "
-            f"{'â Online' if worker_online else 'â Offline'}\n"
+            f"{'\u2705 Online' if worker_online else '\u274c Offline'}\n"
 
             f"**Running:** "
-            f"{'â' if data['running'] else 'â'}\n"
+            f"{'\u2705' if data['running'] else '\u274c'}\n"
 
             f"**Regions Checked:** "
             f"{data['regions_checked']}\n"
@@ -4930,7 +4930,7 @@ async def pokemoncenterstatus(
             data[
                 "last_error"
             ]
-            or "None â"
+            or "None \u2705"
         ),
         inline=False,
     )
@@ -4947,7 +4947,7 @@ async def pokemoncenterstatus(
 
 @bot.tree.command(
     name="scanpokemoncenter",
-    description="Run a PokÃ©mon Center queue scan now.",
+    description="Run a Pok\xe9mon Center queue scan now.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -4971,7 +4971,7 @@ async def scanpokemoncenter(
             await interaction.followup.send(
 
                 (
-                    "â ï¸ PokÃ©mon Center scan "
+                    "\u26a0\ufe0f Pok\xe9mon Center scan "
                     "returned no successful regions."
                 ),
 
@@ -4993,7 +4993,7 @@ async def scanpokemoncenter(
                     f"`{result['http_status']}`\n"
 
                     f"Queue: "
-                    f"{'ð¨ ACTIVE' if result['queue_active'] else 'â Clear'}"
+                    f"{'\U0001f6a8 ACTIVE' if result['queue_active'] else '\u2705 Clear'}"
                 )
             )
 
@@ -5013,7 +5013,7 @@ async def scanpokemoncenter(
         await interaction.followup.send(
 
             (
-                "â PokÃ©mon Center scan failed.\n"
+                "\u274c Pok\xe9mon Center scan failed.\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -5029,7 +5029,7 @@ async def scanpokemoncenter(
 
 @bot.tree.command(
     name="addpokemonproduct",
-    description="Add a PokÃ©mon Center product to Lotus monitoring.",
+    description="Add a Pok\xe9mon Center product to Lotus monitoring.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -5056,8 +5056,8 @@ async def addpokemonproduct(
         await interaction.followup.send(
 
             (
-                f"{'â Added' if created else 'â Reactivated'} "
-                "**PokÃ©mon Center product**\n\n"
+                f"{'\u2705 Added' if created else '\u2705 Reactivated'} "
+                "**Pok\xe9mon Center product**\n\n"
 
                 f"**ID:** "
                 f"`{product.id}`\n"
@@ -5083,7 +5083,7 @@ async def addpokemonproduct(
         await interaction.followup.send(
 
             (
-                "â Product could not be added.\n\n"
+                "\u274c Product could not be added.\n\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -5099,7 +5099,7 @@ async def addpokemonproduct(
 
 @bot.tree.command(
     name="pokemonproducts",
-    description="View known PokÃ©mon Center products.",
+    description="View known Pok\xe9mon Center products.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -5121,7 +5121,7 @@ async def pokemonproducts(
     if not products:
 
         await interaction.followup.send(
-            "No PokÃ©mon Center products registered.",
+            "No Pok\xe9mon Center products registered.",
             ephemeral=True,
         )
 
@@ -5159,29 +5159,29 @@ async def pokemonproducts(
         scan_icon = {
 
             "SUCCESS":
-                "â",
+                "\u2705",
 
             "BLOCKED":
-                "ð«",
+                "\U0001f6ab",
 
             "PARSE_ERROR":
-                "ð§©",
+                "\U0001f9e9",
 
             "ERROR":
-                "â ï¸",
+                "\u26a0\ufe0f",
 
         }.get(
             product.scan_status,
-            "âª",
+            "\u26aa",
         )
 
         lines.append(
 
             (
-                f"**ID {product.id} â "
+                f"**ID {product.id} \u2014 "
                 f"{product.product_code or 'Unknown'}**\n"
 
-                f"{'ð¢ Active' if product.active else 'â« Removed'}\n"
+                f"{'\U0001f7e2 Active' if product.active else '\u26ab Removed'}\n"
 
                 f"Region: "
                 f"`{product.region}`\n"
@@ -5222,7 +5222,7 @@ async def pokemonproducts(
 
 @bot.tree.command(
     name="removepokemonproduct",
-    description="Stop monitoring a PokÃ©mon Center product.",
+    description="Stop monitoring a Pok\xe9mon Center product.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -5241,7 +5241,7 @@ async def removepokemonproduct(
     if product is None:
 
         await interaction.response.send_message(
-            "â Product ID not found.",
+            "\u274c Product ID not found.",
             ephemeral=True,
         )
 
@@ -5250,7 +5250,7 @@ async def removepokemonproduct(
     await interaction.response.send_message(
 
         (
-            "â« PokÃ©mon Center product removed "
+            "\u26ab Pok\xe9mon Center product removed "
             "from active monitoring.\n"
 
             f"`{product.product_code or product.id}`"
@@ -5266,7 +5266,7 @@ async def removepokemonproduct(
 
 @bot.tree.command(
     name="restorepokemonproduct",
-    description="Restore a removed PokÃ©mon Center product.",
+    description="Restore a removed Pok\xe9mon Center product.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -5285,7 +5285,7 @@ async def restorepokemonproduct(
     if product is None:
 
         await interaction.response.send_message(
-            "â Product ID not found.",
+            "\u274c Product ID not found.",
             ephemeral=True,
         )
 
@@ -5294,7 +5294,7 @@ async def restorepokemonproduct(
     await interaction.response.send_message(
 
         (
-            "â»ï¸ PokÃ©mon Center product restored.\n"
+            "\u267b\ufe0f Pok\xe9mon Center product restored.\n"
 
             f"`{product.product_code or product.id}`"
         ),
@@ -5309,7 +5309,7 @@ async def restorepokemonproduct(
 
 @bot.tree.command(
     name="discoverpokemonproducts",
-    description="Run PokÃ©mon Center indexed product discovery.",
+    description="Run Pok\xe9mon Center indexed product discovery.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -5331,7 +5331,7 @@ async def discoverpokemonproducts(
         await interaction.followup.send(
 
             (
-                "ð PokÃ©mon Center discovery complete.\n\n"
+                "\U0001f50e Pok\xe9mon Center discovery complete.\n\n"
 
                 f"**New products added:** "
                 f"`{count}`"
@@ -5345,7 +5345,7 @@ async def discoverpokemonproducts(
         await interaction.followup.send(
 
             (
-                "â Product discovery failed.\n"
+                "\u274c Product discovery failed.\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -5361,7 +5361,7 @@ async def discoverpokemonproducts(
 
 @bot.tree.command(
     name="scanpokemonproducts",
-    description="Scan known PokÃ©mon Center products now.",
+    description="Scan known Pok\xe9mon Center products now.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -5383,7 +5383,7 @@ async def scanpokemonproducts(
         await interaction.followup.send(
 
             (
-                "â¡ **PokÃ©mon Center Product Scan**\n\n"
+                "\u26a1 **Pok\xe9mon Center Product Scan**\n\n"
 
                 f"Known Products: "
                 f"`{result['known']}`\n"
@@ -5415,7 +5415,7 @@ async def scanpokemonproducts(
         await interaction.followup.send(
 
             (
-                "â Product scan failed.\n"
+                "\u274c Product scan failed.\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -5431,7 +5431,7 @@ async def scanpokemonproducts(
 
 @bot.tree.command(
     name="pokemonproductstatus",
-    description="View PokÃ©mon Center product intelligence.",
+    description="View Pok\xe9mon Center product intelligence.",
 )
 async def pokemonproductstatus(
     interaction,
@@ -5454,16 +5454,16 @@ async def pokemonproductstatus(
     embed = discord.Embed(
 
         title=(
-            "â¡ PokÃ©mon Center Product Intelligence"
+            "\u26a1 Pok\xe9mon Center Product Intelligence"
         ),
 
         description=(
 
             f"**Worker:** "
-            f"{'â Online' if worker_online else 'â Offline'}\n"
+            f"{'\u2705 Online' if worker_online else '\u274c Offline'}\n"
 
             f"**Running:** "
-            f"{'â' if data['running'] else 'â'}\n"
+            f"{'\u2705' if data['running'] else '\u274c'}\n"
 
             f"**Known Products:** "
             f"{data['known_products']}\n"
@@ -5491,7 +5491,7 @@ async def pokemonproductstatus(
             data[
                 "last_error"
             ]
-            or "None â"
+            or "None \u2705"
         ),
         inline=False,
     )
@@ -5508,7 +5508,7 @@ async def pokemonproductstatus(
 
 @bot.tree.command(
     name="pokemonburst",
-    description="Temporarily enable fast PokÃ©mon Center monitoring.",
+    description="Temporarily enable fast Pok\xe9mon Center monitoring.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -5531,7 +5531,7 @@ async def pokemonburst(
             await interaction.response.send_message(
 
                 (
-                    "â ï¸ Burst mode could not be enabled "
+                    "\u26a0\ufe0f Burst mode could not be enabled "
                     "because Redis is unavailable."
                 ),
 
@@ -5543,7 +5543,7 @@ async def pokemonburst(
         await interaction.response.send_message(
 
             (
-                "â¡ PokÃ©mon Center burst monitoring "
+                "\u26a1 Pok\xe9mon Center burst monitoring "
                 f"enabled for **{region.upper()}** "
                 "for 5 minutes."
             ),
@@ -5556,7 +5556,7 @@ async def pokemonburst(
         await interaction.response.send_message(
 
             (
-                "â Burst mode failed.\n"
+                "\u274c Burst mode failed.\n"
 
                 f"`{type(error).__name__}: "
                 f"{error}`"
@@ -5654,7 +5654,7 @@ async def simulateproduct(
 
         product_name=(
 
-            "PokÃ©mon Center Test"
+            "Pok\xe9mon Center Test"
 
             if queue_event
 
@@ -5666,7 +5666,7 @@ async def simulateproduct(
         ),
 
         store_name=(
-            "PokÃ©mon Center"
+            "Pok\xe9mon Center"
             if queue_event
             else "Lotus Simulation Store"
         ),
@@ -5749,7 +5749,7 @@ async def simulateproduct(
     await interaction.followup.send(
 
         (
-            "ð§ª Event submitted.\n\n"
+            "\U0001f9ea Event submitted.\n\n"
 
             f"Event: "
             f"`{event.value}`\n"
@@ -5764,10 +5764,10 @@ async def simulateproduct(
             f"`{product_event.product_family}`\n"
 
             f"Database: "
-            f"{'â' if result['database_saved'] else 'â'}\n"
+            f"{'\u2705' if result['database_saved'] else '\u274c'}\n"
 
             f"Redis: "
-            f"{'â' if result['redis_saved'] else 'â'}"
+            f"{'\u2705' if result['redis_saved'] else '\u274c'}"
         ),
 
         ephemeral=True,
@@ -5813,7 +5813,7 @@ async def testalert(
         await interaction.followup.send(
 
             (
-                "â Unknown alert type.\n\n"
+                "\u274c Unknown alert type.\n\n"
 
                 "Examples:\n"
 
@@ -5865,7 +5865,7 @@ async def testalert(
     if channel is None:
 
         await interaction.followup.send(
-            "â Alert channel not found.",
+            "\u274c Alert channel not found.",
             ephemeral=True,
         )
 
@@ -5875,7 +5875,7 @@ async def testalert(
 
         embed=discord.Embed(
 
-            title="ð§ª LOTUS TEST ALERT",
+            title="\U0001f9ea LOTUS TEST ALERT",
 
             description=(
 
@@ -5892,7 +5892,7 @@ async def testalert(
     await interaction.followup.send(
 
         (
-            f"â Test alert sent "
+            f"\u2705 Test alert sent "
             f"to {channel.mention}."
         ),
 
@@ -5966,81 +5966,81 @@ async def status(
 
     embed = discord.Embed(
 
-        title="ð¢ Lotus Tracker Bot Status",
+        title="\U0001f7e2 Lotus Tracker Bot Status",
 
         description=(
 
             f"**PostgreSQL / Alembic:** "
-            f"{'â' if bot.database_ready else 'â'}\n"
+            f"{'\u2705' if bot.database_ready else '\u274c'}\n"
 
             f"**Redis:** "
-            f"{'â' if bot.redis_ready else 'â'}\n"
+            f"{'\u2705' if bot.redis_ready else '\u274c'}\n"
 
             f"**Event Worker:** "
-            f"{'â' if event_worker_online else 'â'}\n"
+            f"{'\u2705' if event_worker_online else '\u274c'}\n"
 
             f"**Shopify Monitor:** "
-            f"{'â' if shopify_online else 'â'}\n"
+            f"{'\u2705' if shopify_online else '\u274c'}\n"
 
-            f"**PokÃ©mon Queue Monitor:** "
-            f"{'â' if pokemon_queue_online else 'â'}\n"
+            f"**Pok\xe9mon Queue Monitor:** "
+            f"{'\u2705' if pokemon_queue_online else '\u274c'}\n"
 
-            f"**PokÃ©mon Product Monitor:** "
-            f"{'â' if pokemon_products_online else 'â'}\n"
+            f"**Pok\xe9mon Product Monitor:** "
+            f"{'\u2705' if pokemon_products_online else '\u274c'}\n"
 
             "**Universal Retailer Monitor:** "
-            "ð§ª Manual Validation Only\n\n"
+            "\U0001f9ea Manual Validation Only\n\n"
 
-            "**Strict TCG Classification:** â\n"
+            "**Strict TCG Classification:** \u2705\n"
 
-            "**Category Preferences:** â\n"
+            "**Category Preferences:** \u2705\n"
 
-            "**Singles Filtering:** â\n"
+            "**Singles Filtering:** \u2705\n"
 
-            "**Product Family Detection:** â\n"
+            "**Product Family Detection:** \u2705\n"
 
-            "**English / JP / KR / CN Preferences:** â\n"
+            "**English / JP / KR / CN Preferences:** \u2705\n"
 
-            "**Game + Category + Family Audience:** â\n"
+            "**Game + Category + Family Audience:** \u2705\n"
 
-            "**Currency-Independent Family Detection:** â\n"
+            "**Currency-Independent Family Detection:** \u2705\n"
 
-            "**Regional MSRP Isolation:** â\n"
+            "**Regional MSRP Isolation:** \u2705\n"
 
-            "**Exact Product MSRP:** â\n"
+            "**Exact Product MSRP:** \u2705\n"
 
-            "**Product Type MSRP:** â\n"
+            "**Product Type MSRP:** \u2705\n"
 
-            "**Game Default MSRP:** â\n"
+            "**Game Default MSRP:** \u2705\n"
 
-            "**Cross-Currency MSRP:** â\n"
+            "**Cross-Currency MSRP:** \u2705\n"
 
-            "**30-Day Pricing History:** â\n"
+            "**30-Day Pricing History:** \u2705\n"
 
-            "**Deal Score:** â\n"
+            "**Deal Score:** \u2705\n"
 
-            "**Scalper Protection:** â\n"
+            "**Scalper Protection:** \u2705\n"
 
-            "**Smart Quick Cart:** â\n"
+            "**Smart Quick Cart:** \u2705\n"
 
-            "**Native Currency:** â\n"
+            "**Native Currency:** \u2705\n"
 
-            "**USD Conversion:** â\n"
+            "**USD Conversion:** \u2705\n"
 
-            "**Early Page Routing:** â\n"
+            "**Early Page Routing:** \u2705\n"
 
-            "**Product Images:** â\n"
+            "**Product Images:** \u2705\n"
 
-            "**Affiliate Pipeline:** â\n"
+            "**Affiliate Pipeline:** \u2705\n"
 
-            "**Store Self-Healing:** â\n"
+            "**Store Self-Healing:** \u2705\n"
 
-            "**Inventory Flicker:** â\n"
+            "**Inventory Flicker:** \u2705\n"
 
-            "**Universal Retailer Foundation:** â\n"
+            "**Universal Retailer Foundation:** \u2705\n"
 
             f"**Universal Adapters Loaded:** "
-            f"{'â' if universal_status.get('adapters_loaded') else 'âª'}\n\n"
+            f"{'\u2705' if universal_status.get('adapters_loaded') else '\u26aa'}\n\n"
 
             f"**Healthy Stores:** "
             f"{health['healthy']}\n"
@@ -6086,7 +6086,7 @@ async def on_app_command_error(
     ):
 
         message = (
-            "â You do not have permission "
+            "\u274c You do not have permission "
             "to use this command."
         )
 
@@ -6102,7 +6102,7 @@ async def on_app_command_error(
 
         message = (
 
-            "â Command failed.\n\n"
+            "\u274c Command failed.\n\n"
 
             f"`{type(original).__name__}: "
             f"{original}`"
