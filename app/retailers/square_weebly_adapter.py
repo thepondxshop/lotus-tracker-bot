@@ -3,6 +3,7 @@ import json
 import re
 
 from html import unescape
+
 from urllib.parse import (
     urljoin,
     urlparse,
@@ -26,15 +27,16 @@ from app.retailer_registry import (
 # PonDeX Trackers
 # Version 1.0.4
 #
-# Public storefront discovery for Square / Weebly stores.
+# Universal Retailer Foundation
 #
 # SAFETY:
-# - public pages only
+# - public storefront pages only
 # - no login
 # - no CAPTCHA bypass
 # - no queue bypass
 # - no checkout automation
-# - rate limited
+# - conservative request rate
+# - unknown availability never means sold out
 # =========================================================
 
 
@@ -52,6 +54,10 @@ MAX_DISCOVERY_PAGES = 15
 
 MAX_PRODUCT_PAGES = 150
 
+
+# =========================================================
+# URL / HTML PATTERNS
+# =========================================================
 
 PRODUCT_URL_PATTERN = re.compile(
     r"""href=["']([^"']*/product/[^"']+)["']""",
@@ -95,6 +101,12 @@ META_DESCRIPTION_PATTERN = re.compile(
 )
 
 
+META_DESCRIPTION_PATTERN_REVERSED = re.compile(
+    r"""<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']""",
+    re.IGNORECASE,
+)
+
+
 JSON_LD_PATTERN = re.compile(
     r"""<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
     re.IGNORECASE | re.DOTALL,
@@ -115,11 +127,6 @@ PRICE_PATTERNS = [
 
     re.compile(
         r"""["']price["']\s*:\s*["']?([0-9]+(?:\.[0-9]{1,2})?)""",
-        re.IGNORECASE,
-    ),
-
-    re.compile(
-        r"""\$\s*([0-9]+(?:\.[0-9]{1,2})?)""",
         re.IGNORECASE,
     ),
 ]
@@ -146,10 +153,11 @@ SKU_PATTERNS = [
 
 
 # =========================================================
-# PRODUCT CATEGORY CLASSIFICATION
+# PRODUCT CATEGORY
 # =========================================================
 
 SEALED_KEYWORDS = (
+
     "booster box",
     "booster pack",
     "booster bundle",
@@ -170,12 +178,14 @@ SEALED_KEYWORDS = (
 
 
 SINGLE_KEYWORDS = (
+
     "single card",
     "single",
 )
 
 
 ACCESSORY_KEYWORDS = (
+
     "sleeves",
     "deck box",
     "binder",
@@ -189,72 +199,13 @@ ACCESSORY_KEYWORDS = (
 
 
 # =========================================================
-# GAME CLASSIFICATION
-#
-# Keep this strict.
-#
-# Do NOT classify based on vague words such as:
-# "card", "booster", "deck", etc.
+# UNSUPPORTED PRODUCTS
 # =========================================================
 
-GAME_PATTERNS = {
-
-    "One Piece": (
-        "one piece card game",
-        "one piece tcg",
-    ),
-
-    "Pokemon": (
-        "pokemon tcg",
-        "pokémon tcg",
-    ),
-
-    "Gundam Card Game": (
-        "gundam card game",
-        "gundam tcg",
-    ),
-
-    "Dragon Ball Fusion World": (
-        "dragon ball super card game fusion world",
-        "dragon ball fusion world",
-        "fusion world tcg",
-    ),
-
-    "Riftbound": (
-        "riftbound",
-    ),
-
-    "Palworld": (
-        "palworld tcg",
-        "palworld card game",
-    ),
-
-    "Naruto TCG": (
-        "naruto tcg",
-        "naruto card game",
-    ),
-
-    "Cyberpunk TCG": (
-        "cyberpunk tcg",
-        "cyberpunk trading card game",
-    ),
-
-    "Azuki TCG": (
-        "azuki tcg",
-        "azuki trading card game",
-    ),
-
-    "Hellbreak TCG": (
-        "hellbreak tcg",
-        "hellbreak trading card game",
-    ),
-}
-
-
 UNSUPPORTED_GAME_TERMS = (
+
     "magic the gathering",
     "magic: the gathering",
-    "mtg ",
     "yu-gi-oh",
     "yugioh",
     "lorcana",
@@ -269,10 +220,75 @@ UNSUPPORTED_GAME_TERMS = (
 
 
 # =========================================================
-# LANGUAGE / FAMILY
+# SUPPORTED GAME PHRASES
+# =========================================================
+
+GAME_PATTERNS = {
+
+    "Pokemon": (
+
+        "pokemon tcg",
+        "pokémon tcg",
+    ),
+
+    "Gundam Card Game": (
+
+        "gundam card game",
+        "gundam tcg",
+    ),
+
+    "Dragon Ball Fusion World": (
+
+        "dragon ball super card game fusion world",
+        "dragon ball fusion world",
+        "fusion world tcg",
+    ),
+
+    "Riftbound": (
+
+        "riftbound tcg",
+        "riftbound trading card game",
+        "riftbound league of legends",
+    ),
+
+    "Palworld": (
+
+        "palworld tcg",
+        "palworld card game",
+    ),
+
+    "Naruto TCG": (
+
+        "naruto tcg",
+        "naruto card game",
+    ),
+
+    "Cyberpunk TCG": (
+
+        "cyberpunk tcg",
+        "cyberpunk trading card game",
+    ),
+
+    "Azuki TCG": (
+
+        "azuki tcg",
+        "azuki trading card game",
+    ),
+
+    "Hellbreak TCG": (
+
+        "hellbreak tcg",
+        "hellbreak trading card game",
+    ),
+}
+
+
+# =========================================================
+# PRODUCT FAMILY
 # =========================================================
 
 JP_TERMS = (
+
     "japanese",
     "japan version",
     "japan edition",
@@ -282,6 +298,7 @@ JP_TERMS = (
 
 
 KR_TERMS = (
+
     "korean",
     "korea version",
     "korea edition",
@@ -291,6 +308,7 @@ KR_TERMS = (
 
 
 CN_TERMS = (
+
     "simplified chinese",
     "chinese version",
     "chinese edition",
@@ -300,6 +318,7 @@ CN_TERMS = (
 
 
 IMPORT_TERMS = (
+
     "import",
     "asian version",
     "asia version",
@@ -307,7 +326,7 @@ IMPORT_TERMS = (
 
 
 # =========================================================
-# HELPERS
+# TEXT
 # =========================================================
 
 def clean_text(
@@ -315,6 +334,7 @@ def clean_text(
 ):
 
     if value is None:
+
         return ""
 
     value = unescape(
@@ -335,8 +355,14 @@ def clean_text(
         value,
     )
 
-    return value.strip()
+    return (
+        value.strip()
+    )
 
+
+# =========================================================
+# URL
+# =========================================================
 
 def normalize_url(
     base_url,
@@ -344,6 +370,7 @@ def normalize_url(
 ):
 
     if not href:
+
         return None
 
     href = unescape(
@@ -353,16 +380,19 @@ def normalize_url(
     if href.startswith(
         "#"
     ):
+
         return None
 
     if href.startswith(
         "mailto:"
     ):
+
         return None
 
     if href.startswith(
         "tel:"
     ):
+
         return None
 
     url = urljoin(
@@ -378,168 +408,272 @@ def normalize_url(
         "http",
         "https",
     }:
+
         return None
 
-    # Remove fragments.
+    return (
+        parsed
+        ._replace(
+            fragment=""
+        )
+        .geturl()
+    )
 
-    url = parsed._replace(
-        fragment=""
-    ).geturl()
 
-    return url
-
+# =========================================================
+# STRICT GAME CLASSIFICATION
+#
+# IMPORTANT:
+#
+# We intentionally classify from the PRODUCT TITLE only.
+#
+# Arbitrary page descriptions/body HTML are NOT used for
+# game classification.
+#
+# This prevents unrelated Hypno comics/products from being
+# classified because a description mentions another TCG.
+# =========================================================
 
 def classify_game(
     title,
-    body_text="",
 ):
 
-    combined = (
-        f"{title or ''} "
-        f"{body_text or ''}"
+    text = clean_text(
+        title
     ).lower()
+
+    if not text:
+
+        return None
+
+
+    # =====================================================
+    # UNSUPPORTED GAME REJECTION
+    # =====================================================
 
     for unsupported in UNSUPPORTED_GAME_TERMS:
 
-        if unsupported in combined:
+        if unsupported in text:
 
             return None
 
-    # -----------------------------------------------------
+
+    # =====================================================
     # ONE PIECE
-    #
-    # Strong phrases first.
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         "one piece card game"
-        in combined
+        in text
 
         or
         "one piece tcg"
-        in combined
+        in text
+    ):
 
-        or
-        re.search(
-            r"\bop(?:0?[1-9]|[1-9][0-9])\b",
-            combined,
+        return (
+            "One Piece"
         )
 
-        or
-        re.search(
-            r"\beb(?:0?[1-9]|[1-9][0-9])\b",
-            combined,
+
+    # OPxx
+    #
+    # Require a separator or boundary before the set code
+    # and allow common forms:
+    #
+    # OP-13
+    # OP13
+    # OP 13
+
+    if re.search(
+        r"\bop[\s-]?(?:0[1-9]|[1-9][0-9])\b",
+        text,
+        re.IGNORECASE,
+    ):
+
+        return (
+            "One Piece"
         )
 
-        or
-        re.search(
-            r"\bst(?:0?[1-9]|[1-9][0-9])\b",
-            combined,
+
+    # EBxx
+
+    if re.search(
+        r"\beb[\s-]?(?:0[1-9]|[1-9][0-9])\b",
+        text,
+        re.IGNORECASE,
+    ):
+
+        return (
+            "One Piece"
         )
 
-        or
+
+    # STxx
+
+    if re.search(
+        r"\bst[\s-]?(?:0[1-9]|[1-9][0-9])\b",
+        text,
+        re.IGNORECASE,
+    ):
+
+        return (
+            "One Piece"
+        )
+
+
+    # One Piece promo code P-xxx is too generic by itself.
+    #
+    # Require One Piece context if P-xxx is used.
+
+    if (
+        "one piece"
+        in text
+
+        and
         re.search(
-            r"\bp-\d{1,4}\b",
-            combined,
+            r"\bp[\s-]?\d{1,4}\b",
+            text,
+            re.IGNORECASE,
         )
     ):
 
-        return "One Piece"
+        return (
+            "One Piece"
+        )
 
-    # -----------------------------------------------------
+
+    # =====================================================
     # OTHER SUPPORTED GAMES
-    # -----------------------------------------------------
+    # =====================================================
 
     for (
         game,
         phrases,
     ) in GAME_PATTERNS.items():
 
-        if game == "One Piece":
-            continue
-
         for phrase in phrases:
 
-            if phrase in combined:
+            if phrase in text:
 
-                return game
+                return (
+                    game
+                )
 
     return None
 
+
+# =========================================================
+# PRODUCT CATEGORY
+# =========================================================
 
 def classify_product_category(
     title,
 ):
 
-    text = (
+    text = clean_text(
         title
-        or ""
     ).lower()
+
 
     for keyword in ACCESSORY_KEYWORDS:
 
         if keyword in text:
 
-            return "ACCESSORY"
+            return (
+                "ACCESSORY"
+            )
+
 
     for keyword in SINGLE_KEYWORDS:
 
         if keyword in text:
 
-            return "SINGLE"
+            return (
+                "SINGLE"
+            )
+
 
     for keyword in SEALED_KEYWORDS:
 
         if keyword in text:
 
-            return "SEALED"
+            return (
+                "SEALED"
+            )
 
-    return "UNKNOWN"
 
+    return (
+        "UNKNOWN"
+    )
+
+
+# =========================================================
+# PRODUCT FAMILY
+#
+# Currency is NEVER used to determine product family.
+#
+# For this first Square/Weebly implementation we classify
+# from the product title only.
+# =========================================================
 
 def classify_product_family(
     title,
-    description="",
 ):
 
-    combined = (
-        f"{title or ''} "
-        f"{description or ''}"
+    text = clean_text(
+        title
     ).lower()
 
+
     if any(
-        term in combined
+        term in text
         for term in JP_TERMS
     ):
 
-        return "JP"
+        return (
+            "JP"
+        )
+
 
     if any(
-        term in combined
+        term in text
         for term in KR_TERMS
     ):
 
-        return "KR"
+        return (
+            "KR"
+        )
+
 
     if any(
-        term in combined
+        term in text
         for term in CN_TERMS
     ):
 
-        return "CN"
+        return (
+            "CN"
+        )
 
-    # Ambiguous import products must NOT automatically
-    # become GLOBAL_STANDARD.
 
     if any(
-        term in combined
+        term in text
         for term in IMPORT_TERMS
     ):
 
-        return "UNKNOWN"
+        return (
+            "UNKNOWN"
+        )
 
-    return "GLOBAL_STANDARD"
 
+    return (
+        "GLOBAL_STANDARD"
+    )
+
+
+# =========================================================
+# FAMILY LANGUAGE
+# =========================================================
 
 def family_language(
     family,
@@ -563,11 +697,17 @@ def family_language(
             "Unknown",
     }
 
-    return mapping.get(
-        family,
-        "Unknown",
+    return (
+        mapping.get(
+            family,
+            "Unknown",
+        )
     )
 
+
+# =========================================================
+# META
+# =========================================================
 
 def find_meta_value(
     html,
@@ -575,34 +715,46 @@ def find_meta_value(
     pattern_b=None,
 ):
 
-    match = pattern_a.search(
-        html
+    match = (
+        pattern_a.search(
+            html
+        )
     )
 
     if match:
 
-        return clean_text(
-            match.group(
-                1
+        return (
+            clean_text(
+                match.group(
+                    1
+                )
             )
         )
 
     if pattern_b is not None:
 
-        match = pattern_b.search(
-            html
+        match = (
+            pattern_b.search(
+                html
+            )
         )
 
         if match:
 
-            return clean_text(
-                match.group(
-                    1
+            return (
+                clean_text(
+                    match.group(
+                        1
+                    )
                 )
             )
 
     return None
 
+
+# =========================================================
+# JSON-LD
+# =========================================================
 
 def extract_json_ld(
     html,
@@ -626,13 +778,16 @@ def extract_json_ld(
 
         try:
 
-            payload = json.loads(
-                raw
+            payload = (
+                json.loads(
+                    raw
+                )
             )
 
         except Exception:
 
             continue
+
 
         if isinstance(
             payload,
@@ -652,12 +807,18 @@ def extract_json_ld(
     return objects
 
 
+# =========================================================
+# PRODUCT SCHEMA
+# =========================================================
+
 def find_product_schema(
     html,
 ):
 
-    objects = extract_json_ld(
-        html
+    objects = (
+        extract_json_ld(
+            html
+        )
     )
 
     queue = list(
@@ -666,8 +827,10 @@ def find_product_schema(
 
     while queue:
 
-        item = queue.pop(
-            0
+        item = (
+            queue.pop(
+                0
+            )
         )
 
         if isinstance(
@@ -681,6 +844,7 @@ def find_product_schema(
 
             continue
 
+
         if not isinstance(
             item,
             dict,
@@ -688,11 +852,13 @@ def find_product_schema(
 
             continue
 
+
         item_type = (
             item.get(
                 "@type"
             )
         )
+
 
         if isinstance(
             item_type,
@@ -700,24 +866,32 @@ def find_product_schema(
         ):
 
             item_types = {
+
                 str(
                     value
                 ).lower()
-                for value in item_type
+
+                for value
+                in item_type
             }
 
         else:
 
             item_types = {
+
                 str(
                     item_type
                     or ""
                 ).lower()
             }
 
+
         if "product" in item_types:
 
-            return item
+            return (
+                item
+            )
+
 
         graph = (
             item.get(
@@ -737,6 +911,10 @@ def find_product_schema(
     return None
 
 
+# =========================================================
+# OFFER
+# =========================================================
+
 def parse_offer(
     schema,
 ):
@@ -748,11 +926,13 @@ def parse_offer(
 
         return None
 
+
     offers = (
         schema.get(
             "offers"
         )
     )
+
 
     if isinstance(
         offers,
@@ -763,9 +943,12 @@ def parse_offer(
 
             return None
 
-        offers = offers[
-            0
-        ]
+        offers = (
+            offers[
+                0
+            ]
+        )
+
 
     if not isinstance(
         offers,
@@ -774,13 +957,34 @@ def parse_offer(
 
         return None
 
-    return offers
 
+    return (
+        offers
+    )
+
+
+# =========================================================
+# AVAILABILITY
+#
+# Returns:
+#
+# (
+#     available,
+#     availability_known,
+#     availability_state,
+# )
+#
+# Unknown is intentionally NOT treated as False.
+# =========================================================
 
 def parse_availability(
     offer,
     html,
 ):
+
+    # =====================================================
+    # STRUCTURED DATA FIRST
+    # =====================================================
 
     if isinstance(
         offer,
@@ -794,73 +998,129 @@ def parse_availability(
                 )
                 or ""
             )
+            .strip()
             .lower()
         )
 
-        if "instock" in availability:
 
-            return True
+        if (
+            "instock"
+            in availability
+        ):
 
-        if "outofstock" in availability:
+            return (
+                True,
+                True,
+                "IN_STOCK",
+            )
 
-            return False
 
-        if "soldout" in availability:
+        if (
+            "outofstock"
+            in availability
 
-            return False
+            or
+            "soldout"
+            in availability
+        ):
+
+            return (
+                False,
+                True,
+                "OUT_OF_STOCK",
+            )
+
+
+    # =====================================================
+    # STRONG PAGE SIGNALS
+    # =====================================================
 
     lowered = (
         html.lower()
     )
 
+
     strong_out_terms = (
+
         "out of stock",
         "sold out",
         "currently unavailable",
     )
+
 
     if any(
         term in lowered
         for term in strong_out_terms
     ):
 
-        return False
+        return (
+            False,
+            True,
+            "OUT_OF_STOCK",
+        )
+
 
     strong_in_terms = (
+
         "add to cart",
         "add to bag",
     )
+
 
     if any(
         term in lowered
         for term in strong_in_terms
     ):
 
-        return True
+        return (
+            True,
+            True,
+            "IN_STOCK",
+        )
 
-    return False
 
+    # =====================================================
+    # UNKNOWN
+    # =====================================================
+
+    return (
+        False,
+        False,
+        "UNKNOWN",
+    )
+
+
+# =========================================================
+# PRODUCT ID
+# =========================================================
 
 def parse_product_id_from_url(
     url,
 ):
 
-    parsed = urlparse(
-        url
+    parsed = (
+        urlparse(
+            url
+        )
     )
 
-    match = re.search(
-        r"/product/[^/]+/(\d+)",
-        parsed.path,
-        re.IGNORECASE,
+    match = (
+        re.search(
+            r"/product/[^/]+/(\d+)",
+            parsed.path,
+            re.IGNORECASE,
+        )
     )
 
     if not match:
 
         return None
 
-    return match.group(
-        1
+
+    return (
+        match.group(
+            1
+        )
     )
 
 
@@ -878,6 +1138,7 @@ class SquareWeeblyAdapter(
     platform = (
         "square_weebly"
     )
+
 
     def __init__(
         self,
@@ -898,6 +1159,7 @@ class SquareWeeblyAdapter(
             store_name=store_name,
         )
 
+
         domain = (
             self.domain
             .replace(
@@ -913,19 +1175,26 @@ class SquareWeeblyAdapter(
             )
         )
 
+
         self.base_url = (
             f"https://{domain}"
         )
 
+
         self.request_delay = max(
+
             float(
                 request_delay
             ),
+
             0.5,
         )
 
+
         self.max_product_pages = max(
+
             1,
+
             min(
                 int(
                     max_product_pages
@@ -945,17 +1214,25 @@ class SquareWeeblyAdapter(
         url,
     ):
 
-        timeout = aiohttp.ClientTimeout(
-            total=DEFAULT_TIMEOUT
+        timeout = (
+            aiohttp.ClientTimeout(
+                total=DEFAULT_TIMEOUT
+            )
         )
+
 
         try:
 
             async with session.get(
+
                 url,
+
                 timeout=timeout,
+
                 allow_redirects=True,
+
             ) as response:
+
 
                 if response.status == 429:
 
@@ -968,6 +1245,7 @@ class SquareWeeblyAdapter(
                     )
 
                     return None
+
 
                 if response.status in {
                     401,
@@ -985,6 +1263,7 @@ class SquareWeeblyAdapter(
 
                     return None
 
+
                 if response.status >= 400:
 
                     print(
@@ -998,6 +1277,7 @@ class SquareWeeblyAdapter(
 
                     return None
 
+
                 content_type = (
                     response.headers.get(
                         "Content-Type",
@@ -1005,6 +1285,7 @@ class SquareWeeblyAdapter(
                     )
                     .lower()
                 )
+
 
                 if (
                     "text/html"
@@ -1025,10 +1306,13 @@ class SquareWeeblyAdapter(
 
                     return None
 
-                return await response.text(
 
-                    errors="ignore"
+                return (
+                    await response.text(
+                        errors="ignore"
+                    )
                 )
+
 
         except (
             asyncio.TimeoutError,
@@ -1040,7 +1324,8 @@ class SquareWeeblyAdapter(
                     "SQUARE/WEEBLY REQUEST ERROR | "
                     f"Store={self.store_name} | "
                     f"URL={url} | "
-                    f"{type(error).__name__}: {error}"
+                    f"{type(error).__name__}: "
+                    f"{error}"
                 )
             )
 
@@ -1048,7 +1333,7 @@ class SquareWeeblyAdapter(
 
 
     # =====================================================
-    # DISCOVERY
+    # EXTRACT PRODUCT URLS
     # =====================================================
 
     def _extract_product_urls(
@@ -1059,64 +1344,90 @@ class SquareWeeblyAdapter(
 
         urls = set()
 
+
         if not html:
 
-            return urls
+            return (
+                urls
+            )
+
+
+        expected_host = (
+            urlparse(
+                self.base_url
+            )
+            .netloc
+            .lower()
+            .replace(
+                "www.",
+                "",
+            )
+        )
+
 
         for match in PRODUCT_URL_PATTERN.finditer(
             html
         ):
 
-            url = normalize_url(
-
-                source_url,
-
-                match.group(
-                    1
-                ),
+            url = (
+                normalize_url(
+                    source_url,
+                    match.group(
+                        1
+                    ),
+                )
             )
+
 
             if not url:
 
                 continue
 
-            parsed = urlparse(
-                url
+
+            parsed = (
+                urlparse(
+                    url
+                )
             )
 
-            # Only stay on retailer domain.
 
-            if (
+            actual_host = (
                 parsed.netloc
                 .lower()
                 .replace(
                     "www.",
                     "",
                 )
-                !=
-                urlparse(
-                    self.base_url
-                )
-                .netloc
-                .lower()
-                .replace(
-                    "www.",
-                    "",
-                )
+            )
+
+
+            if actual_host != expected_host:
+
+                continue
+
+
+            if (
+                "/product/"
+                not in
+                parsed.path.lower()
             ):
 
                 continue
 
-            if "/product/" not in parsed.path.lower():
-
-                continue
 
             urls.add(
                 url
             )
 
-        return urls
 
+        return (
+            urls
+        )
+
+
+    # =====================================================
+    # DISCOVERY
+    # =====================================================
 
     async def _discover_product_urls(
         self,
@@ -1125,12 +1436,6 @@ class SquareWeeblyAdapter(
 
         discovered = set()
 
-        # -------------------------------------------------
-        # Public entry points.
-        #
-        # We do not assume that all of these exist.
-        # Missing pages simply return no products.
-        # -------------------------------------------------
 
         discovery_paths = (
 
@@ -1147,33 +1452,44 @@ class SquareWeeblyAdapter(
             "/s/search",
         )
 
+
         pages_checked = 0
+
 
         for path in discovery_paths:
 
             if (
                 pages_checked
-                >= MAX_DISCOVERY_PAGES
+                >=
+                MAX_DISCOVERY_PAGES
             ):
 
                 break
 
-            url = urljoin(
-                self.base_url,
-                path,
+
+            url = (
+                urljoin(
+                    self.base_url,
+                    path,
+                )
             )
 
-            html = await self._fetch_text(
 
-                session,
-                url,
+            html = (
+                await self._fetch_text(
+                    session,
+                    url,
+                )
             )
+
 
             pages_checked += 1
+
 
             if not html:
 
                 continue
+
 
             urls = (
                 self._extract_product_urls(
@@ -1182,9 +1498,11 @@ class SquareWeeblyAdapter(
                 )
             )
 
+
             discovered.update(
                 urls
             )
+
 
             if (
                 len(
@@ -1196,16 +1514,20 @@ class SquareWeeblyAdapter(
 
                 break
 
+
             await asyncio.sleep(
                 self.request_delay
             )
 
-        return list(
-            discovered
-        )[
-            :
-            self.max_product_pages
-        ]
+
+        return (
+            sorted(
+                discovered
+            )[
+                :
+                self.max_product_pages
+            ]
+        )
 
 
     # =====================================================
@@ -1233,12 +1555,16 @@ class SquareWeeblyAdapter(
                 "en-US,en;q=0.9",
         }
 
-        connector = aiohttp.TCPConnector(
 
-            limit=4,
+        connector = (
+            aiohttp.TCPConnector(
 
-            limit_per_host=2,
+                limit=4,
+
+                limit_per_host=2,
+            )
         )
+
 
         async with aiohttp.ClientSession(
 
@@ -1248,11 +1574,13 @@ class SquareWeeblyAdapter(
 
         ) as session:
 
+
             product_urls = (
                 await self._discover_product_urls(
                     session
                 )
             )
+
 
             print(
                 (
@@ -1262,17 +1590,25 @@ class SquareWeeblyAdapter(
                 )
             )
 
+
             raw_products = []
 
-            for index, url in enumerate(
+
+            for (
+                index,
+                url,
+            ) in enumerate(
                 product_urls
             ):
 
-                html = await self._fetch_text(
 
-                    session,
-                    url,
+                html = (
+                    await self._fetch_text(
+                        session,
+                        url,
+                    )
                 )
+
 
                 if html:
 
@@ -1286,6 +1622,7 @@ class SquareWeeblyAdapter(
                         }
                     )
 
+
                 if (
                     index
                     <
@@ -1298,7 +1635,10 @@ class SquareWeeblyAdapter(
                         self.request_delay
                     )
 
-            return raw_products
+
+            return (
+                raw_products
+            )
 
 
     # =====================================================
@@ -1317,11 +1657,13 @@ class SquareWeeblyAdapter(
 
             return None
 
+
         url = (
             product.get(
                 "url"
             )
         )
+
 
         html = (
             product.get(
@@ -1330,15 +1672,18 @@ class SquareWeeblyAdapter(
             or ""
         )
 
+
         if not url or not html:
 
             return None
+
 
         schema = (
             find_product_schema(
                 html
             )
         )
+
 
         offer = (
             parse_offer(
@@ -1353,79 +1698,109 @@ class SquareWeeblyAdapter(
 
         title = None
 
+
         if isinstance(
             schema,
             dict,
         ):
 
-            title = clean_text(
-                schema.get(
-                    "name"
+            title = (
+                clean_text(
+                    schema.get(
+                        "name"
+                    )
                 )
             )
 
+
         if not title:
 
-            title = find_meta_value(
+            title = (
+                find_meta_value(
 
-                html,
+                    html,
 
-                OG_TITLE_PATTERN,
+                    OG_TITLE_PATTERN,
 
-                OG_TITLE_PATTERN_REVERSED,
+                    OG_TITLE_PATTERN_REVERSED,
+                )
             )
 
+
         if not title:
 
-            match = TITLE_PATTERN.search(
-                html
+            match = (
+                TITLE_PATTERN.search(
+                    html
+                )
             )
 
             if match:
 
-                title = clean_text(
-                    match.group(
-                        1
+                title = (
+                    clean_text(
+                        match.group(
+                            1
+                        )
                     )
                 )
+
 
         if not title:
 
             return None
 
-        # Remove common site suffix.
 
-        title = re.sub(
-            r"\s*\|\s*Hypno Comics.*$",
-            "",
-            title,
-            flags=re.IGNORECASE,
-        ).strip()
+        # Remove common Hypno site suffix without making
+        # Hypno-specific assumptions elsewhere.
+
+        title = (
+            re.sub(
+                r"\s*\|\s*Hypno Comics.*$",
+                "",
+                title,
+                flags=re.IGNORECASE,
+            )
+            .strip()
+        )
 
 
         # =================================================
         # DESCRIPTION
+        #
+        # Retained only as metadata.
+        #
+        # NOT used for game classification.
         # =================================================
 
         description = ""
+
 
         if isinstance(
             schema,
             dict,
         ):
 
-            description = clean_text(
-                schema.get(
-                    "description"
+            description = (
+                clean_text(
+                    schema.get(
+                        "description"
+                    )
                 )
             )
+
 
         if not description:
 
             description = (
                 find_meta_value(
+
                     html,
+
                     META_DESCRIPTION_PATTERN,
+
+                    META_DESCRIPTION_PATTERN_REVERSED,
+
                 )
                 or ""
             )
@@ -1433,14 +1808,16 @@ class SquareWeeblyAdapter(
 
         # =================================================
         # STRICT GAME CLASSIFICATION
+        #
+        # TITLE ONLY.
         # =================================================
 
-        game = classify_game(
-
-            title,
-
-            description,
+        game = (
+            classify_game(
+                title
+            )
         )
+
 
         if not game:
 
@@ -1453,28 +1830,35 @@ class SquareWeeblyAdapter(
 
         price = None
 
+
         if isinstance(
             offer,
             dict,
         ):
 
-            price = normalize_price(
-                offer.get(
-                    "price"
+            price = (
+                normalize_price(
+                    offer.get(
+                        "price"
+                    )
                 )
             )
+
 
         if price is None:
 
             for pattern in PRICE_PATTERNS:
 
-                match = pattern.search(
-                    html
+                match = (
+                    pattern.search(
+                        html
+                    )
                 )
 
                 if not match:
 
                     continue
+
 
                 raw_price = (
                     match.group(
@@ -1486,9 +1870,13 @@ class SquareWeeblyAdapter(
                     )
                 )
 
-                price = normalize_price(
-                    raw_price
+
+                price = (
+                    normalize_price(
+                        raw_price
+                    )
                 )
+
 
                 if price is not None:
 
@@ -1499,7 +1887,10 @@ class SquareWeeblyAdapter(
         # CURRENCY
         # =================================================
 
-        currency = "USD"
+        currency = (
+            "USD"
+        )
+
 
         if isinstance(
             offer,
@@ -1512,19 +1903,36 @@ class SquareWeeblyAdapter(
                 )
             )
 
+
             if offer_currency:
 
                 currency = (
                     str(
                         offer_currency
-                    ).upper()
+                    )
+                    .strip()
+                    .upper()
                 )
 
-        else:
 
-            match = CURRENCY_PATTERN.search(
-                html
+        if (
+            not isinstance(
+                offer,
+                dict,
             )
+
+            or
+            not offer.get(
+                "priceCurrency"
+            )
+        ):
+
+            match = (
+                CURRENCY_PATTERN.search(
+                    html
+                )
+            )
+
 
             if match:
 
@@ -1539,11 +1947,15 @@ class SquareWeeblyAdapter(
         # AVAILABILITY
         # =================================================
 
-        available = parse_availability(
-
-            offer,
-
-            html,
+        (
+            available,
+            availability_known,
+            availability_state,
+        ) = (
+            parse_availability(
+                offer,
+                html,
+            )
         )
 
 
@@ -1557,7 +1969,9 @@ class SquareWeeblyAdapter(
             )
         )
 
+
         sku = None
+
 
         if isinstance(
             schema,
@@ -1570,25 +1984,33 @@ class SquareWeeblyAdapter(
                 )
             )
 
+
             if schema_sku:
 
-                sku = clean_text(
-                    schema_sku
+                sku = (
+                    clean_text(
+                        schema_sku
+                    )
                 )
+
 
         if not sku:
 
             for pattern in SKU_PATTERNS:
 
-                match = pattern.search(
-                    html
+                match = (
+                    pattern.search(
+                        html
+                    )
                 )
 
                 if match:
 
-                    sku = clean_text(
-                        match.group(
-                            1
+                    sku = (
+                        clean_text(
+                            match.group(
+                                1
+                            )
                         )
                     )
 
@@ -1601,6 +2023,7 @@ class SquareWeeblyAdapter(
 
         image_url = None
 
+
         if isinstance(
             schema,
             dict,
@@ -1612,6 +2035,7 @@ class SquareWeeblyAdapter(
                 )
             )
 
+
             if isinstance(
                 schema_image,
                 list,
@@ -1619,32 +2043,40 @@ class SquareWeeblyAdapter(
 
                 if schema_image:
 
-                    image_url = str(
-                        schema_image[
-                            0
-                        ]
+                    image_url = (
+                        str(
+                            schema_image[
+                                0
+                            ]
+                        )
                     )
+
 
             elif schema_image:
 
-                image_url = str(
-                    schema_image
+                image_url = (
+                    str(
+                        schema_image
+                    )
                 )
+
 
         if not image_url:
 
-            image_url = find_meta_value(
+            image_url = (
+                find_meta_value(
 
-                html,
+                    html,
 
-                OG_IMAGE_PATTERN,
+                    OG_IMAGE_PATTERN,
 
-                OG_IMAGE_PATTERN_REVERSED,
+                    OG_IMAGE_PATTERN_REVERSED,
+                )
             )
 
 
         # =================================================
-        # PRODUCT CATEGORY / FAMILY
+        # CATEGORY
         # =================================================
 
         product_category = (
@@ -1653,12 +2085,20 @@ class SquareWeeblyAdapter(
             )
         )
 
+
+        # =================================================
+        # FAMILY
+        #
+        # TITLE ONLY.
+        # Currency is irrelevant.
+        # =================================================
+
         product_family = (
             classify_product_family(
-                title,
-                description,
+                title
             )
         )
+
 
         language = (
             family_language(
@@ -1668,14 +2108,26 @@ class SquareWeeblyAdapter(
 
 
         # =================================================
-        # EVENT STATE
+        # PRODUCT STATE
         # =================================================
 
-        product_state = (
-            "STOCK_AVAILABLE"
-            if available
-            else "PAGE_LIVE"
-        )
+        if availability_state == "IN_STOCK":
+
+            product_state = (
+                "STOCK_AVAILABLE"
+            )
+
+        elif availability_state == "OUT_OF_STOCK":
+
+            product_state = (
+                "SOLD_OUT"
+            )
+
+        else:
+
+            product_state = (
+                "PAGE_LIVE"
+            )
 
 
         # =================================================
@@ -1692,6 +2144,12 @@ class SquareWeeblyAdapter(
 
             "language":
                 language,
+
+            "availability_known":
+                availability_known,
+
+            "availability_state":
+                availability_state,
         }
 
 
@@ -1724,6 +2182,12 @@ class SquareWeeblyAdapter(
             currency=(
                 currency
             ),
+
+            # RetailerProduct currently uses a bool.
+            #
+            # Unknown therefore remains False here, but the
+            # availability_known flag in platform_data tells
+            # the monitor NOT to interpret it as sold out.
 
             available=(
                 available
@@ -1763,23 +2227,11 @@ class SquareWeeblyAdapter(
                 external_product_id
             ),
 
-            # We do NOT invent a Square offer ID.
-            #
-            # This remains None until one is publicly
-            # and reliably exposed by the storefront.
-
             offer_id=None,
-
-            # Not Shopify.
 
             variant_id=None,
 
             purchase_limit=None,
-
-            # No Quick Cart yet.
-            #
-            # We need a documented / storefront-supported
-            # mechanism before enabling cart links.
 
             cart_base_url=None,
 
