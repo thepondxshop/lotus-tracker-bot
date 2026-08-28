@@ -8,6 +8,8 @@ from app.retailer_adapter import (
 # PonDeX Trackers
 # Version 1.0.4
 #
+# Universal Retailer Foundation
+#
 # Chooses the proper adapter for a retailer platform.
 # =========================================================
 
@@ -39,14 +41,29 @@ def normalize_platform(
 
     aliases = {
 
+        # =================================================
+        # WOOCOMMERCE
+        # =================================================
+
         "wc":
             "woocommerce",
 
         "woo":
             "woocommerce",
 
+        "woo commerce":
+            "woocommerce",
+
+        "woo-commerce":
+            "woocommerce",
+
         "woocommerce":
             "woocommerce",
+
+
+        # =================================================
+        # BIGCOMMERCE
+        # =================================================
 
         "big commerce":
             "bigcommerce",
@@ -57,11 +74,55 @@ def normalize_platform(
         "bigcommerce":
             "bigcommerce",
 
+
+        # =================================================
+        # SQUARE / WEEBLY
+        # =================================================
+
+        "square":
+            "square_weebly",
+
+        "square online":
+            "square_weebly",
+
+        "square-online":
+            "square_weebly",
+
+        "square_online":
+            "square_weebly",
+
+        "square weebly":
+            "square_weebly",
+
+        "square-weebly":
+            "square_weebly",
+
+        "square_weebly":
+            "square_weebly",
+
+        "weebly":
+            "square_weebly",
+
+
+        # =================================================
+        # CUSTOM
+        # =================================================
+
         "custom":
             "custom",
 
+
+        # =================================================
+        # SHOPIFY
+        # =================================================
+
         "shopify":
             "shopify",
+
+
+        # =================================================
+        # POKEMON CENTER
+        # =================================================
 
         "pokemon center":
             "pokemon_center",
@@ -71,6 +132,11 @@ def normalize_platform(
 
         "pokemon_center":
             "pokemon_center",
+
+
+        # =================================================
+        # MAJOR RETAILER
+        # =================================================
 
         "major retailer":
             "major_retailer",
@@ -206,11 +272,9 @@ def build_retailer_adapter(
         )
     )
 
-    # Shopify continues to use the existing dedicated
-    # ShopifyAdapter + Shopify monitor.
-    #
-    # We deliberately do NOT route Shopify through this
-    # generic registry yet.
+    # =====================================================
+    # DEDICATED MONITORS
+    # =====================================================
 
     if platform == "shopify":
 
@@ -221,6 +285,30 @@ def build_retailer_adapter(
                 "retailer registry."
             )
         )
+
+    if platform == "pokemon_center":
+
+        raise ValueError(
+            (
+                "Pokémon Center uses its dedicated "
+                "monitor and is not handled by the "
+                "universal retailer registry."
+            )
+        )
+
+    if platform == "major_retailer":
+
+        raise ValueError(
+            (
+                "Major retailers currently use their "
+                "dedicated monitoring path."
+            )
+        )
+
+
+    # =====================================================
+    # ADAPTER
+    # =====================================================
 
     adapter_class = (
         get_retailer_adapter_class(
@@ -237,6 +325,11 @@ def build_retailer_adapter(
             )
         )
 
+
+    # =====================================================
+    # DOMAIN
+    # =====================================================
+
     domain = (
         getattr(
             store,
@@ -251,11 +344,18 @@ def build_retailer_adapter(
             "Store has no domain."
         )
 
+
+    # =====================================================
+    # BUILD
+    #
+    # IMPORTANT:
+    # Keyword arguments intentionally used so adapters with
+    # keyword-only constructors remain compatible.
+    # =====================================================
+
     return adapter_class(
 
-        domain=(
-            domain
-        ),
+        domain=domain,
 
         region=(
             getattr(
