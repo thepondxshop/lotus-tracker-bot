@@ -5,12 +5,12 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.0.4
 
-Purpose
--------
-Monitor non-Shopify retailers through the universal retailer
-adapter system.
+Step 5:
+- Explicit retailer adapter loading
+- Silent first-scan baseline protection
+- Universal retailer lifecycle
 
-Current event lifecycle:
+Supported lifecycle:
 - DISCOVERED
 - STOCK_AVAILABLE
 - RESTOCK
@@ -19,11 +19,10 @@ Current event lifecycle:
 - PRICE_INCREASE
 
 Important:
-- Database changes are committed before Discord/Redis events
-  are published.
-- Shopify continues to use shopify_monitor.py.
-- Universal retailers do NOT automatically receive Smart Cart.
-- No checkout automation.
+- Shopify remains isolated in shopify_monitor.py.
+- Database state is committed before events are published.
+- First successful retailer scan establishes a silent baseline.
+- No automatic checkout.
 - No CAPTCHA / queue / anti-bot bypass.
 """
 
@@ -32,10 +31,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import (
+    func,
+    select,
+)
 
 from app.database import SessionLocal
 
@@ -57,6 +60,10 @@ from app.models import (
 from app.retailer_registry import (
     build_retailer_adapter,
     normalize_platform,
+)
+
+from app.retailers import (
+    load_retailer_adapters,
 )
 
 
@@ -84,6 +91,7 @@ DEFAULT_SCAN_INTERVAL = 60
 
 MAX_STORES_PER_CYCLE = 100
 
+
 SUPPORTED_UNIVERSAL_PLATFORMS = {
     "square_weebly",
     "woocommerce",
@@ -97,30 +105,72 @@ SUPPORTED_UNIVERSAL_PLATFORMS = {
 # =========================================================
 
 MONITOR_STATUS: dict[str, Any] = {
-    "version": VERSION,
-    "running": False,
-    "last_scan_started_at": None,
-    "last_scan_completed_at": None,
-    "last_error": None,
-    "stores_scanned": 0,
-    "stores_failed": 0,
-    "products_seen": 0,
-    "products_created": 0,
-    "products_updated": 0,
-    "events_created": 0,
-    "price_changes": 0,
-    "restocks": 0,
-    "sold_out": 0,
+
+    "version":
+        VERSION,
+
+    "running":
+        False,
+
+    "adapters_loaded":
+        False,
+
+    "last_scan_started_at":
+        None,
+
+    "last_scan_completed_at":
+        None,
+
+    "last_error":
+        None,
+
+    "stores_scanned":
+        0,
+
+    "stores_failed":
+        0,
+
+    "stores_baselined":
+        0,
+
+    "products_seen":
+        0,
+
+    "products_created":
+        0,
+
+    "products_updated":
+        0,
+
+    "events_created":
+        0,
+
+    "events_suppressed_baseline":
+        0,
+
+    "price_changes":
+        0,
+
+    "restocks":
+        0,
+
+    "sold_out":
+        0,
 }
 
 
 # =========================================================
-# HELPERS
+# TIME
 # =========================================================
 
 def utcnow() -> datetime:
+
     return datetime.utcnow()
 
+
+# =========================================================
+# BASIC NORMALIZATION
+# =========================================================
 
 def normalize_text(
     value: Any,
@@ -162,6 +212,7 @@ def normalize_price(
         return None
 
     try:
+
         return float(
             value
         )
@@ -170,6 +221,7 @@ def normalize_price(
         TypeError,
         ValueError,
     ):
+
         return None
 
 
@@ -192,7 +244,9 @@ def normalize_bool(
     ):
 
         lowered = (
-            value.strip().lower()
+            value
+            .strip()
+            .lower()
         )
 
         if lowered in {
@@ -204,6 +258,7 @@ def normalize_bool(
             "in_stock",
             "instock",
         }:
+
             return True
 
         if lowered in {
@@ -217,6 +272,7 @@ def normalize_bool(
             "sold_out",
             "soldout",
         }:
+
             return False
 
     return bool(
@@ -228,24 +284,20 @@ def normalize_currency(
     value: Any,
 ) -> str:
 
-    value = normalize_text(
+    return normalize_text(
         value,
         "USD",
-    )
-
-    return value.upper()
+    ).upper()
 
 
 def normalize_region(
     value: Any,
 ) -> str:
 
-    value = normalize_text(
+    return normalize_text(
         value,
         "US",
-    )
-
-    return value.upper()
+    ).upper()
 
 
 def normalize_product_category(
@@ -263,6 +315,7 @@ def normalize_product_category(
         "ACCESSORY",
         "UNKNOWN",
     }:
+
         return "UNKNOWN"
 
     return value
@@ -284,6 +337,7 @@ def normalize_product_family(
         "CN",
         "UNKNOWN",
     }:
+
         return "UNKNOWN"
 
     return value
@@ -294,11 +348,21 @@ def family_language(
 ) -> str:
 
     mapping = {
-        "GLOBAL_STANDARD": "English",
-        "JP": "Japanese",
-        "KR": "Korean",
-        "CN": "Simplified Chinese",
-        "UNKNOWN": "Unknown",
+
+        "GLOBAL_STANDARD":
+            "English",
+
+        "JP":
+            "Japanese",
+
+        "KR":
+            "Korean",
+
+        "CN":
+            "Simplified Chinese",
+
+        "UNKNOWN":
+            "Unknown",
     }
 
     return mapping.get(
@@ -319,7 +383,9 @@ def serialize_platform_data(
         str,
     ):
 
-        value = value.strip()
+        value = (
+            value.strip()
+        )
 
         return (
             value
@@ -342,12 +408,27 @@ def serialize_platform_data(
     except Exception:
 
         try:
+
             return str(
                 value
             )
 
         except Exception:
+
             return None
+
+
+# =========================================================
+# LOAD ADAPTERS
+# =========================================================
+
+def ensure_retailer_adapters_loaded() -> None:
+
+    load_retailer_adapters()
+
+    MONITOR_STATUS[
+        "adapters_loaded"
+    ] = True
 
 
 # =========================================================
@@ -363,147 +444,227 @@ def make_product_event(
     old_price: float | None = None,
 ) -> ProductEvent:
 
-    """
-    Build the standard Lotus ProductEvent used by
-    event_service.py and the Discord worker.
-
-    Keep this compatible with the existing Shopify event
-    pipeline.
-    """
-
-    product_family = normalize_product_family(
-        item.get(
-            "product_family"
+    product_family = (
+        normalize_product_family(
+            item.get(
+                "product_family"
+            )
         )
     )
 
-    product_category = normalize_product_category(
-        item.get(
-            "product_category"
+    product_category = (
+        normalize_product_category(
+            item.get(
+                "product_category"
+            )
         )
     )
 
-    platform = normalize_platform(
-        getattr(
-            store,
-            "platform",
-            None,
+    platform = (
+        normalize_platform(
+            getattr(
+                store,
+                "platform",
+                None,
+            )
         )
     )
 
     return ProductEvent(
-        event_type=event_type,
 
-        game=normalize_text(
-            item.get(
-                "game"
-            ),
-            "Unknown",
+        event_type=(
+            event_type
         ),
 
-        product_name=normalize_text(
-            item.get(
-                "title"
-            ),
-            "Unknown Product",
-        ),
-
-        store_name=normalize_text(
-            getattr(
-                store,
-                "name",
-                None,
-            ),
-            "Unknown Store",
-        ),
-
-        product_url=normalize_text(
-            item.get(
-                "url"
+        game=(
+            normalize_text(
+                item.get(
+                    "game"
+                ),
+                "Unknown",
             )
         ),
 
-        price=normalize_price(
-            item.get(
-                "price"
+        product_name=(
+            normalize_text(
+                item.get(
+                    "title"
+                ),
+                "Unknown Product",
             )
         ),
 
-        old_price=normalize_price(
-            old_price
-        ),
-
-        currency=normalize_currency(
-            item.get(
-                "currency"
+        store_name=(
+            normalize_text(
+                getattr(
+                    store,
+                    "name",
+                    None,
+                ),
+                "Unknown Store",
             )
         ),
 
-        in_stock=bool(
-            in_stock
-        ),
-
-        region=normalize_region(
-            getattr(
-                store,
-                "region",
-                None,
+        product_url=(
+            normalize_text(
+                item.get(
+                    "url"
+                )
             )
         ),
 
-        language=family_language(
+        price=(
+            normalize_price(
+                item.get(
+                    "price"
+                )
+            )
+        ),
+
+        old_price=(
+            normalize_price(
+                old_price
+            )
+        ),
+
+        currency=(
+            normalize_currency(
+                item.get(
+                    "currency"
+                )
+            )
+        ),
+
+        in_stock=(
+            bool(
+                in_stock
+            )
+        ),
+
+        region=(
+            normalize_region(
+                getattr(
+                    store,
+                    "region",
+                    None,
+                )
+            )
+        ),
+
+        language=(
+            family_language(
+                product_family
+            )
+        ),
+
+        product_type=(
+            normalize_text(
+                item.get(
+                    "product_type"
+                ),
+                "TCG Product",
+            )
+        ),
+
+        product_category=(
+            product_category
+        ),
+
+        product_family=(
             product_family
         ),
 
-        product_type=normalize_text(
-            item.get(
-                "product_type"
-            ),
-            "TCG Product",
+        source_type=(
+            platform
         ),
 
-        product_category=product_category,
-
-        product_family=product_family,
-
-        source_type=platform,
-
-        retailer_key=normalize_text(
-            getattr(
-                store,
-                "domain",
-                None,
+        retailer_key=(
+            normalize_text(
+                getattr(
+                    store,
+                    "domain",
+                    None,
+                )
             )
         ),
 
-        image_url=normalize_optional_text(
-            item.get(
-                "image_url"
+        image_url=(
+            normalize_optional_text(
+                item.get(
+                    "image_url"
+                )
             )
         ),
 
-        # Universal retailers intentionally do not invent
-        # Shopify variants.
-
-        variant_id=normalize_optional_text(
-            item.get(
-                "variant_id"
+        variant_id=(
+            normalize_optional_text(
+                item.get(
+                    "variant_id"
+                )
             )
         ),
 
-        purchase_limit=item.get(
-            "purchase_limit"
+        purchase_limit=(
+            item.get(
+                "purchase_limit"
+            )
         ),
 
-        # Only adapters with a legitimate supported cart
-        # mechanism should ever populate this.
-
-        cart_base_url=normalize_optional_text(
-            item.get(
-                "cart_base_url"
+        cart_base_url=(
+            normalize_optional_text(
+                item.get(
+                    "cart_base_url"
+                )
             )
         ),
     )
+
+
+# =========================================================
+# STORE BASELINE STATE
+# =========================================================
+
+async def store_has_baseline(
+    store_id: int,
+) -> bool:
+
+    """
+    A universal retailer is considered initialized once at
+    least one StoreProduct exists for that store.
+
+    This prevents a newly-added retailer from sending every
+    existing catalog item as a fresh Discord discovery.
+    """
+
+    async with SessionLocal() as session:
+
+        statement = (
+            select(
+                func.count(
+                    StoreProduct.id
+                )
+            )
+            .where(
+                StoreProduct.store_id
+                ==
+                store_id
+            )
+        )
+
+        result = (
+            await session.execute(
+                statement
+            )
+        )
+
+        count = (
+            result.scalar_one()
+            or 0
+        )
+
+        return (
+            count > 0
+        )
 
 
 # =========================================================
@@ -518,33 +679,37 @@ async def find_product(
     product_family: str,
 ) -> Product | None:
 
-    """
-    Locate an existing normalized Lotus Product.
-
-    We intentionally avoid fuzzy matching here.
-
-    Retailer-level identity is maintained by StoreProduct.
-    """
-
     statement = (
         select(
             Product
         )
         .where(
-            Product.game == game,
-            Product.name == title,
-            Product.product_family == product_family,
+            Product.game
+            ==
+            game,
+
+            Product.name
+            ==
+            title,
+
+            Product.product_family
+            ==
+            product_family,
         )
         .limit(
             1
         )
     )
 
-    result = await session.execute(
-        statement
+    result = (
+        await session.execute(
+            statement
+        )
     )
 
-    return result.scalar_one_or_none()
+    return (
+        result.scalar_one_or_none()
+    )
 
 
 async def find_store_product(
@@ -559,19 +724,28 @@ async def find_store_product(
             StoreProduct
         )
         .where(
-            StoreProduct.store_id == store_id,
-            StoreProduct.url == url,
+            StoreProduct.store_id
+            ==
+            store_id,
+
+            StoreProduct.url
+            ==
+            url,
         )
         .limit(
             1
         )
     )
 
-    result = await session.execute(
-        statement
+    result = (
+        await session.execute(
+            statement
+        )
     )
 
-    return result.scalar_one_or_none()
+    return (
+        result.scalar_one_or_none()
+    )
 
 
 # =========================================================
@@ -597,48 +771,57 @@ async def get_or_create_product(
         )
     )
 
-    product_family = normalize_product_family(
-        item.get(
-            "product_family"
+    product_family = (
+        normalize_product_family(
+            item.get(
+                "product_family"
+            )
         )
     )
 
-    product_category = normalize_product_category(
-        item.get(
-            "product_category"
+    product_category = (
+        normalize_product_category(
+            item.get(
+                "product_category"
+            )
         )
     )
 
-    product_type = normalize_text(
-        item.get(
-            "product_type"
-        ),
-        "TCG Product",
-    )
-
-    region = normalize_region(
-        getattr(
-            store,
-            "region",
-            None,
+    product_type = (
+        normalize_text(
+            item.get(
+                "product_type"
+            ),
+            "TCG Product",
         )
     )
 
-    language = family_language(
-        product_family
+    region = (
+        normalize_region(
+            getattr(
+                store,
+                "region",
+                None,
+            )
+        )
     )
 
-    existing = await find_product(
-        session,
-        game=game,
-        title=title,
-        product_family=product_family,
+    language = (
+        family_language(
+            product_family
+        )
+    )
+
+    existing = (
+        await find_product(
+            session,
+            game=game,
+            title=title,
+            product_family=product_family,
+        )
     )
 
     if existing is not None:
-
-        # Keep classification metadata current without
-        # changing identity.
 
         existing.product_type = (
             product_type
@@ -666,23 +849,43 @@ async def get_or_create_product(
         )
 
     product = Product(
-        game=game,
-        name=title,
-        canonical_name=title,
-        product_type=product_type,
-        product_category=product_category,
-        product_family=product_family,
-        region=region,
-        language=language,
+
+        game=(
+            game
+        ),
+
+        name=(
+            title
+        ),
+
+        canonical_name=(
+            title
+        ),
+
+        product_type=(
+            product_type
+        ),
+
+        product_category=(
+            product_category
+        ),
+
+        product_family=(
+            product_family
+        ),
+
+        region=(
+            region
+        ),
+
+        language=(
+            language
+        ),
     )
 
     session.add(
         product
     )
-
-    # We need the ID for StoreProduct, but we do NOT commit
-    # yet. The entire retailer product transaction remains
-    # together.
 
     await session.flush()
 
@@ -707,20 +910,30 @@ def add_price_history(
     if price is None:
         return
 
-    history = PriceHistory(
-        store_product_id=store_product.id,
-        price=price,
-        currency=currency,
-        recorded_at=utcnow(),
-    )
-
     session.add(
-        history
+        PriceHistory(
+
+            store_product_id=(
+                store_product.id
+            ),
+
+            price=(
+                price
+            ),
+
+            currency=(
+                currency
+            ),
+
+            recorded_at=(
+                utcnow()
+            ),
+        )
     )
 
 
 # =========================================================
-# NEW PRODUCT
+# CREATE STORE PRODUCT
 # =========================================================
 
 async def create_store_product(
@@ -729,7 +942,11 @@ async def create_store_product(
     store: Store,
     product: Product,
     item: dict[str, Any],
-) -> tuple[StoreProduct, list[ProductEvent]]:
+    baseline_mode: bool,
+) -> tuple[
+    StoreProduct,
+    list[ProductEvent],
+]:
 
     url = normalize_text(
         item.get(
@@ -755,69 +972,122 @@ async def create_store_product(
         )
     )
 
-    external_product_id = normalize_optional_text(
-        item.get(
-            "external_product_id"
-        )
-        or item.get(
-            "external_id"
-        )
-    )
-
-    offer_id = normalize_optional_text(
-        item.get(
-            "offer_id"
+    external_product_id = (
+        normalize_optional_text(
+            item.get(
+                "external_product_id"
+            )
+            or
+            item.get(
+                "external_id"
+            )
         )
     )
 
-    sku = normalize_optional_text(
-        item.get(
-            "sku"
+    offer_id = (
+        normalize_optional_text(
+            item.get(
+                "offer_id"
+            )
         )
     )
 
-    variant_id = normalize_optional_text(
-        item.get(
-            "variant_id"
+    sku = (
+        normalize_optional_text(
+            item.get(
+                "sku"
+            )
         )
     )
 
-    purchase_limit = item.get(
-        "purchase_limit"
-    )
-
-    platform_data = serialize_platform_data(
-        item.get(
-            "platform_data"
+    variant_id = (
+        normalize_optional_text(
+            item.get(
+                "variant_id"
+            )
         )
     )
 
-    product_state = normalize_text(
-        item.get(
-            "product_state"
-        ),
-        (
-            "STOCK_AVAILABLE"
-            if available
-            else "PAGE_LIVE"
-        ),
+    platform_data = (
+        serialize_platform_data(
+            item.get(
+                "platform_data"
+            )
+        )
+    )
+
+    product_state = (
+        normalize_text(
+            item.get(
+                "product_state"
+            ),
+            (
+                "STOCK_AVAILABLE"
+                if available
+                else "PAGE_LIVE"
+            ),
+        )
     )
 
     store_product = StoreProduct(
-        store_id=store.id,
-        product_id=product.id,
-        url=url,
-        sku=sku,
-        variant_id=variant_id,
-        external_product_id=external_product_id,
-        offer_id=offer_id,
-        platform_data=platform_data,
-        purchase_limit=purchase_limit,
-        status=product_state,
-        price=price,
-        currency=currency,
-        in_stock=available,
-        last_seen_at=utcnow(),
+
+        store_id=(
+            store.id
+        ),
+
+        product_id=(
+            product.id
+        ),
+
+        url=(
+            url
+        ),
+
+        sku=(
+            sku
+        ),
+
+        variant_id=(
+            variant_id
+        ),
+
+        external_product_id=(
+            external_product_id
+        ),
+
+        offer_id=(
+            offer_id
+        ),
+
+        platform_data=(
+            platform_data
+        ),
+
+        purchase_limit=(
+            item.get(
+                "purchase_limit"
+            )
+        ),
+
+        status=(
+            product_state
+        ),
+
+        price=(
+            price
+        ),
+
+        currency=(
+            currency
+        ),
+
+        in_stock=(
+            available
+        ),
+
+        last_seen_at=(
+            utcnow()
+        ),
     )
 
     session.add(
@@ -833,9 +1103,42 @@ async def create_store_product(
         currency=currency,
     )
 
-    events: list[ProductEvent] = []
+    events: list[
+        ProductEvent
+    ] = []
 
-    # Every first-seen supported TCG product gets DISCOVERED.
+    # =====================================================
+    # SILENT BASELINE
+    # =====================================================
+
+    if baseline_mode:
+
+        # Normally a newly-discovered available product
+        # would produce:
+        #
+        # DISCOVERED
+        # STOCK_AVAILABLE
+        #
+        # Count what was intentionally suppressed.
+
+        suppressed = (
+            2
+            if available
+            else 1
+        )
+
+        MONITOR_STATUS[
+            "events_suppressed_baseline"
+        ] += suppressed
+
+        return (
+            store_product,
+            events,
+        )
+
+    # =====================================================
+    # NORMAL LIVE DISCOVERY
+    # =====================================================
 
     events.append(
         make_product_event(
@@ -845,12 +1148,6 @@ async def create_store_product(
             in_stock=available,
         )
     )
-
-    # If it is already purchasable on first discovery,
-    # produce the stock event as well.
-    #
-    # This preserves discovery intelligence separately from
-    # immediate availability.
 
     if available:
 
@@ -870,7 +1167,7 @@ async def create_store_product(
 
 
 # =========================================================
-# EXISTING PRODUCT UPDATE
+# UPDATE STORE PRODUCT
 # =========================================================
 
 async def update_store_product(
@@ -881,7 +1178,9 @@ async def update_store_product(
     item: dict[str, Any],
 ) -> list[ProductEvent]:
 
-    events: list[ProductEvent] = []
+    events: list[
+        ProductEvent
+    ] = []
 
     old_stock = bool(
         store_product.in_stock
@@ -914,64 +1213,81 @@ async def update_store_product(
         or old_currency
     )
 
+
     # =====================================================
-    # IDENTIFIERS / METADATA
+    # UPDATE IDENTIFIERS
     # =====================================================
 
-    new_external_product_id = normalize_optional_text(
-        item.get(
-            "external_product_id"
-        )
-        or item.get(
-            "external_id"
-        )
-    )
-
-    new_offer_id = normalize_optional_text(
-        item.get(
-            "offer_id"
+    new_external_product_id = (
+        normalize_optional_text(
+            item.get(
+                "external_product_id"
+            )
+            or
+            item.get(
+                "external_id"
+            )
         )
     )
 
-    new_sku = normalize_optional_text(
-        item.get(
-            "sku"
+    new_offer_id = (
+        normalize_optional_text(
+            item.get(
+                "offer_id"
+            )
         )
     )
 
-    new_variant_id = normalize_optional_text(
-        item.get(
-            "variant_id"
+    new_sku = (
+        normalize_optional_text(
+            item.get(
+                "sku"
+            )
         )
     )
 
-    new_platform_data = serialize_platform_data(
-        item.get(
-            "platform_data"
+    new_variant_id = (
+        normalize_optional_text(
+            item.get(
+                "variant_id"
+            )
+        )
+    )
+
+    new_platform_data = (
+        serialize_platform_data(
+            item.get(
+                "platform_data"
+            )
         )
     )
 
     if new_external_product_id is not None:
+
         store_product.external_product_id = (
             new_external_product_id
         )
 
     if new_offer_id is not None:
+
         store_product.offer_id = (
             new_offer_id
         )
 
     if new_sku is not None:
+
         store_product.sku = (
             new_sku
         )
 
     if new_variant_id is not None:
+
         store_product.variant_id = (
             new_variant_id
         )
 
     if new_platform_data is not None:
+
         store_product.platform_data = (
             new_platform_data
         )
@@ -985,6 +1301,7 @@ async def update_store_product(
                 "purchase_limit"
             )
         )
+
 
     # =====================================================
     # STOCK TRANSITIONS
@@ -1028,6 +1345,7 @@ async def update_store_product(
             "sold_out"
         ] += 1
 
+
     # =====================================================
     # PRICE TRANSITIONS
     # =====================================================
@@ -1036,9 +1354,12 @@ async def update_store_product(
 
     if (
         old_price is not None
-        and new_price is not None
-        and old_currency == new_currency
-        and old_price != new_price
+        and
+        new_price is not None
+        and
+        old_currency == new_currency
+        and
+        old_price != new_price
     ):
 
         price_changed = True
@@ -1055,7 +1376,7 @@ async def update_store_product(
                 )
             )
 
-        elif new_price > old_price:
+        else:
 
             events.append(
                 make_product_event(
@@ -1071,16 +1392,20 @@ async def update_store_product(
             "price_changes"
         ] += 1
 
+
     # =====================================================
     # PRICE HISTORY
     # =====================================================
 
     if (
         new_price is not None
-        and (
+        and
+        (
             old_price is None
-            or price_changed
-            or old_currency != new_currency
+            or
+            price_changed
+            or
+            old_currency != new_currency
         )
     ):
 
@@ -1090,6 +1415,7 @@ async def update_store_product(
             price=new_price,
             currency=new_currency,
         )
+
 
     # =====================================================
     # CURRENT STATE
@@ -1107,15 +1433,17 @@ async def update_store_product(
         new_stock
     )
 
-    store_product.status = normalize_text(
-        item.get(
-            "product_state"
-        ),
-        (
-            "STOCK_AVAILABLE"
-            if new_stock
-            else "PAGE_LIVE"
-        ),
+    store_product.status = (
+        normalize_text(
+            item.get(
+                "product_state"
+            ),
+            (
+                "STOCK_AVAILABLE"
+                if new_stock
+                else "PAGE_LIVE"
+            ),
+        )
     )
 
     store_product.last_seen_at = (
@@ -1126,25 +1454,40 @@ async def update_store_product(
 
 
 # =========================================================
-# PROCESS ONE NORMALIZED PRODUCT
+# PROCESS ONE PRODUCT
 # =========================================================
 
 async def process_normalized_product(
     *,
     store: Store,
     item: dict[str, Any],
+    baseline_mode: bool = False,
 ) -> dict[str, Any]:
 
     result = {
-        "processed": False,
-        "created": False,
-        "updated": False,
-        "events": 0,
-        "reason": None,
+
+        "processed":
+            False,
+
+        "created":
+            False,
+
+        "updated":
+            False,
+
+        "events":
+            0,
+
+        "suppressed":
+            0,
+
+        "reason":
+            None,
     }
 
+
     # =====================================================
-    # BASIC VALIDATION
+    # VALIDATION
     # =====================================================
 
     if not isinstance(
@@ -1157,6 +1500,7 @@ async def process_normalized_product(
         ] = "INVALID_ITEM"
 
         return result
+
 
     game = normalize_text(
         item.get(
@@ -1176,6 +1520,7 @@ async def process_normalized_product(
         )
     )
 
+
     if not game:
 
         result[
@@ -1183,6 +1528,7 @@ async def process_normalized_product(
         ] = "NO_SUPPORTED_GAME"
 
         return result
+
 
     if not title:
 
@@ -1192,6 +1538,7 @@ async def process_normalized_product(
 
         return result
 
+
     if not url:
 
         result[
@@ -1200,8 +1547,9 @@ async def process_normalized_product(
 
         return result
 
+
     # =====================================================
-    # NORMALIZE ITEM
+    # NORMALIZE
     # =====================================================
 
     item = dict(
@@ -1222,37 +1570,49 @@ async def process_normalized_product(
 
     item[
         "product_family"
-    ] = normalize_product_family(
-        item.get(
-            "product_family"
+    ] = (
+        normalize_product_family(
+            item.get(
+                "product_family"
+            )
         )
     )
 
     item[
         "product_category"
-    ] = normalize_product_category(
-        item.get(
-            "product_category"
+    ] = (
+        normalize_product_category(
+            item.get(
+                "product_category"
+            )
         )
     )
 
     item[
         "currency"
-    ] = normalize_currency(
-        item.get(
-            "currency"
+    ] = (
+        normalize_currency(
+            item.get(
+                "currency"
+            )
         )
     )
 
     item[
         "available"
-    ] = normalize_bool(
-        item.get(
-            "available"
+    ] = (
+        normalize_bool(
+            item.get(
+                "available"
+            )
         )
     )
 
-    events_to_send: list[ProductEvent] = []
+
+    events_to_send: list[
+        ProductEvent
+    ] = []
+
 
     # =====================================================
     # DATABASE TRANSACTION
@@ -1270,25 +1630,35 @@ async def process_normalized_product(
                 )
             )
 
+
+            # =================================================
+            # NEW PRODUCT
+            # =================================================
+
             if store_product is None:
 
                 (
                     product,
-                    product_created,
-                ) = await get_or_create_product(
-                    session,
-                    item=item,
-                    store=store,
+                    _product_created,
+                ) = (
+                    await get_or_create_product(
+                        session,
+                        item=item,
+                        store=store,
+                    )
                 )
 
                 (
                     store_product,
                     new_events,
-                ) = await create_store_product(
-                    session,
-                    store=store,
-                    product=product,
-                    item=item,
+                ) = (
+                    await create_store_product(
+                        session,
+                        store=store,
+                        product=product,
+                        item=item,
+                        baseline_mode=baseline_mode,
+                    )
                 )
 
                 events_to_send.extend(
@@ -1299,6 +1669,18 @@ async def process_normalized_product(
                     "created"
                 ] = True
 
+                if baseline_mode:
+
+                    result[
+                        "suppressed"
+                    ] = (
+                        2
+                        if item[
+                            "available"
+                        ]
+                        else 1
+                    )
+
                 MONITOR_STATUS[
                     "products_created"
                 ] += 1
@@ -1307,19 +1689,24 @@ async def process_normalized_product(
                     (
                         "UNIVERSAL PRODUCT DISCOVERED | "
                         "Store=%s | "
+                        "Baseline=%s | "
                         "Game=%s | "
                         "Family=%s | "
-                        "Title=%s | "
-                        "URL=%s"
+                        "Title=%s"
                     ),
                     store.name,
+                    baseline_mode,
                     game,
                     item[
                         "product_family"
                     ],
                     title,
-                    url,
                 )
+
+
+            # =================================================
+            # EXISTING PRODUCT
+            # =================================================
 
             else:
 
@@ -1344,9 +1731,6 @@ async def process_normalized_product(
                     .scalar_one_or_none()
                 )
 
-                # Keep normalized product classification
-                # current if the underlying Product exists.
-
                 if product is not None:
 
                     product.game = (
@@ -1357,12 +1741,14 @@ async def process_normalized_product(
                         title
                     )
 
-                    product.product_type = normalize_text(
-                        item.get(
-                            "product_type"
-                        ),
-                        product.product_type
-                        or "TCG Product",
+                    product.product_type = (
+                        normalize_text(
+                            item.get(
+                                "product_type"
+                            ),
+                            product.product_type
+                            or "TCG Product",
+                        )
                     )
 
                     product.product_category = (
@@ -1377,14 +1763,18 @@ async def process_normalized_product(
                         ]
                     )
 
-                    product.region = normalize_region(
-                        store.region
+                    product.region = (
+                        normalize_region(
+                            store.region
+                        )
                     )
 
-                    product.language = family_language(
-                        item[
-                            "product_family"
-                        ]
+                    product.language = (
+                        family_language(
+                            item[
+                                "product_family"
+                            ]
+                        )
                     )
 
                 update_events = (
@@ -1408,20 +1798,20 @@ async def process_normalized_product(
                     "products_updated"
                 ] += 1
 
-            # -------------------------------------------------
-            # CRITICAL:
-            #
-            # Commit state BEFORE publishing events.
-            # -------------------------------------------------
+
+            # =================================================
+            # COMMIT BEFORE EVENT PUBLISH
+            # =================================================
 
             await session.commit()
+
 
     except Exception as error:
 
         result[
             "reason"
         ] = (
-            f"DATABASE_ERROR:"
+            "DATABASE_ERROR:"
             f"{type(error).__name__}"
         )
 
@@ -1439,8 +1829,9 @@ async def process_normalized_product(
 
         return result
 
+
     # =====================================================
-    # PUBLISH EVENTS AFTER COMMIT
+    # PUBLISH
     # =====================================================
 
     published_events = 0
@@ -1475,12 +1866,6 @@ async def process_normalized_product(
 
         except Exception:
 
-            # The DB state has already been committed.
-            #
-            # A Redis/Discord pipeline problem must not roll
-            # retailer state backward and cause false repeated
-            # restocks on the next scan.
-
             logger.exception(
                 (
                     "UNIVERSAL EVENT PUBLISH ERROR | "
@@ -1492,6 +1877,7 @@ async def process_normalized_product(
                 game,
                 title,
             )
+
 
     result[
         "processed"
@@ -1513,21 +1899,51 @@ async def scan_store(
 ) -> dict[str, Any]:
 
     result = {
-        "store_id": store.id,
-        "store_name": store.name,
-        "domain": store.domain,
-        "platform": store.platform,
-        "success": False,
-        "products": 0,
-        "created": 0,
-        "updated": 0,
-        "events": 0,
-        "error": None,
+
+        "store_id":
+            store.id,
+
+        "store_name":
+            store.name,
+
+        "domain":
+            store.domain,
+
+        "platform":
+            store.platform,
+
+        "baseline_mode":
+            False,
+
+        "success":
+            False,
+
+        "products":
+            0,
+
+        "created":
+            0,
+
+        "updated":
+            0,
+
+        "events":
+            0,
+
+        "suppressed":
+            0,
+
+        "error":
+            None,
     }
 
-    platform = normalize_platform(
-        store.platform
+
+    platform = (
+        normalize_platform(
+            store.platform
+        )
     )
+
 
     if platform == "shopify":
 
@@ -1537,6 +1953,7 @@ async def scan_store(
 
         return result
 
+
     if not store.domain:
 
         result[
@@ -1544,6 +1961,14 @@ async def scan_store(
         ] = "NO_DOMAIN"
 
         return result
+
+
+    # =====================================================
+    # ENSURE ADAPTER REGISTRATION
+    # =====================================================
+
+    ensure_retailer_adapters_loaded()
+
 
     # =====================================================
     # BUILD ADAPTER
@@ -1562,7 +1987,7 @@ async def scan_store(
         result[
             "error"
         ] = (
-            f"ADAPTER_ERROR:"
+            "ADAPTER_ERROR:"
             f"{type(error).__name__}:"
             f"{error}"
         )
@@ -1579,14 +2004,21 @@ async def scan_store(
 
         return result
 
+
     # =====================================================
-    # FETCH NORMALIZED PRODUCTS
+    # FETCH PRODUCTS FIRST
+    #
+    # IMPORTANT:
+    #
+    # We don't establish an empty baseline if the retailer
+    # failed to return products.
     # =====================================================
 
     try:
 
         products = (
-            await adapter.get_normalized_products()
+            await adapter
+            .get_normalized_products()
         )
 
     except Exception as error:
@@ -1594,7 +2026,7 @@ async def scan_store(
         result[
             "error"
         ] = (
-            f"FETCH_ERROR:"
+            "FETCH_ERROR:"
             f"{type(error).__name__}:"
             f"{error}"
         )
@@ -1613,10 +2045,12 @@ async def scan_store(
 
         return result
 
+
     products = (
         products
         or []
     )
+
 
     result[
         "products"
@@ -1624,25 +2058,77 @@ async def scan_store(
         products
     )
 
+
     MONITOR_STATUS[
         "products_seen"
     ] += len(
         products
     )
 
-    logger.info(
-        (
-            "UNIVERSAL STORE SCAN | "
-            "Store=%s | "
-            "Platform=%s | "
-            "Products=%s"
-        ),
-        store.name,
-        platform,
-        len(
-            products
-        ),
+
+    # =====================================================
+    # EMPTY RESULT SAFETY
+    # =====================================================
+
+    if not products:
+
+        result[
+            "error"
+        ] = "NO_PRODUCTS_RETURNED"
+
+        logger.warning(
+            (
+                "UNIVERSAL EMPTY SCAN | "
+                "Store=%s | "
+                "Platform=%s | "
+                "Baseline NOT established"
+            ),
+            store.name,
+            platform,
+        )
+
+        return result
+
+
+    # =====================================================
+    # BASELINE CHECK
+    # =====================================================
+
+    has_baseline = (
+        await store_has_baseline(
+            store.id
+        )
     )
+
+    baseline_mode = (
+        not has_baseline
+    )
+
+    result[
+        "baseline_mode"
+    ] = baseline_mode
+
+
+    if baseline_mode:
+
+        MONITOR_STATUS[
+            "stores_baselined"
+        ] += 1
+
+        logger.info(
+            (
+                "UNIVERSAL BASELINE START | "
+                "Store=%s | "
+                "Platform=%s | "
+                "Products=%s"
+            ),
+            store.name,
+            platform,
+            len(
+                products
+            ),
+        )
+
 
     # =====================================================
     # PROCESS PRODUCTS
@@ -1656,6 +2142,7 @@ async def scan_store(
                 await process_normalized_product(
                     store=store,
                     item=item,
+                    baseline_mode=baseline_mode,
                 )
             )
 
@@ -1671,6 +2158,7 @@ async def scan_store(
 
             continue
 
+
         if product_result.get(
             "created"
         ):
@@ -1679,6 +2167,7 @@ async def scan_store(
                 "created"
             ] += 1
 
+
         if product_result.get(
             "updated"
         ):
@@ -1686,6 +2175,7 @@ async def scan_store(
             result[
                 "updated"
             ] += 1
+
 
         result[
             "events"
@@ -1697,15 +2187,55 @@ async def scan_store(
             or 0
         )
 
+
+        result[
+            "suppressed"
+        ] += int(
+            product_result.get(
+                "suppressed",
+                0,
+            )
+            or 0
+        )
+
+
+    # =====================================================
+    # SUCCESS
+    # =====================================================
+
     result[
         "success"
     ] = True
+
+
+    if baseline_mode:
+
+        logger.info(
+            (
+                "UNIVERSAL BASELINE COMPLETE | "
+                "Store=%s | "
+                "Products=%s | "
+                "Created=%s | "
+                "SuppressedEvents=%s"
+            ),
+            store.name,
+            result[
+                "products"
+            ],
+            result[
+                "created"
+            ],
+            result[
+                "suppressed"
+            ],
+        )
+
 
     return result
 
 
 # =========================================================
-# LOAD UNIVERSAL STORES
+# LOAD ACTIVE UNIVERSAL STORES
 # =========================================================
 
 async def get_active_universal_stores() -> list[Store]:
@@ -1729,67 +2259,66 @@ async def get_active_universal_stores() -> list[Store]:
             )
         )
 
-        result = await session.execute(
-            statement
+        result = (
+            await session.execute(
+                statement
+            )
         )
 
         stores = list(
             result.scalars().all()
         )
 
+
     universal_stores = []
+
 
     for store in stores:
 
-        platform = normalize_platform(
-            store.platform
+        platform = (
+            normalize_platform(
+                store.platform
+            )
         )
 
-        # Shopify is deliberately isolated.
+
+        # Shopify has its own mature monitor.
 
         if platform == "shopify":
             continue
 
-        # Pokémon Center already has its own monitor.
+
+        # Pokémon Center has its own monitor.
 
         if platform == "pokemon_center":
             continue
 
-        # Existing specialized major-retailer monitoring
-        # should not accidentally be pulled into this monitor.
+
+        # Existing specialized major retailer path.
 
         if platform == "major_retailer":
             continue
 
+
         if (
             platform
-            in SUPPORTED_UNIVERSAL_PLATFORMS
+            in
+            SUPPORTED_UNIVERSAL_PLATFORMS
         ):
 
             universal_stores.append(
                 store
             )
 
+
     return universal_stores
 
 
 # =========================================================
-# SCAN ALL STORES
+# RESET CYCLE STATUS
 # =========================================================
 
-async def scan_all_universal_stores() -> dict[str, Any]:
-
-    started_at = utcnow()
-
-    MONITOR_STATUS[
-        "last_scan_started_at"
-    ] = started_at.isoformat()
-
-    MONITOR_STATUS[
-        "last_error"
-    ] = None
-
-    # Per-cycle counters.
+def reset_cycle_status() -> None:
 
     MONITOR_STATUS[
         "stores_scanned"
@@ -1797,6 +2326,10 @@ async def scan_all_universal_stores() -> dict[str, Any]:
 
     MONITOR_STATUS[
         "stores_failed"
+    ] = 0
+
+    MONITOR_STATUS[
+        "stores_baselined"
     ] = 0
 
     MONITOR_STATUS[
@@ -1816,6 +2349,10 @@ async def scan_all_universal_stores() -> dict[str, Any]:
     ] = 0
 
     MONITOR_STATUS[
+        "events_suppressed_baseline"
+    ] = 0
+
+    MONITOR_STATUS[
         "price_changes"
     ] = 0
 
@@ -1827,20 +2364,57 @@ async def scan_all_universal_stores() -> dict[str, Any]:
         "sold_out"
     ] = 0
 
+
+# =========================================================
+# SCAN ALL
+# =========================================================
+
+async def scan_all_universal_stores() -> dict[str, Any]:
+
+    ensure_retailer_adapters_loaded()
+
+    reset_cycle_status()
+
+
+    started_at = (
+        utcnow()
+    )
+
+
+    MONITOR_STATUS[
+        "last_scan_started_at"
+    ] = (
+        started_at.isoformat()
+    )
+
+
+    MONITOR_STATUS[
+        "last_error"
+    ] = None
+
+
     summary = {
-        "success": True,
-        "stores": [],
-        "started_at": (
-            started_at.isoformat()
-        ),
-        "completed_at": None,
+
+        "success":
+            True,
+
+        "stores":
+            [],
+
+        "started_at":
+            started_at.isoformat(),
+
+        "completed_at":
+            None,
     }
+
 
     try:
 
         stores = (
             await get_active_universal_stores()
         )
+
 
         logger.info(
             (
@@ -1852,11 +2426,13 @@ async def scan_all_universal_stores() -> dict[str, Any]:
             ),
         )
 
+
         for store in stores:
 
             MONITOR_STATUS[
                 "stores_scanned"
             ] += 1
+
 
             try:
 
@@ -1866,11 +2442,13 @@ async def scan_all_universal_stores() -> dict[str, Any]:
                     )
                 )
 
+
                 summary[
                     "stores"
                 ].append(
                     store_result
                 )
+
 
                 if not store_result.get(
                     "success"
@@ -1880,11 +2458,13 @@ async def scan_all_universal_stores() -> dict[str, Any]:
                         "stores_failed"
                     ] += 1
 
+
             except Exception as error:
 
                 MONITOR_STATUS[
                     "stores_failed"
                 ] += 1
+
 
                 logger.exception(
                     (
@@ -1894,10 +2474,12 @@ async def scan_all_universal_stores() -> dict[str, Any]:
                     store.name,
                 )
 
+
                 summary[
                     "stores"
                 ].append(
                     {
+
                         "store_id":
                             store.id,
 
@@ -1915,47 +2497,75 @@ async def scan_all_universal_stores() -> dict[str, Any]:
                     }
                 )
 
-        completed_at = utcnow()
+
+        completed_at = (
+            utcnow()
+        )
+
 
         MONITOR_STATUS[
             "last_scan_completed_at"
-        ] = completed_at.isoformat()
+        ] = (
+            completed_at.isoformat()
+        )
+
 
         summary[
             "completed_at"
-        ] = completed_at.isoformat()
+        ] = (
+            completed_at.isoformat()
+        )
+
 
         logger.info(
             (
                 "UNIVERSAL SCAN COMPLETE | "
                 "Stores=%s | "
                 "Failed=%s | "
+                "Baselined=%s | "
                 "Products=%s | "
                 "Created=%s | "
                 "Updated=%s | "
-                "Events=%s"
+                "Events=%s | "
+                "Suppressed=%s"
             ),
+
             MONITOR_STATUS[
                 "stores_scanned"
             ],
+
             MONITOR_STATUS[
                 "stores_failed"
             ],
+
+            MONITOR_STATUS[
+                "stores_baselined"
+            ],
+
             MONITOR_STATUS[
                 "products_seen"
             ],
+
             MONITOR_STATUS[
                 "products_created"
             ],
+
             MONITOR_STATUS[
                 "products_updated"
             ],
+
             MONITOR_STATUS[
                 "events_created"
             ],
+
+            MONITOR_STATUS[
+                "events_suppressed_baseline"
+            ],
         )
 
+
         return summary
+
 
     except Exception as error:
 
@@ -1966,13 +2576,16 @@ async def scan_all_universal_stores() -> dict[str, Any]:
             f"{error}"
         )
 
+
         summary[
             "success"
         ] = False
 
+
         logger.exception(
             "UNIVERSAL SCAN FATAL ERROR"
         )
+
 
         return summary
 
@@ -1992,19 +2605,28 @@ async def run_universal_retailer_monitor(
         30,
     )
 
+
     if MONITOR_STATUS[
         "running"
     ]:
 
         logger.warning(
-            "Universal retailer monitor is already running."
+            (
+                "Universal retailer monitor "
+                "is already running."
+            )
         )
 
         return
 
+
+    ensure_retailer_adapters_loaded()
+
+
     MONITOR_STATUS[
         "running"
     ] = True
+
 
     logger.info(
         (
@@ -2016,6 +2638,7 @@ async def run_universal_retailer_monitor(
         scan_interval,
     )
 
+
     try:
 
         while True:
@@ -2024,8 +2647,11 @@ async def run_universal_retailer_monitor(
 
                 await scan_all_universal_stores()
 
+
             except asyncio.CancelledError:
+
                 raise
+
 
             except Exception as error:
 
@@ -2036,21 +2662,28 @@ async def run_universal_retailer_monitor(
                     f"{error}"
                 )
 
+
                 logger.exception(
                     "UNIVERSAL MONITOR LOOP ERROR"
                 )
+
 
             await asyncio.sleep(
                 scan_interval
             )
 
+
     except asyncio.CancelledError:
 
         logger.info(
-            "Universal retailer monitor stopped."
+            (
+                "Universal retailer "
+                "monitor stopped."
+            )
         )
 
         raise
+
 
     finally:
 
@@ -2071,18 +2704,14 @@ def get_universal_retailer_monitor_status() -> dict[str, Any]:
 
 
 # =========================================================
-# MANUAL ONE-SHOT TEST
+# MANUAL ONE-SHOT SCAN
 # =========================================================
 
 async def run_once() -> dict[str, Any]:
 
-    """
-    Useful for a controlled one-cycle scan.
-
-    This does not create a permanent background loop.
-    """
-
-    return await scan_all_universal_stores()
+    return (
+        await scan_all_universal_stores()
+    )
 
 
 # =========================================================
