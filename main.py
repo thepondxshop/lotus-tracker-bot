@@ -4685,6 +4685,13 @@ async def scanshopify(
             )
         )
 
+        categories = (
+            result.get(
+                "categories",
+                {}
+            )
+        )
+
         lines.append(
 
             (
@@ -4693,8 +4700,14 @@ async def scanshopify(
                 f"Currency: "
                 f"`{result.get('currency', 'Unknown')}`\n"
 
+                f"Raw Shopify Products: "
+                f"`{result.get('raw', 0)}`\n"
+
                 f"Relevant TCG Products: "
                 f"`{result['seen']}`\n"
+
+                f"Rejected / Unsupported: "
+                f"`{result.get('rejected', 0)}`\n"
 
                 f"New: "
                 f"`{result['new']}`\n"
@@ -4706,7 +4719,23 @@ async def scanshopify(
                 f"`{result['events']}`\n"
 
                 f"Flickers: "
-                f"`{result['flickers']}`\n"
+                f"`{result['flickers']}`\n\n"
+
+                "**Categories**\n"
+
+                f"\U0001f4e6 Sealed: "
+                f"`{categories.get('SEALED', 0)}` | "
+
+                f"\U0001f0cf Singles: "
+                f"`{categories.get('SINGLE', 0)}` | "
+
+                f"\U0001f9f0 Accessories: "
+                f"`{categories.get('ACCESSORY', 0)}` | "
+
+                f"\u2753 Unknown: "
+                f"`{categories.get('UNKNOWN', 0)}`\n\n"
+
+                "**Families**\n"
 
                 f"\U0001f30e Global: "
                 f"`{families.get('GLOBAL_STANDARD', 0)}` | "
@@ -4791,6 +4820,18 @@ async def shopifystatus(
 
             f"**TCG Products Seen:** "
             f"{data['products_seen']}\n"
+
+            f"**Sealed:** "
+            f"`{data.get('sealed_products', 0)}`\n"
+
+            f"**Singles:** "
+            f"`{data.get('single_products', 0)}`\n"
+
+            f"**Accessories:** "
+            f"`{data.get('accessory_products', 0)}`\n"
+
+            f"**Unknown Category:** "
+            f"`{data.get('unknown_category_products', 0)}`\n"
 
             f"**Events:** "
             f"{data['events_created']}\n"
