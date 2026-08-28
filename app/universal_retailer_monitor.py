@@ -1429,4 +1429,672 @@ async def process_normalized_product(
             (
                 "UNIVERSAL PRODUCT DATABASE ERROR | "
                 "Store=%s | "
-                "Title=%
+                "Title=%s | "
+                "URL=%s"
+            ),
+            store.name,
+            title,
+            url,
+        )
+
+        return result
+
+    # =====================================================
+    # PUBLISH EVENTS AFTER COMMIT
+    # =====================================================
+
+    published_events = 0
+
+    for event in events_to_send:
+
+        try:
+
+            await process_product_event(
+                event
+            )
+
+            published_events += 1
+
+            MONITOR_STATUS[
+                "events_created"
+            ] += 1
+
+            logger.info(
+                (
+                    "UNIVERSAL EVENT | "
+                    "Store=%s | "
+                    "Event=%s | "
+                    "Game=%s | "
+                    "Title=%s"
+                ),
+                store.name,
+                event.event_type,
+                game,
+                title,
+            )
+
+        except Exception:
+
+            # The DB state has already been committed.
+            #
+            # A Redis/Discord pipeline problem must not roll
+            # retailer state backward and cause false repeated
+            # restocks on the next scan.
+
+            logger.exception(
+                (
+                    "UNIVERSAL EVENT PUBLISH ERROR | "
+                    "Store=%s | "
+                    "Game=%s | "
+                    "Title=%s"
+                ),
+                store.name,
+                game,
+                title,
+            )
+
+    result[
+        "processed"
+    ] = True
+
+    result[
+        "events"
+    ] = published_events
+
+    return result
+
+
+# =========================================================
+# SCAN ONE STORE
+# =========================================================
+
+async def scan_store(
+    store: Store,
+) -> dict[str, Any]:
+
+    result = {
+        "store_id": store.id,
+        "store_name": store.name,
+        "domain": store.domain,
+        "platform": store.platform,
+        "success": False,
+        "products": 0,
+        "created": 0,
+        "updated": 0,
+        "events": 0,
+        "error": None,
+    }
+
+    platform = normalize_platform(
+        store.platform
+    )
+
+    if platform == "shopify":
+
+        result[
+            "error"
+        ] = "SHOPIFY_USES_SHOPIFY_MONITOR"
+
+        return result
+
+    if not store.domain:
+
+        result[
+            "error"
+        ] = "NO_DOMAIN"
+
+        return result
+
+    # =====================================================
+    # BUILD ADAPTER
+    # =====================================================
+
+    try:
+
+        adapter = (
+            build_retailer_adapter(
+                store
+            )
+        )
+
+    except Exception as error:
+
+        result[
+            "error"
+        ] = (
+            f"ADAPTER_ERROR:"
+            f"{type(error).__name__}:"
+            f"{error}"
+        )
+
+        logger.exception(
+            (
+                "UNIVERSAL ADAPTER ERROR | "
+                "Store=%s | "
+                "Platform=%s"
+            ),
+            store.name,
+            platform,
+        )
+
+        return result
+
+    # =====================================================
+    # FETCH NORMALIZED PRODUCTS
+    # =====================================================
+
+    try:
+
+        products = (
+            await adapter.get_normalized_products()
+        )
+
+    except Exception as error:
+
+        result[
+            "error"
+        ] = (
+            f"FETCH_ERROR:"
+            f"{type(error).__name__}:"
+            f"{error}"
+        )
+
+        logger.exception(
+            (
+                "UNIVERSAL FETCH ERROR | "
+                "Store=%s | "
+                "Platform=%s | "
+                "Domain=%s"
+            ),
+            store.name,
+            platform,
+            store.domain,
+        )
+
+        return result
+
+    products = (
+        products
+        or []
+    )
+
+    result[
+        "products"
+    ] = len(
+        products
+    )
+
+    MONITOR_STATUS[
+        "products_seen"
+    ] += len(
+        products
+    )
+
+    logger.info(
+        (
+            "UNIVERSAL STORE SCAN | "
+            "Store=%s | "
+            "Platform=%s | "
+            "Products=%s"
+        ),
+        store.name,
+        platform,
+        len(
+            products
+        ),
+    )
+
+    # =====================================================
+    # PROCESS PRODUCTS
+    # =====================================================
+
+    for item in products:
+
+        try:
+
+            product_result = (
+                await process_normalized_product(
+                    store=store,
+                    item=item,
+                )
+            )
+
+        except Exception:
+
+            logger.exception(
+                (
+                    "UNIVERSAL PRODUCT ERROR | "
+                    "Store=%s"
+                ),
+                store.name,
+            )
+
+            continue
+
+        if product_result.get(
+            "created"
+        ):
+
+            result[
+                "created"
+            ] += 1
+
+        if product_result.get(
+            "updated"
+        ):
+
+            result[
+                "updated"
+            ] += 1
+
+        result[
+            "events"
+        ] += int(
+            product_result.get(
+                "events",
+                0,
+            )
+            or 0
+        )
+
+    result[
+        "success"
+    ] = True
+
+    return result
+
+
+# =========================================================
+# LOAD UNIVERSAL STORES
+# =========================================================
+
+async def get_active_universal_stores() -> list[Store]:
+
+    async with SessionLocal() as session:
+
+        statement = (
+            select(
+                Store
+            )
+            .where(
+                Store.active.is_(
+                    True
+                )
+            )
+            .order_by(
+                Store.id.asc()
+            )
+            .limit(
+                MAX_STORES_PER_CYCLE
+            )
+        )
+
+        result = await session.execute(
+            statement
+        )
+
+        stores = list(
+            result.scalars().all()
+        )
+
+    universal_stores = []
+
+    for store in stores:
+
+        platform = normalize_platform(
+            store.platform
+        )
+
+        # Shopify is deliberately isolated.
+
+        if platform == "shopify":
+            continue
+
+        # Pokémon Center already has its own monitor.
+
+        if platform == "pokemon_center":
+            continue
+
+        # Existing specialized major-retailer monitoring
+        # should not accidentally be pulled into this monitor.
+
+        if platform == "major_retailer":
+            continue
+
+        if (
+            platform
+            in SUPPORTED_UNIVERSAL_PLATFORMS
+        ):
+
+            universal_stores.append(
+                store
+            )
+
+    return universal_stores
+
+
+# =========================================================
+# SCAN ALL STORES
+# =========================================================
+
+async def scan_all_universal_stores() -> dict[str, Any]:
+
+    started_at = utcnow()
+
+    MONITOR_STATUS[
+        "last_scan_started_at"
+    ] = started_at.isoformat()
+
+    MONITOR_STATUS[
+        "last_error"
+    ] = None
+
+    # Per-cycle counters.
+
+    MONITOR_STATUS[
+        "stores_scanned"
+    ] = 0
+
+    MONITOR_STATUS[
+        "stores_failed"
+    ] = 0
+
+    MONITOR_STATUS[
+        "products_seen"
+    ] = 0
+
+    MONITOR_STATUS[
+        "products_created"
+    ] = 0
+
+    MONITOR_STATUS[
+        "products_updated"
+    ] = 0
+
+    MONITOR_STATUS[
+        "events_created"
+    ] = 0
+
+    MONITOR_STATUS[
+        "price_changes"
+    ] = 0
+
+    MONITOR_STATUS[
+        "restocks"
+    ] = 0
+
+    MONITOR_STATUS[
+        "sold_out"
+    ] = 0
+
+    summary = {
+        "success": True,
+        "stores": [],
+        "started_at": (
+            started_at.isoformat()
+        ),
+        "completed_at": None,
+    }
+
+    try:
+
+        stores = (
+            await get_active_universal_stores()
+        )
+
+        logger.info(
+            (
+                "UNIVERSAL SCAN START | "
+                "Stores=%s"
+            ),
+            len(
+                stores
+            ),
+        )
+
+        for store in stores:
+
+            MONITOR_STATUS[
+                "stores_scanned"
+            ] += 1
+
+            try:
+
+                store_result = (
+                    await scan_store(
+                        store
+                    )
+                )
+
+                summary[
+                    "stores"
+                ].append(
+                    store_result
+                )
+
+                if not store_result.get(
+                    "success"
+                ):
+
+                    MONITOR_STATUS[
+                        "stores_failed"
+                    ] += 1
+
+            except Exception as error:
+
+                MONITOR_STATUS[
+                    "stores_failed"
+                ] += 1
+
+                logger.exception(
+                    (
+                        "UNIVERSAL STORE FATAL ERROR | "
+                        "Store=%s"
+                    ),
+                    store.name,
+                )
+
+                summary[
+                    "stores"
+                ].append(
+                    {
+                        "store_id":
+                            store.id,
+
+                        "store_name":
+                            store.name,
+
+                        "success":
+                            False,
+
+                        "error":
+                            (
+                                f"{type(error).__name__}:"
+                                f"{error}"
+                            ),
+                    }
+                )
+
+        completed_at = utcnow()
+
+        MONITOR_STATUS[
+            "last_scan_completed_at"
+        ] = completed_at.isoformat()
+
+        summary[
+            "completed_at"
+        ] = completed_at.isoformat()
+
+        logger.info(
+            (
+                "UNIVERSAL SCAN COMPLETE | "
+                "Stores=%s | "
+                "Failed=%s | "
+                "Products=%s | "
+                "Created=%s | "
+                "Updated=%s | "
+                "Events=%s"
+            ),
+            MONITOR_STATUS[
+                "stores_scanned"
+            ],
+            MONITOR_STATUS[
+                "stores_failed"
+            ],
+            MONITOR_STATUS[
+                "products_seen"
+            ],
+            MONITOR_STATUS[
+                "products_created"
+            ],
+            MONITOR_STATUS[
+                "products_updated"
+            ],
+            MONITOR_STATUS[
+                "events_created"
+            ],
+        )
+
+        return summary
+
+    except Exception as error:
+
+        MONITOR_STATUS[
+            "last_error"
+        ] = (
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        summary[
+            "success"
+        ] = False
+
+        logger.exception(
+            "UNIVERSAL SCAN FATAL ERROR"
+        )
+
+        return summary
+
+
+# =========================================================
+# CONTINUOUS MONITOR
+# =========================================================
+
+async def run_universal_retailer_monitor(
+    scan_interval: int = DEFAULT_SCAN_INTERVAL,
+) -> None:
+
+    scan_interval = max(
+        int(
+            scan_interval
+        ),
+        30,
+    )
+
+    if MONITOR_STATUS[
+        "running"
+    ]:
+
+        logger.warning(
+            "Universal retailer monitor is already running."
+        )
+
+        return
+
+    MONITOR_STATUS[
+        "running"
+    ] = True
+
+    logger.info(
+        (
+            "UNIVERSAL RETAILER MONITOR STARTED | "
+            "Version=%s | "
+            "Interval=%ss"
+        ),
+        VERSION,
+        scan_interval,
+    )
+
+    try:
+
+        while True:
+
+            try:
+
+                await scan_all_universal_stores()
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as error:
+
+                MONITOR_STATUS[
+                    "last_error"
+                ] = (
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+
+                logger.exception(
+                    "UNIVERSAL MONITOR LOOP ERROR"
+                )
+
+            await asyncio.sleep(
+                scan_interval
+            )
+
+    except asyncio.CancelledError:
+
+        logger.info(
+            "Universal retailer monitor stopped."
+        )
+
+        raise
+
+    finally:
+
+        MONITOR_STATUS[
+            "running"
+        ] = False
+
+
+# =========================================================
+# STATUS
+# =========================================================
+
+def get_universal_retailer_monitor_status() -> dict[str, Any]:
+
+    return dict(
+        MONITOR_STATUS
+    )
+
+
+# =========================================================
+# MANUAL ONE-SHOT TEST
+# =========================================================
+
+async def run_once() -> dict[str, Any]:
+
+    """
+    Useful for a controlled one-cycle scan.
+
+    This does not create a permanent background loop.
+    """
+
+    return await scan_all_universal_stores()
+
+
+# =========================================================
+# DIRECT EXECUTION
+# =========================================================
+
+if __name__ == "__main__":
+
+    logging.basicConfig(
+        level=logging.INFO,
+    )
+
+    asyncio.run(
+        run_once()
+    )
