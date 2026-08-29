@@ -25,7 +25,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6C - Discovery Diagnostics
+# Step 6D - TCG-Aware Discovery + Diagnostics
 #
 # SAFETY:
 # - public storefront pages only
@@ -44,9 +44,72 @@ USER_AGENT = (
 )
 
 DEFAULT_TIMEOUT = 15
-DEFAULT_REQUEST_DELAY = 1.0
-MAX_DISCOVERY_PAGES = 20
-MAX_PRODUCT_PAGES = 150
+DEFAULT_REQUEST_DELAY = 0.65
+MAX_DISCOVERY_PAGES = 30
+MAX_PRODUCT_PAGES = 200
+
+# Discover broadly, but only fetch a bounded number of product pages.
+# This prevents a large comic/game store from hiding TCG products beyond
+# the first alphabetically sorted product URLs.
+MAX_DISCOVERED_PRODUCT_URLS = 1200
+
+# Search/catalog seeds are public storefront pages only.
+TCG_DISCOVERY_PATHS = (
+    "/",
+    "/store",
+    "/shop",
+    "/shop-all",
+    "/s/shop",
+    "/s/search",
+    "/s/search?q=tcg",
+    "/s/search?q=trading+card",
+    "/s/search?q=one+piece",
+    "/s/search?q=pokemon",
+    "/s/search?q=gundam",
+    "/s/search?q=riftbound",
+    "/s/search?q=dragon+ball+fusion+world",
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+)
+
+# These terms are used only to PRIORITIZE which already-discovered public
+# product URLs are fetched first. They do not determine the game. Final
+# game classification remains strict and title-based in classify_game().
+TCG_URL_PRIORITY_TERMS = (
+    "one-piece",
+    "onepiece",
+    "pokemon",
+    "pok%C3%A9mon",
+    "gundam",
+    "riftbound",
+    "fusion-world",
+    "dragon-ball",
+    "palworld",
+    "naruto",
+    "cyberpunk",
+    "azuki",
+    "hellbreak",
+    "tcg",
+    "trading-card",
+    "card-game",
+    "booster",
+    "starter-deck",
+    "elite-trainer",
+)
+
+TCG_URL_NEGATIVE_TERMS = (
+    "comic",
+    "graphic-novel",
+    "manga",
+    "statue",
+    "figure",
+    "miniature",
+    "warhammer",
+    "magic-the-gathering",
+    "yu-gi-oh",
+    "yugioh",
+    "lorcana",
+)
 
 
 # =========================================================
@@ -223,11 +286,11 @@ UNSUPPORTED_GAME_TERMS = (
 GAME_PATTERNS = {
     "Pokemon": (
         "pokemon tcg",
-        "pokÃ©mon tcg",
+        "pok\u00e9mon tcg",
         "pokemon trading card",
-        "pokÃ©mon trading card",
+        "pok\u00e9mon trading card",
         "pokemon card game",
-        "pokÃ©mon card game",
+        "pok\u00e9mon card game",
     ),
     "Gundam": (
         "gundam card game",
@@ -428,11 +491,68 @@ def classify_game(title):
     return None
 
 
+ONE_PIECE_CARD_NUMBER_PATTERN = re.compile(
+    r"\b(?:OP|EB|PRB|ST|EX)\d{1,2}-\d{2,4}\b",
+    re.IGNORECASE,
+)
+
+ONE_PIECE_PROMO_CARD_PATTERN = re.compile(
+    r"\bP-\d{1,4}\b",
+    re.IGNORECASE,
+)
+
+
+def has_strong_single_card_evidence(title):
+    """
+    Strong evidence for an individual card.
+
+    Important distinction:
+    - ST-30 / OP-13 can identify a sealed set/deck.
+    - ST30-004 / OP13-001 identify an individual card number.
+
+    We intentionally do not classify a product as SINGLE from words such
+    as "foil" or "full art" alone because sealed collections may contain
+    foil/promotional cards.
+    """
+
+    text = clean_text(title)
+
+    if ONE_PIECE_CARD_NUMBER_PATTERN.search(text):
+        return True
+
+    lowered = text.lower()
+
+    if (
+        "one piece" in lowered
+        and ONE_PIECE_PROMO_CARD_PATTERN.search(text)
+    ):
+        return True
+
+    explicit_single_terms = (
+        "single card",
+        "tcg single",
+        "card single",
+        "singles",
+        "individual card",
+    )
+
+    return any(
+        term in lowered
+        for term in explicit_single_terms
+    )
+
+
 def classify_product_category(title):
     text = clean_text(title).lower()
 
-    # Sealed first so phrases such as "deck box set" do not
-    # get downgraded to ACCESSORY.
+    # Strong individual-card evidence must beat contextual sealed wording.
+    # Example:
+    # "Emporio.Ivankov (Full Art) (ST30-004) - Starter Deck EX..."
+    # is a SINGLE even though the source set name contains "Starter Deck".
+    if has_strong_single_card_evidence(title):
+        return "SINGLE"
+
+    # Sealed still beats ACCESSORY for true products such as "deck box set".
     for keyword in SEALED_KEYWORDS:
         if keyword in text:
             return "SEALED"
@@ -450,6 +570,9 @@ def classify_product_category(title):
 
 def infer_product_type(title):
     text = clean_text(title).lower()
+
+    if has_strong_single_card_evidence(title):
+        return "Single Card"
 
     mappings = (
         (("elite trainer box", " etb"), "Elite Trainer Box"),
@@ -635,6 +758,43 @@ def parse_product_id_from_url(url):
     return match.group(1)
 
 
+def product_url_priority_score(url):
+    """
+    Rank already-discovered public product URLs for fetch order.
+
+    This is discovery prioritization only. It is NOT game classification.
+    """
+
+    lowered = str(url or "").lower()
+
+    score = 0
+
+    for term in TCG_URL_PRIORITY_TERMS:
+        if term.lower() in lowered:
+            score += 20
+
+    for term in TCG_URL_NEGATIVE_TERMS:
+        if term.lower() in lowered:
+            score -= 10
+
+    # Product slugs that look like sealed TCG inventory get a small boost.
+    if any(
+        term in lowered
+        for term in (
+            "booster",
+            "starter-deck",
+            "collection",
+            "deck",
+            "pack",
+            "box",
+            "tin",
+        )
+    ):
+        score += 3
+
+    return score
+
+
 @retailer_adapter("square_weebly")
 class SquareWeeblyAdapter(RetailerAdapter):
 
@@ -674,6 +834,9 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "pages_successful": 0,
             "pages_failed": 0,
             "discovery_pages_visited": 0,
+            "product_urls_total_discovered": 0,
+            "product_urls_prioritized": 0,
+            "product_urls_selected": 0,
             "product_urls_discovered": 0,
             "product_pages_attempted": 0,
             "product_pages_successful": 0,
@@ -686,10 +849,31 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "http_blocked": 0,
             "last_http_status": None,
             "last_error": None,
+            "games": {},
+            "categories": {
+                "SEALED": 0,
+                "SINGLE": 0,
+                "ACCESSORY": 0,
+                "UNKNOWN": 0,
+            },
         }
 
     def get_diagnostics(self):
-        return dict(self.diagnostics)
+        data = dict(self.diagnostics)
+
+        # Compatibility aliases for the current universal monitor.
+        # Earlier monitor revisions used these alternate key names.
+        data["pages_checked"] = int(
+            data.get("discovery_pages_visited", 0) or 0
+        )
+        data["rejected_products"] = int(
+            data.get("products_rejected", 0) or 0
+        )
+        data["normalized_products"] = int(
+            data.get("products_accepted", 0) or 0
+        )
+
+        return data
 
     async def _fetch_text(self, session, url):
         self.diagnostics["pages_attempted"] += 1
@@ -839,16 +1023,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
 
         seed_urls = [
             urljoin(self.base_url, path)
-            for path in (
-                "/",
-                "/store",
-                "/shop",
-                "/shop-all",
-                "/s/shop",
-                "/s/search",
-                "/sitemap.xml",
-                "/sitemap_index.xml",
-            )
+            for path in TCG_DISCOVERY_PATHS
         ]
 
         queue = list(seed_urls)
@@ -858,7 +1033,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
         while (
             queue
             and len(visited) < MAX_DISCOVERY_PAGES
-            and len(discovered) < self.max_product_pages
+            and len(discovered) < MAX_DISCOVERED_PRODUCT_URLS
         ):
             url = queue.pop(0)
 
@@ -872,12 +1047,21 @@ class SquareWeeblyAdapter(RetailerAdapter):
                 continue
 
             self.diagnostics["discovery_pages_visited"] += 1
-            discovered.update(self._extract_product_urls(html, url))
 
-            if len(discovered) >= self.max_product_pages:
+            newly_found = self._extract_product_urls(
+                html,
+                url,
+            )
+
+            discovered.update(newly_found)
+
+            if len(discovered) >= MAX_DISCOVERED_PRODUCT_URLS:
                 break
 
-            for candidate in self._extract_discovery_links(html, url):
+            for candidate in self._extract_discovery_links(
+                html,
+                url,
+            ):
                 if candidate in visited or candidate in queued:
                     continue
 
@@ -890,9 +1074,51 @@ class SquareWeeblyAdapter(RetailerAdapter):
             if queue:
                 await asyncio.sleep(self.request_delay)
 
-        product_urls = sorted(discovered)[: self.max_product_pages]
-        self.diagnostics["product_urls_discovered"] = len(product_urls)
-        return product_urls
+        ranked = sorted(
+            discovered,
+            key=lambda url: (
+                -product_url_priority_score(url),
+                url.lower(),
+            ),
+        )
+
+        prioritized_count = sum(
+            1
+            for url in ranked
+            if product_url_priority_score(url) > 0
+        )
+
+        selected = ranked[
+            : self.max_product_pages
+        ]
+
+        self.diagnostics[
+            "product_urls_total_discovered"
+        ] = len(discovered)
+
+        self.diagnostics[
+            "product_urls_prioritized"
+        ] = prioritized_count
+
+        self.diagnostics[
+            "product_urls_selected"
+        ] = len(selected)
+
+        # Keep this legacy key so the universal monitor continues to work.
+        self.diagnostics[
+            "product_urls_discovered"
+        ] = len(discovered)
+
+        print(
+            "SQUARE/WEEBLY TCG-AWARE DISCOVERY | "
+            f"Store={self.store_name} | "
+            f"DiscoveryPages={self.diagnostics['discovery_pages_visited']} | "
+            f"TotalProductURLs={len(discovered)} | "
+            f"PriorityCandidates={prioritized_count} | "
+            f"SelectedForFetch={len(selected)}"
+        )
+
+        return selected
 
     async def fetch_products(self):
         self._reset_diagnostics()
@@ -918,10 +1144,13 @@ class SquareWeeblyAdapter(RetailerAdapter):
             product_urls = await self._discover_product_urls(session)
 
             print(
-                "SQUARE/WEEBLY DISCOVERY | "
+                "SQUARE/WEEBLY FETCH PLAN | "
                 f"Store={self.store_name} | "
-                f"DiscoveryPages={self.diagnostics['discovery_pages_visited']} | "
-                f"ProductURLs={len(product_urls)}"
+                f"SelectedProductURLs={len(product_urls)} | "
+                f"TotalDiscovered="
+                f"{self.diagnostics['product_urls_total_discovered']} | "
+                f"PriorityCandidates="
+                f"{self.diagnostics['product_urls_prioritized']}"
             )
 
             raw_products = []
@@ -938,6 +1167,14 @@ class SquareWeeblyAdapter(RetailerAdapter):
 
                 if index < len(product_urls) - 1:
                     await asyncio.sleep(self.request_delay)
+
+            print(
+                "SQUARE/WEEBLY PRODUCT FETCH COMPLETE | "
+                f"Store={self.store_name} | "
+                f"Attempted={self.diagnostics['product_pages_attempted']} | "
+                f"Successful={self.diagnostics['product_pages_successful']} | "
+                f"Failed={self.diagnostics['product_pages_failed']}"
+            )
 
             return raw_products
 
@@ -1101,6 +1338,24 @@ class SquareWeeblyAdapter(RetailerAdapter):
         }
 
         self.diagnostics["products_accepted"] += 1
+
+        games = self.diagnostics.setdefault("games", {})
+        games[game] = int(games.get(game, 0) or 0) + 1
+
+        categories = self.diagnostics.setdefault("categories", {})
+        categories[product_category] = (
+            int(categories.get(product_category, 0) or 0)
+            + 1
+        )
+
+        print(
+            "SQUARE/WEEBLY TCG ACCEPTED | "
+            f"Store={self.store_name} | "
+            f"Game={game} | "
+            f"Category={product_category} | "
+            f"Family={product_family} | "
+            f"Title={title}"
+        )
 
         return RetailerProduct(
             external_id=external_product_id,
