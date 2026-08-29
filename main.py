@@ -4056,6 +4056,139 @@ async def scanretailer(
 
 
 # =========================================================
+# /ENABLERETAILER + /DISABLERETAILER
+# Universal retailer staging controls
+# =========================================================
+
+async def set_universal_retailer_active(
+    store_id: int,
+    active: bool,
+):
+
+    if SessionLocal is None:
+        return None, "DATABASE_UNAVAILABLE"
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(Store)
+            .where(Store.id == store_id)
+            .limit(1)
+        )
+
+        store = result.scalar_one_or_none()
+
+        if store is None:
+            return None, "NOT_FOUND"
+
+        platform = normalize_platform(
+            store.platform
+            or ""
+        )
+
+        if platform == "shopify":
+            return store, "SHOPIFY"
+
+        if platform not in set(
+            get_registered_retailer_platforms()
+        ):
+            return store, "UNSUPPORTED_PLATFORM"
+
+        store.active = bool(active)
+
+        if active:
+            if store.disabled_reason in {
+                "UNIVERSAL_STAGING",
+                "MANUAL",
+                "MANUAL_DISABLED",
+            }:
+                store.disabled_reason = None
+        else:
+            store.disabled_reason = "MANUAL_DISABLED"
+
+        await session.commit()
+        await session.refresh(store)
+
+        return store, "OK"
+
+
+@bot.tree.command(
+    name="enableretailer",
+    description="Enable a validated universal retailer in the registry.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def enableretailer(
+    interaction,
+    store_id: int,
+):
+
+    load_retailer_adapters()
+
+    store, reason = await set_universal_retailer_active(
+        store_id,
+        True,
+    )
+
+    if reason == "DATABASE_UNAVAILABLE":
+        message = "\u274c PostgreSQL is unavailable."
+    elif reason == "NOT_FOUND":
+        message = "\u274c Retailer Store ID not found."
+    elif reason == "SHOPIFY":
+        message = "\u274c This is a Shopify store. Use `/enablestore`."
+    elif reason == "UNSUPPORTED_PLATFORM":
+        message = "\u274c No registered universal adapter exists for this retailer."
+    else:
+        message = (
+            f"\U0001f7e2 **{store.name}** enabled in the retailer registry.\n\n"
+            "Universal background monitoring is still intentionally disabled "
+            "in v1.0.4; use `/scanretailer` for controlled scans."
+        )
+
+    await interaction.response.send_message(
+        message,
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="disableretailer",
+    description="Disable a universal retailer in the registry.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def disableretailer(
+    interaction,
+    store_id: int,
+):
+
+    load_retailer_adapters()
+
+    store, reason = await set_universal_retailer_active(
+        store_id,
+        False,
+    )
+
+    if reason == "DATABASE_UNAVAILABLE":
+        message = "\u274c PostgreSQL is unavailable."
+    elif reason == "NOT_FOUND":
+        message = "\u274c Retailer Store ID not found."
+    elif reason == "SHOPIFY":
+        message = "\u274c This is a Shopify store. Use `/disablestore`."
+    elif reason == "UNSUPPORTED_PLATFORM":
+        message = "\u274c No registered universal adapter exists for this retailer."
+    else:
+        message = f"\u26ab **{store.name}** disabled in the retailer registry."
+
+    await interaction.response.send_message(
+        message,
+        ephemeral=True,
+    )
+
+
+# =========================================================
 # SHOPIFY STORE MANAGEMENT
 # =========================================================
 
@@ -4125,7 +4258,7 @@ async def addshopifystore(
 
 @bot.tree.command(
     name="stores",
-    description="List monitored Shopify stores.",
+    description="List all Lotus retailer registry stores.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -4138,14 +4271,29 @@ async def stores(
         ephemeral=True
     )
 
-    store_list = (
-        await list_shopify_stores()
-    )
+    if SessionLocal is None:
+
+        await interaction.followup.send(
+            "\u274c PostgreSQL is unavailable.",
+            ephemeral=True,
+        )
+
+        return
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(Store).order_by(Store.id.asc())
+        )
+
+        store_list = list(
+            result.scalars().all()
+        )
 
     if not store_list:
 
         await interaction.followup.send(
-            "No monitored Shopify stores.",
+            "No retailers are registered in Lotus.",
             ephemeral=True,
         )
 
@@ -4155,38 +4303,41 @@ async def stores(
 
     for store in store_list:
 
+        platform = normalize_platform(
+            store.platform
+            or "unknown"
+        )
+
+        platform_label = {
+            "shopify": "Shopify",
+            "square_weebly": "Square / Weebly",
+            "pokemon_center": "Pokemon Center",
+            "major_retailer": "Major Retailer",
+        }.get(
+            platform,
+            platform.replace("_", " ").title(),
+        )
+
         lines.append(
-
             (
-                f"**ID {store.id} \u2014 "
-                f"{store.name}**\n"
-
-                f"`{store.domain}`\n"
-
+                f"**ID {store.id} \u2014 {store.name}**\n"
+                f"`{store.domain or 'No domain'}`\n"
+                f"Platform: `{platform_label}` \u2022 "
                 f"Region: `{store.region or 'Unknown'}`\n"
-
                 f"{'\U0001f7e2' if store.active else '\u26ab'} "
-                f"{store.health_status}"
-
+                f"{store.health_status or 'UNKNOWN'}"
                 + (
-
                     f" \u2022 {store.disabled_reason}"
-
                     if store.disabled_reason
-
                     else ""
                 )
             )
         )
 
+    message = "\U0001f3ea **Lotus Retailer Registry**\n\n" + "\n\n".join(lines)
+
     await interaction.followup.send(
-
-        (
-            "\n\n".join(
-                lines
-            )
-        )[:1900],
-
+        message[:1900],
         ephemeral=True,
     )
 
@@ -4197,7 +4348,7 @@ async def stores(
 
 @bot.tree.command(
     name="storeinfo",
-    description="View detailed store information.",
+    description="View detailed retailer information.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -4207,11 +4358,24 @@ async def storeinfo(
     store_id: int,
 ):
 
-    store = (
-        await get_shopify_store(
-            store_id
+    if SessionLocal is None:
+
+        await interaction.response.send_message(
+            "\u274c PostgreSQL is unavailable.",
+            ephemeral=True,
         )
-    )
+
+        return
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(Store)
+            .where(Store.id == store_id)
+            .limit(1)
+        )
+
+        store = result.scalar_one_or_none()
 
     if store is None:
 
@@ -4222,24 +4386,33 @@ async def storeinfo(
 
         return
 
+    platform = normalize_platform(
+        store.platform
+        or "unknown"
+    )
+
+    platform_label = {
+        "shopify": "Shopify",
+        "square_weebly": "Square / Weebly",
+        "pokemon_center": "Pokemon Center",
+        "major_retailer": "Major Retailer",
+    }.get(
+        platform,
+        platform.replace("_", " ").title(),
+    )
+
     embed = discord.Embed(
-        title=(
-            f"\U0001f3ea {store.name}"
-        )
+        title=f"\U0001f3ea {store.name}"
     )
 
     embed.add_field(
         name="Store ID",
-        value=str(
-            store.id
-        ),
+        value=str(store.id),
     )
 
     embed.add_field(
-        name="Health",
-        value=(
-            store.health_status
-        ),
+        name="Platform",
+        value=platform_label,
     )
 
     embed.add_field(
@@ -4253,42 +4426,45 @@ async def storeinfo(
 
     embed.add_field(
         name="Domain",
-        value=(
-            store.domain
-            or "Unknown"
-        ),
+        value=store.domain or "Unknown",
         inline=False,
     )
 
     embed.add_field(
         name="Region",
-        value=(
-            store.region
-            or "Unknown"
-        ),
+        value=store.region or "Unknown",
+    )
+
+    embed.add_field(
+        name="Health",
+        value=store.health_status or "UNKNOWN",
     )
 
     embed.add_field(
         name="Failures",
-        value=str(
-            store.consecutive_failures
-        ),
+        value=str(store.consecutive_failures or 0),
     )
 
     embed.add_field(
         name="Disabled Reason",
+        value=store.disabled_reason or "None",
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Monitoring Mode",
         value=(
-            store.disabled_reason
-            or "None"
+            "Automatic Shopify monitor"
+            if platform == "shopify"
+            else "Manual validation only in v1.0.4"
         ),
+        inline=False,
     )
 
     embed.add_field(
         name="Last Success",
         value=(
-            str(
-                store.last_success_at
-            )
+            str(store.last_success_at)
             if store.last_success_at
             else "None"
         ),
@@ -4298,9 +4474,7 @@ async def storeinfo(
     embed.add_field(
         name="Last Failure",
         value=(
-            str(
-                store.last_failure_at
-            )
+            str(store.last_failure_at)
             if store.last_failure_at
             else "None"
         ),
@@ -4310,9 +4484,7 @@ async def storeinfo(
     embed.add_field(
         name="Last Error",
         value=(
-            store.last_error[
-                :1000
-            ]
+            store.last_error[:1000]
             if store.last_error
             else "None \u2705"
         ),
