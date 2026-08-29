@@ -3,7 +3,6 @@ import json
 import re
 
 from html import unescape
-
 from urllib.parse import (
     urljoin,
     urlparse,
@@ -26,8 +25,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-#
-# Universal Retailer Foundation
+# Step 6C - Discovery Diagnostics
 #
 # SAFETY:
 # - public storefront pages only
@@ -36,22 +34,18 @@ from app.retailer_registry import (
 # - no queue bypass
 # - no checkout automation
 # - conservative request rate
+# - same-domain discovery only
 # - unknown availability never means sold out
 # =========================================================
-
 
 USER_AGENT = (
     "LotusTracker/1.0.4 "
     "(PonDeX Trackers; public retailer monitor)"
 )
 
-
 DEFAULT_TIMEOUT = 15
-
 DEFAULT_REQUEST_DELAY = 1.0
-
-MAX_DISCOVERY_PAGES = 15
-
+MAX_DISCOVERY_PAGES = 20
 MAX_PRODUCT_PAGES = 150
 
 
@@ -59,94 +53,93 @@ MAX_PRODUCT_PAGES = 150
 # URL / HTML PATTERNS
 # =========================================================
 
-PRODUCT_URL_PATTERN = re.compile(
-    r"""href=["']([^"']*/product/[^"']+)["']""",
+HREF_PATTERN = re.compile(
+    r'''href\s*=\s*["']([^"']+)["']''',
     re.IGNORECASE,
 )
 
+PRODUCT_PATH_PATTERN = re.compile(
+    r'''(?:https?://[^"'<>\\\s]+)?/product/[^"'<>\\\s?#]+/\d+''',
+    re.IGNORECASE,
+)
+
+ESCAPED_PRODUCT_PATH_PATTERN = re.compile(
+    r'''\\/product\\/[^"'<>\\\s?#]+\\/\d+''',
+    re.IGNORECASE,
+)
+
+XML_LOC_PATTERN = re.compile(
+    r"<loc>\s*(.*?)\s*</loc>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 TITLE_PATTERN = re.compile(
     r"<title[^>]*>(.*?)</title>",
     re.IGNORECASE | re.DOTALL,
 )
 
-
 OG_TITLE_PATTERN = re.compile(
-    r"""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']""",
+    r'''<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']''',
     re.IGNORECASE,
 )
-
 
 OG_TITLE_PATTERN_REVERSED = re.compile(
-    r"""<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']""",
+    r'''<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']''',
     re.IGNORECASE,
 )
-
 
 OG_IMAGE_PATTERN = re.compile(
-    r"""<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
+    r'''<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']''',
     re.IGNORECASE,
 )
-
 
 OG_IMAGE_PATTERN_REVERSED = re.compile(
-    r"""<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']""",
+    r'''<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']''',
     re.IGNORECASE,
 )
-
 
 META_DESCRIPTION_PATTERN = re.compile(
-    r"""<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']""",
+    r'''<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']''',
     re.IGNORECASE,
 )
-
 
 META_DESCRIPTION_PATTERN_REVERSED = re.compile(
-    r"""<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']""",
+    r'''<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']''',
     re.IGNORECASE,
 )
 
-
 JSON_LD_PATTERN = re.compile(
-    r"""<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
+    r'''<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>''',
     re.IGNORECASE | re.DOTALL,
 )
 
-
 PRICE_PATTERNS = [
-
     re.compile(
-        r"""itemprop=["']price["'][^>]+content=["']([0-9.,]+)["']""",
+        r'''itemprop=["']price["'][^>]+content=["']([0-9.,]+)["']''',
         re.IGNORECASE,
     ),
-
     re.compile(
-        r"""content=["']([0-9.,]+)["'][^>]+itemprop=["']price["']""",
+        r'''content=["']([0-9.,]+)["'][^>]+itemprop=["']price["']''',
         re.IGNORECASE,
     ),
-
     re.compile(
-        r"""["']price["']\s*:\s*["']?([0-9]+(?:\.[0-9]{1,2})?)""",
+        r'''["']price["']\s*:\s*["']?([0-9]+(?:\.[0-9]{1,2})?)''',
         re.IGNORECASE,
     ),
 ]
 
-
 CURRENCY_PATTERN = re.compile(
-    r"""["']priceCurrency["']\s*:\s*["']([A-Z]{3})["']""",
+    r'''["']priceCurrency["']\s*:\s*["']([A-Z]{3})["']''',
     re.IGNORECASE,
 )
 
-
 SKU_PATTERNS = [
-
     re.compile(
-        r"""["']sku["']\s*:\s*["']([^"']+)["']""",
+        r'''["']sku["']\s*:\s*["']([^"']+)["']''',
         re.IGNORECASE,
     ),
-
     re.compile(
-        r"""itemprop=["']sku["'][^>]+content=["']([^"']+)["']""",
+        r'''itemprop=["']sku["'][^>]+content=["']([^"']+)["']''',
         re.IGNORECASE,
     ),
 ]
@@ -157,17 +150,21 @@ SKU_PATTERNS = [
 # =========================================================
 
 SEALED_KEYWORDS = (
-
     "booster box",
+    "booster display",
+    "display box",
     "booster pack",
     "booster bundle",
-    "display box",
+    "sleeved booster",
     "elite trainer box",
     "etb",
     "starter deck",
     "structure deck",
     "collection box",
     "collection set",
+    "gift collection",
+    "double pack",
+    "double-pack",
     "blister",
     "tin",
     "deck box set",
@@ -176,16 +173,14 @@ SEALED_KEYWORDS = (
     "case",
 )
 
-
 SINGLE_KEYWORDS = (
-
     "single card",
-    "single",
+    "tcg single",
+    "card single",
+    "singles",
 )
 
-
 ACCESSORY_KEYWORDS = (
-
     "sleeves",
     "deck box",
     "binder",
@@ -195,6 +190,9 @@ ACCESSORY_KEYWORDS = (
     "portfolio",
     "toploader",
     "top loader",
+    "storage box",
+    "card holder",
+    "card stand",
 )
 
 
@@ -203,7 +201,6 @@ ACCESSORY_KEYWORDS = (
 # =========================================================
 
 UNSUPPORTED_GAME_TERMS = (
-
     "magic the gathering",
     "magic: the gathering",
     "yu-gi-oh",
@@ -224,59 +221,46 @@ UNSUPPORTED_GAME_TERMS = (
 # =========================================================
 
 GAME_PATTERNS = {
-
     "Pokemon": (
-
         "pokemon tcg",
-        "pokémon tcg",
+        "pokÃ©mon tcg",
+        "pokemon trading card",
+        "pokÃ©mon trading card",
+        "pokemon card game",
+        "pokÃ©mon card game",
     ),
-
-    "Gundam Card Game": (
-
+    "Gundam": (
         "gundam card game",
         "gundam tcg",
     ),
-
     "Dragon Ball Fusion World": (
-
         "dragon ball super card game fusion world",
         "dragon ball fusion world",
         "fusion world tcg",
     ),
-
     "Riftbound": (
-
         "riftbound tcg",
         "riftbound trading card game",
         "riftbound league of legends",
+        "riftbound",
     ),
-
     "Palworld": (
-
         "palworld tcg",
         "palworld card game",
     ),
-
-    "Naruto TCG": (
-
+    "Naruto": (
         "naruto tcg",
         "naruto card game",
     ),
-
     "Cyberpunk TCG": (
-
         "cyberpunk tcg",
         "cyberpunk trading card game",
     ),
-
     "Azuki TCG": (
-
         "azuki tcg",
         "azuki trading card game",
     ),
-
     "Hellbreak TCG": (
-
         "hellbreak tcg",
         "hellbreak trading card game",
     ),
@@ -288,7 +272,6 @@ GAME_PATTERNS = {
 # =========================================================
 
 JP_TERMS = (
-
     "japanese",
     "japan version",
     "japan edition",
@@ -296,9 +279,7 @@ JP_TERMS = (
     "jp edition",
 )
 
-
 KR_TERMS = (
-
     "korean",
     "korea version",
     "korea edition",
@@ -306,9 +287,7 @@ KR_TERMS = (
     "kr edition",
 )
 
-
 CN_TERMS = (
-
     "simplified chinese",
     "chinese version",
     "chinese edition",
@@ -316,829 +295,350 @@ CN_TERMS = (
     "cn edition",
 )
 
-
 IMPORT_TERMS = (
-
     "import",
     "asian version",
     "asia version",
 )
 
 
-# =========================================================
-# TEXT
-# =========================================================
-
-def clean_text(
-    value,
-):
-
+def clean_text(value):
     if value is None:
-
         return ""
 
-    value = unescape(
-        str(
-            value
-        )
-    )
-
-    value = re.sub(
-        r"<[^>]+>",
-        " ",
-        value,
-    )
-
-    value = re.sub(
-        r"\s+",
-        " ",
-        value,
-    )
-
-    return (
-        value.strip()
-    )
+    value = unescape(str(value))
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
 
 
-# =========================================================
-# URL
-# =========================================================
-
-def normalize_url(
-    base_url,
-    href,
-):
-
+def normalize_url(base_url, href):
     if not href:
-
         return None
 
-    href = unescape(
-        href.strip()
-    )
+    href = unescape(str(href).strip())
+    href = href.replace(r"\/", "/").replace("&amp;", "&")
 
-    if href.startswith(
-        "#"
-    ):
-
+    if href.startswith(("#", "mailto:", "tel:", "javascript:")):
         return None
 
-    if href.startswith(
-        "mailto:"
-    ):
+    url = urljoin(base_url, href)
+    parsed = urlparse(url)
 
+    if parsed.scheme not in {"http", "https"}:
         return None
 
-    if href.startswith(
-        "tel:"
-    ):
+    return parsed._replace(fragment="").geturl()
 
-        return None
 
-    url = urljoin(
-        base_url,
-        href,
-    )
+def normalized_host(value):
+    parsed = urlparse(value)
+    host = (parsed.netloc or parsed.path or "").lower()
 
-    parsed = urlparse(
-        url
-    )
+    if host.startswith("www."):
+        host = host[4:]
 
-    if parsed.scheme not in {
-        "http",
-        "https",
-    }:
+    return host.split(":", 1)[0]
 
-        return None
 
+def is_same_domain(left, right):
+    return normalized_host(left) == normalized_host(right)
+
+
+def canonicalize_product_url(url):
+    parsed = urlparse(url)
+    return parsed._replace(query="", fragment="").geturl().rstrip("/")
+
+
+def is_product_url(url):
+    parsed = urlparse(url)
     return (
-        parsed
-        ._replace(
-            fragment=""
-        )
-        .geturl()
-    )
-
-
-# =========================================================
-# STRICT GAME CLASSIFICATION
-#
-# IMPORTANT:
-#
-# We intentionally classify from the PRODUCT TITLE only.
-#
-# Arbitrary page descriptions/body HTML are NOT used for
-# game classification.
-#
-# This prevents unrelated Hypno comics/products from being
-# classified because a description mentions another TCG.
-# =========================================================
-
-def classify_game(
-    title,
-):
-
-    text = clean_text(
-        title
-    ).lower()
-
-    if not text:
-
-        return None
-
-
-    # =====================================================
-    # UNSUPPORTED GAME REJECTION
-    # =====================================================
-
-    for unsupported in UNSUPPORTED_GAME_TERMS:
-
-        if unsupported in text:
-
-            return None
-
-
-    # =====================================================
-    # ONE PIECE
-    # =====================================================
-
-    if (
-        "one piece card game"
-        in text
-
-        or
-        "one piece tcg"
-        in text
-    ):
-
-        return (
-            "One Piece"
-        )
-
-
-    # OPxx
-    #
-    # Require a separator or boundary before the set code
-    # and allow common forms:
-    #
-    # OP-13
-    # OP13
-    # OP 13
-
-    if re.search(
-        r"\bop[\s-]?(?:0[1-9]|[1-9][0-9])\b",
-        text,
-        re.IGNORECASE,
-    ):
-
-        return (
-            "One Piece"
-        )
-
-
-    # EBxx
-
-    if re.search(
-        r"\beb[\s-]?(?:0[1-9]|[1-9][0-9])\b",
-        text,
-        re.IGNORECASE,
-    ):
-
-        return (
-            "One Piece"
-        )
-
-
-    # STxx
-
-    if re.search(
-        r"\bst[\s-]?(?:0[1-9]|[1-9][0-9])\b",
-        text,
-        re.IGNORECASE,
-    ):
-
-        return (
-            "One Piece"
-        )
-
-
-    # One Piece promo code P-xxx is too generic by itself.
-    #
-    # Require One Piece context if P-xxx is used.
-
-    if (
-        "one piece"
-        in text
-
-        and
         re.search(
-            r"\bp[\s-]?\d{1,4}\b",
-            text,
+            r"/product/[^/]+/\d+/?$",
+            parsed.path,
             re.IGNORECASE,
         )
+        is not None
+    )
+
+
+def is_discovery_candidate(url):
+    parsed = urlparse(url)
+    path = (parsed.path or "/").lower()
+
+    if is_product_url(url):
+        return False
+
+    if path == "/":
+        return True
+
+    keywords = (
+        "/shop",
+        "/store",
+        "/search",
+        "/category",
+        "/categories",
+        "/collection",
+        "/collections",
+        "/s/",
+    )
+
+    return any(keyword in path for keyword in keywords)
+
+
+def classify_game(title):
+    text = clean_text(title).lower()
+
+    if not text:
+        return None
+
+    for unsupported in UNSUPPORTED_GAME_TERMS:
+        if unsupported in text:
+            return None
+
+    if (
+        "one piece card game" in text
+        or "one piece tcg" in text
     ):
+        return "One Piece"
 
-        return (
-            "One Piece"
-        )
+    if re.search(r"\bop[\s-]?(?:0[1-9]|[1-9][0-9])\b", text):
+        return "One Piece"
 
+    if re.search(r"\beb[\s-]?(?:0[1-9]|[1-9][0-9])\b", text):
+        return "One Piece"
 
-    # =====================================================
-    # OTHER SUPPORTED GAMES
-    # =====================================================
+    if re.search(r"\bprb[\s-]?(?:0[1-9]|[1-9][0-9])\b", text):
+        return "One Piece"
 
-    for (
-        game,
-        phrases,
-    ) in GAME_PATTERNS.items():
+    if re.search(r"\bst[\s-]?(?:0[1-9]|[1-9][0-9])\b", text):
+        return "One Piece"
 
+    if (
+        "one piece" in text
+        and re.search(r"\bp[\s-]?\d{1,4}\b", text)
+    ):
+        return "One Piece"
+
+    for game, phrases in GAME_PATTERNS.items():
         for phrase in phrases:
-
             if phrase in text:
-
-                return (
-                    game
-                )
+                return game
 
     return None
 
 
-# =========================================================
-# PRODUCT CATEGORY
-# =========================================================
+def classify_product_category(title):
+    text = clean_text(title).lower()
 
-def classify_product_category(
-    title,
-):
-
-    text = clean_text(
-        title
-    ).lower()
-
+    # Sealed first so phrases such as "deck box set" do not
+    # get downgraded to ACCESSORY.
+    for keyword in SEALED_KEYWORDS:
+        if keyword in text:
+            return "SEALED"
 
     for keyword in ACCESSORY_KEYWORDS:
-
         if keyword in text:
-
-            return (
-                "ACCESSORY"
-            )
-
+            return "ACCESSORY"
 
     for keyword in SINGLE_KEYWORDS:
-
         if keyword in text:
+            return "SINGLE"
 
-            return (
-                "SINGLE"
-            )
-
-
-    for keyword in SEALED_KEYWORDS:
-
-        if keyword in text:
-
-            return (
-                "SEALED"
-            )
+    return "UNKNOWN"
 
 
-    return (
-        "UNKNOWN"
+def infer_product_type(title):
+    text = clean_text(title).lower()
+
+    mappings = (
+        (("elite trainer box", " etb"), "Elite Trainer Box"),
+        (("booster box", "booster display", "display box"), "Booster Box"),
+        (("booster bundle",), "Booster Bundle"),
+        (("booster pack", "sleeved booster"), "Booster Pack"),
+        (("double pack", "double-pack"), "Double Pack"),
+        (("starter deck",), "Starter Deck"),
+        (("structure deck",), "Structure Deck"),
+        (("premium collection",), "Premium Collection"),
+        (("collection box", "collection set"), "Collection"),
+        (("case",), "Case"),
+        (("tin",), "Tin"),
+        (("playmat", "play mat"), "Playmat"),
+        (("sleeves",), "Sleeves"),
+        (("binder", "portfolio"), "Binder"),
+        (("deck box",), "Deck Box"),
     )
 
+    for keywords, label in mappings:
+        for keyword in keywords:
+            if keyword in text:
+                return label
 
-# =========================================================
-# PRODUCT FAMILY
-#
-# Currency is NEVER used to determine product family.
-#
-# For this first Square/Weebly implementation we classify
-# from the product title only.
-# =========================================================
-
-def classify_product_family(
-    title,
-):
-
-    text = clean_text(
-        title
-    ).lower()
+    return "TCG Product"
 
 
-    if any(
-        term in text
-        for term in JP_TERMS
-    ):
+def classify_product_family(title):
+    text = clean_text(title).lower()
 
-        return (
-            "JP"
-        )
+    if any(term in text for term in JP_TERMS):
+        return "JP"
 
+    if any(term in text for term in KR_TERMS):
+        return "KR"
 
-    if any(
-        term in text
-        for term in KR_TERMS
-    ):
+    if any(term in text for term in CN_TERMS):
+        return "CN"
 
-        return (
-            "KR"
-        )
+    if any(term in text for term in IMPORT_TERMS):
+        return "UNKNOWN"
+
+    return "GLOBAL_STANDARD"
 
 
-    if any(
-        term in text
-        for term in CN_TERMS
-    ):
-
-        return (
-            "CN"
-        )
-
-
-    if any(
-        term in text
-        for term in IMPORT_TERMS
-    ):
-
-        return (
-            "UNKNOWN"
-        )
-
-
-    return (
-        "GLOBAL_STANDARD"
-    )
-
-
-# =========================================================
-# FAMILY LANGUAGE
-# =========================================================
-
-def family_language(
-    family,
-):
-
+def family_language(family):
     mapping = {
-
-        "GLOBAL_STANDARD":
-            "English",
-
-        "JP":
-            "Japanese",
-
-        "KR":
-            "Korean",
-
-        "CN":
-            "Simplified Chinese",
-
-        "UNKNOWN":
-            "Unknown",
+        "GLOBAL_STANDARD": "English",
+        "JP": "Japanese",
+        "KR": "Korean",
+        "CN": "Simplified Chinese",
+        "UNKNOWN": "Unknown",
     }
-
-    return (
-        mapping.get(
-            family,
-            "Unknown",
-        )
-    )
+    return mapping.get(family, "Unknown")
 
 
-# =========================================================
-# META
-# =========================================================
-
-def find_meta_value(
-    html,
-    pattern_a,
-    pattern_b=None,
-):
-
-    match = (
-        pattern_a.search(
-            html
-        )
-    )
+def find_meta_value(html, pattern_a, pattern_b=None):
+    match = pattern_a.search(html)
 
     if match:
-
-        return (
-            clean_text(
-                match.group(
-                    1
-                )
-            )
-        )
+        return clean_text(match.group(1))
 
     if pattern_b is not None:
-
-        match = (
-            pattern_b.search(
-                html
-            )
-        )
-
+        match = pattern_b.search(html)
         if match:
-
-            return (
-                clean_text(
-                    match.group(
-                        1
-                    )
-                )
-            )
+            return clean_text(match.group(1))
 
     return None
 
 
-# =========================================================
-# JSON-LD
-# =========================================================
-
-def extract_json_ld(
-    html,
-):
-
+def extract_json_ld(html):
     objects = []
 
-    for match in JSON_LD_PATTERN.finditer(
-        html
-    ):
-
-        raw = (
-            match.group(
-                1
-            ).strip()
-        )
+    for match in JSON_LD_PATTERN.finditer(html):
+        raw = match.group(1).strip()
 
         if not raw:
-
             continue
 
         try:
-
-            payload = (
-                json.loads(
-                    raw
-                )
-            )
-
+            payload = json.loads(raw)
         except Exception:
-
             continue
 
-
-        if isinstance(
-            payload,
-            list,
-        ):
-
-            objects.extend(
-                payload
-            )
-
+        if isinstance(payload, list):
+            objects.extend(payload)
         else:
-
-            objects.append(
-                payload
-            )
+            objects.append(payload)
 
     return objects
 
 
-# =========================================================
-# PRODUCT SCHEMA
-# =========================================================
-
-def find_product_schema(
-    html,
-):
-
-    objects = (
-        extract_json_ld(
-            html
-        )
-    )
-
-    queue = list(
-        objects
-    )
+def find_product_schema(html):
+    queue = list(extract_json_ld(html))
 
     while queue:
+        item = queue.pop(0)
 
-        item = (
-            queue.pop(
-                0
-            )
-        )
-
-        if isinstance(
-            item,
-            list,
-        ):
-
-            queue.extend(
-                item
-            )
-
+        if isinstance(item, list):
+            queue.extend(item)
             continue
 
-
-        if not isinstance(
-            item,
-            dict,
-        ):
-
+        if not isinstance(item, dict):
             continue
 
+        item_type = item.get("@type")
 
-        item_type = (
-            item.get(
-                "@type"
-            )
-        )
-
-
-        if isinstance(
-            item_type,
-            list,
-        ):
-
-            item_types = {
-
-                str(
-                    value
-                ).lower()
-
-                for value
-                in item_type
-            }
-
+        if isinstance(item_type, list):
+            item_types = {str(value).lower() for value in item_type}
         else:
-
-            item_types = {
-
-                str(
-                    item_type
-                    or ""
-                ).lower()
-            }
-
+            item_types = {str(item_type or "").lower()}
 
         if "product" in item_types:
+            return item
 
-            return (
-                item
-            )
-
-
-        graph = (
-            item.get(
-                "@graph"
-            )
-        )
-
-        if isinstance(
-            graph,
-            list,
-        ):
-
-            queue.extend(
-                graph
-            )
+        graph = item.get("@graph")
+        if isinstance(graph, list):
+            queue.extend(graph)
 
     return None
 
 
-# =========================================================
-# OFFER
-# =========================================================
-
-def parse_offer(
-    schema,
-):
-
-    if not isinstance(
-        schema,
-        dict,
-    ):
-
+def parse_offer(schema):
+    if not isinstance(schema, dict):
         return None
 
+    offers = schema.get("offers")
 
-    offers = (
-        schema.get(
-            "offers"
-        )
-    )
-
-
-    if isinstance(
-        offers,
-        list,
-    ):
-
+    if isinstance(offers, list):
         if not offers:
-
             return None
+        offers = offers[0]
 
-        offers = (
-            offers[
-                0
-            ]
-        )
-
-
-    if not isinstance(
-        offers,
-        dict,
-    ):
-
+    if not isinstance(offers, dict):
         return None
 
-
-    return (
-        offers
-    )
+    return offers
 
 
-# =========================================================
-# AVAILABILITY
-#
-# Returns:
-#
-# (
-#     available,
-#     availability_known,
-#     availability_state,
-# )
-#
-# Unknown is intentionally NOT treated as False.
-# =========================================================
+def parse_availability(offer, html):
+    if isinstance(offer, dict):
+        availability = str(offer.get("availability") or "").strip().lower()
 
-def parse_availability(
-    offer,
-    html,
-):
+        if "instock" in availability:
+            return True, True, "IN_STOCK"
 
-    # =====================================================
-    # STRUCTURED DATA FIRST
-    # =====================================================
+        if "outofstock" in availability or "soldout" in availability:
+            return False, True, "OUT_OF_STOCK"
 
-    if isinstance(
-        offer,
-        dict,
-    ):
-
-        availability = (
-            str(
-                offer.get(
-                    "availability"
-                )
-                or ""
-            )
-            .strip()
-            .lower()
-        )
-
-
-        if (
-            "instock"
-            in availability
-        ):
-
-            return (
-                True,
-                True,
-                "IN_STOCK",
-            )
-
-
-        if (
-            "outofstock"
-            in availability
-
-            or
-            "soldout"
-            in availability
-        ):
-
-            return (
-                False,
-                True,
-                "OUT_OF_STOCK",
-            )
-
-
-    # =====================================================
-    # STRONG PAGE SIGNALS
-    # =====================================================
-
-    lowered = (
-        html.lower()
-    )
-
+    lowered = html.lower()
 
     strong_out_terms = (
-
         "out of stock",
         "sold out",
         "currently unavailable",
     )
 
-
-    if any(
-        term in lowered
-        for term in strong_out_terms
-    ):
-
-        return (
-            False,
-            True,
-            "OUT_OF_STOCK",
-        )
-
+    if any(term in lowered for term in strong_out_terms):
+        return False, True, "OUT_OF_STOCK"
 
     strong_in_terms = (
-
         "add to cart",
         "add to bag",
     )
 
+    if any(term in lowered for term in strong_in_terms):
+        return True, True, "IN_STOCK"
 
-    if any(
-        term in lowered
-        for term in strong_in_terms
-    ):
-
-        return (
-            True,
-            True,
-            "IN_STOCK",
-        )
+    return False, False, "UNKNOWN"
 
 
-    # =====================================================
-    # UNKNOWN
-    # =====================================================
-
-    return (
-        False,
-        False,
-        "UNKNOWN",
-    )
-
-
-# =========================================================
-# PRODUCT ID
-# =========================================================
-
-def parse_product_id_from_url(
-    url,
-):
-
-    parsed = (
-        urlparse(
-            url
-        )
-    )
-
-    match = (
-        re.search(
-            r"/product/[^/]+/(\d+)",
-            parsed.path,
-            re.IGNORECASE,
-        )
+def parse_product_id_from_url(url):
+    parsed = urlparse(url)
+    match = re.search(
+        r"/product/[^/]+/(\d+)",
+        parsed.path,
+        re.IGNORECASE,
     )
 
     if not match:
-
         return None
 
-
-    return (
-        match.group(
-            1
-        )
-    )
+    return match.group(1)
 
 
-# =========================================================
-# ADAPTER
-# =========================================================
+@retailer_adapter("square_weebly")
+class SquareWeeblyAdapter(RetailerAdapter):
 
-@retailer_adapter(
-    "square_weebly"
-)
-class SquareWeeblyAdapter(
-    RetailerAdapter
-):
-
-    platform = (
-        "square_weebly"
-    )
-
+    platform = "square_weebly"
 
     def __init__(
         self,
@@ -1149,1093 +649,479 @@ class SquareWeeblyAdapter(
         request_delay=DEFAULT_REQUEST_DELAY,
         max_product_pages=MAX_PRODUCT_PAGES,
     ):
-
         super().__init__(
-
             domain=domain,
-
             region=region,
-
             store_name=store_name,
         )
 
-
         domain = (
             self.domain
-            .replace(
-                "https://",
-                "",
-            )
-            .replace(
-                "http://",
-                "",
-            )
-            .strip(
-                "/"
-            )
+            .replace("https://", "")
+            .replace("http://", "")
+            .strip("/")
         )
 
-
-        self.base_url = (
-            f"https://{domain}"
-        )
-
-
-        self.request_delay = max(
-
-            float(
-                request_delay
-            ),
-
-            0.5,
-        )
-
-
-        self.max_product_pages = max(
-
-            1,
-
-            min(
-                int(
-                    max_product_pages
-                ),
-                500,
-            ),
-        )
-
-
-    # =====================================================
-    # HTTP
-    # =====================================================
-
-    async def _fetch_text(
-        self,
-        session,
-        url,
-    ):
-
-        timeout = (
-            aiohttp.ClientTimeout(
-                total=DEFAULT_TIMEOUT
-            )
-        )
-
-
-        try:
-
-            async with session.get(
-
-                url,
-
-                timeout=timeout,
-
-                allow_redirects=True,
-
-            ) as response:
-
-
-                if response.status == 429:
-
-                    print(
-                        (
-                            "SQUARE/WEEBLY RATE LIMITED | "
-                            f"Store={self.store_name} | "
-                            f"URL={url}"
-                        )
-                    )
-
-                    return None
-
-
-                if response.status in {
-                    401,
-                    403,
-                }:
-
-                    print(
-                        (
-                            "SQUARE/WEEBLY ACCESS BLOCKED | "
-                            f"Store={self.store_name} | "
-                            f"HTTP={response.status} | "
-                            f"URL={url}"
-                        )
-                    )
-
-                    return None
-
-
-                if response.status >= 400:
-
-                    print(
-                        (
-                            "SQUARE/WEEBLY HTTP ERROR | "
-                            f"Store={self.store_name} | "
-                            f"HTTP={response.status} | "
-                            f"URL={url}"
-                        )
-                    )
-
-                    return None
-
-
-                content_type = (
-                    response.headers.get(
-                        "Content-Type",
-                        "",
-                    )
-                    .lower()
-                )
-
-
-                if (
-                    "text/html"
-                    not in content_type
-
-                    and
-                    "application/xhtml"
-                    not in content_type
-
-                    and
-                    "text/xml"
-                    not in content_type
-
-                    and
-                    "application/xml"
-                    not in content_type
-                ):
-
-                    return None
-
-
-                return (
-                    await response.text(
-                        errors="ignore"
-                    )
-                )
-
-
-        except (
-            asyncio.TimeoutError,
-            aiohttp.ClientError,
-        ) as error:
-
-            print(
-                (
-                    "SQUARE/WEEBLY REQUEST ERROR | "
-                    f"Store={self.store_name} | "
-                    f"URL={url} | "
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-            )
-
-            return None
-
-
-    # =====================================================
-    # EXTRACT PRODUCT URLS
-    # =====================================================
-
-    def _extract_product_urls(
-        self,
-        html,
-        source_url,
-    ):
-
-        urls = set()
-
-
-        if not html:
-
-            return (
-                urls
-            )
-
-
-        expected_host = (
-            urlparse(
-                self.base_url
-            )
-            .netloc
-            .lower()
-            .replace(
-                "www.",
-                "",
-            )
-        )
-
-
-        for match in PRODUCT_URL_PATTERN.finditer(
-            html
-        ):
-
-            url = (
-                normalize_url(
-                    source_url,
-                    match.group(
-                        1
-                    ),
-                )
-            )
-
-
-            if not url:
-
-                continue
-
-
-            parsed = (
-                urlparse(
-                    url
-                )
-            )
-
-
-            actual_host = (
-                parsed.netloc
-                .lower()
-                .replace(
-                    "www.",
-                    "",
-                )
-            )
-
-
-            if actual_host != expected_host:
-
-                continue
-
-
-            if (
-                "/product/"
-                not in
-                parsed.path.lower()
-            ):
-
-                continue
-
-
-            urls.add(
-                url
-            )
-
-
-        return (
-            urls
-        )
-
-
-    # =====================================================
-    # DISCOVERY
-    # =====================================================
-
-    async def _discover_product_urls(
-        self,
-        session,
-    ):
-
-        discovered = set()
-
-
-        discovery_paths = (
-
-            "/",
-
-            "/store",
-
-            "/shop",
-
-            "/shop-all",
-
-            "/s/shop",
-
-            "/s/search",
-        )
-
-
-        pages_checked = 0
-
-
-        for path in discovery_paths:
-
-            if (
-                pages_checked
-                >=
-                MAX_DISCOVERY_PAGES
-            ):
-
-                break
-
-
-            url = (
-                urljoin(
-                    self.base_url,
-                    path,
-                )
-            )
-
-
-            html = (
-                await self._fetch_text(
-                    session,
-                    url,
-                )
-            )
-
-
-            pages_checked += 1
-
-
-            if not html:
-
-                continue
-
-
-            urls = (
-                self._extract_product_urls(
-                    html,
-                    url,
-                )
-            )
-
-
-            discovered.update(
-                urls
-            )
-
-
-            if (
-                len(
-                    discovered
-                )
-                >=
-                self.max_product_pages
-            ):
-
-                break
-
-
-            await asyncio.sleep(
-                self.request_delay
-            )
-
-
-        return (
-            sorted(
-                discovered
-            )[
-                :
-                self.max_product_pages
-            ]
-        )
-
-
-    # =====================================================
-    # FETCH PRODUCTS
-    # =====================================================
-
-    async def fetch_products(
-        self,
-    ):
-
-        headers = {
-
-            "User-Agent":
-                USER_AGENT,
-
-            "Accept":
-                (
-                    "text/html,"
-                    "application/xhtml+xml,"
-                    "application/xml;q=0.9,"
-                    "*/*;q=0.8"
-                ),
-
-            "Accept-Language":
-                "en-US,en;q=0.9",
+        self.base_url = f"https://{domain}"
+        self.request_delay = max(float(request_delay), 0.5)
+        self.max_product_pages = max(1, min(int(max_product_pages), 500))
+        self.diagnostics = {}
+        self._reset_diagnostics()
+
+    def _reset_diagnostics(self):
+        self.diagnostics = {
+            "pages_attempted": 0,
+            "pages_successful": 0,
+            "pages_failed": 0,
+            "discovery_pages_visited": 0,
+            "product_urls_discovered": 0,
+            "product_pages_attempted": 0,
+            "product_pages_successful": 0,
+            "product_pages_failed": 0,
+            "products_accepted": 0,
+            "products_rejected": 0,
+            "unknown_availability": 0,
+            "missing_prices": 0,
+            "http_429": 0,
+            "http_blocked": 0,
+            "last_http_status": None,
+            "last_error": None,
         }
 
+    def get_diagnostics(self):
+        return dict(self.diagnostics)
 
-        connector = (
-            aiohttp.TCPConnector(
+    async def _fetch_text(self, session, url):
+        self.diagnostics["pages_attempted"] += 1
+        timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
 
-                limit=4,
+        try:
+            async with session.get(
+                url,
+                timeout=timeout,
+                allow_redirects=True,
+            ) as response:
+                self.diagnostics["last_http_status"] = response.status
 
-                limit_per_host=2,
+                if response.status == 429:
+                    self.diagnostics["http_429"] += 1
+                    self.diagnostics["pages_failed"] += 1
+                    print(
+                        "SQUARE/WEEBLY RATE LIMITED | "
+                        f"Store={self.store_name} | URL={url}"
+                    )
+                    return None
+
+                if response.status in {401, 403}:
+                    self.diagnostics["http_blocked"] += 1
+                    self.diagnostics["pages_failed"] += 1
+                    print(
+                        "SQUARE/WEEBLY ACCESS BLOCKED | "
+                        f"Store={self.store_name} | "
+                        f"HTTP={response.status} | URL={url}"
+                    )
+                    return None
+
+                if response.status >= 400:
+                    self.diagnostics["pages_failed"] += 1
+                    print(
+                        "SQUARE/WEEBLY HTTP ERROR | "
+                        f"Store={self.store_name} | "
+                        f"HTTP={response.status} | URL={url}"
+                    )
+                    return None
+
+                content_type = response.headers.get("Content-Type", "").lower()
+
+                if (
+                    "text/html" not in content_type
+                    and "application/xhtml" not in content_type
+                    and "text/xml" not in content_type
+                    and "application/xml" not in content_type
+                ):
+                    self.diagnostics["pages_failed"] += 1
+                    return None
+
+                text = await response.text(errors="ignore")
+                self.diagnostics["pages_successful"] += 1
+                return text
+
+        except (asyncio.TimeoutError, aiohttp.ClientError) as error:
+            self.diagnostics["pages_failed"] += 1
+            self.diagnostics["last_error"] = (
+                f"{type(error).__name__}: {error}"
             )
+            print(
+                "SQUARE/WEEBLY REQUEST ERROR | "
+                f"Store={self.store_name} | URL={url} | "
+                f"{type(error).__name__}: {error}"
+            )
+            return None
+
+    def _extract_product_urls(self, html, source_url):
+        urls = set()
+
+        if not html:
+            return urls
+
+        for match in HREF_PATTERN.finditer(html):
+            candidate = normalize_url(source_url, match.group(1))
+
+            if not candidate:
+                continue
+
+            if not is_same_domain(candidate, self.base_url):
+                continue
+
+            if not is_product_url(candidate):
+                continue
+
+            urls.add(canonicalize_product_url(candidate))
+
+        for match in PRODUCT_PATH_PATTERN.finditer(html):
+            candidate = normalize_url(source_url, match.group(0))
+
+            if (
+                candidate
+                and is_same_domain(candidate, self.base_url)
+                and is_product_url(candidate)
+            ):
+                urls.add(canonicalize_product_url(candidate))
+
+        for match in ESCAPED_PRODUCT_PATH_PATTERN.finditer(html):
+            candidate = normalize_url(source_url, match.group(0))
+
+            if (
+                candidate
+                and is_same_domain(candidate, self.base_url)
+                and is_product_url(candidate)
+            ):
+                urls.add(canonicalize_product_url(candidate))
+
+        for match in XML_LOC_PATTERN.finditer(html):
+            candidate = normalize_url(
+                source_url,
+                clean_text(match.group(1)),
+            )
+
+            if (
+                candidate
+                and is_same_domain(candidate, self.base_url)
+                and is_product_url(candidate)
+            ):
+                urls.add(canonicalize_product_url(candidate))
+
+        return urls
+
+    def _extract_discovery_links(self, html, source_url):
+        links = set()
+
+        if not html:
+            return links
+
+        for match in HREF_PATTERN.finditer(html):
+            candidate = normalize_url(source_url, match.group(1))
+
+            if not candidate:
+                continue
+
+            if not is_same_domain(candidate, self.base_url):
+                continue
+
+            if is_discovery_candidate(candidate):
+                parsed = urlparse(candidate)
+                links.add(parsed._replace(fragment="").geturl())
+
+        return links
+
+    async def _discover_product_urls(self, session):
+        discovered = set()
+
+        seed_urls = [
+            urljoin(self.base_url, path)
+            for path in (
+                "/",
+                "/store",
+                "/shop",
+                "/shop-all",
+                "/s/shop",
+                "/s/search",
+                "/sitemap.xml",
+                "/sitemap_index.xml",
+            )
+        ]
+
+        queue = list(seed_urls)
+        queued = set(seed_urls)
+        visited = set()
+
+        while (
+            queue
+            and len(visited) < MAX_DISCOVERY_PAGES
+            and len(discovered) < self.max_product_pages
+        ):
+            url = queue.pop(0)
+
+            if url in visited:
+                continue
+
+            visited.add(url)
+            html = await self._fetch_text(session, url)
+
+            if not html:
+                continue
+
+            self.diagnostics["discovery_pages_visited"] += 1
+            discovered.update(self._extract_product_urls(html, url))
+
+            if len(discovered) >= self.max_product_pages:
+                break
+
+            for candidate in self._extract_discovery_links(html, url):
+                if candidate in visited or candidate in queued:
+                    continue
+
+                if len(queue) + len(visited) >= MAX_DISCOVERY_PAGES:
+                    break
+
+                queued.add(candidate)
+                queue.append(candidate)
+
+            if queue:
+                await asyncio.sleep(self.request_delay)
+
+        product_urls = sorted(discovered)[: self.max_product_pages]
+        self.diagnostics["product_urls_discovered"] = len(product_urls)
+        return product_urls
+
+    async def fetch_products(self):
+        self._reset_diagnostics()
+
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": (
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        connector = aiohttp.TCPConnector(
+            limit=4,
+            limit_per_host=2,
         )
 
-
         async with aiohttp.ClientSession(
-
             headers=headers,
-
             connector=connector,
-
         ) as session:
-
-
-            product_urls = (
-                await self._discover_product_urls(
-                    session
-                )
-            )
-
+            product_urls = await self._discover_product_urls(session)
 
             print(
-                (
-                    "SQUARE/WEEBLY DISCOVERY | "
-                    f"Store={self.store_name} | "
-                    f"Products={len(product_urls)}"
-                )
+                "SQUARE/WEEBLY DISCOVERY | "
+                f"Store={self.store_name} | "
+                f"DiscoveryPages={self.diagnostics['discovery_pages_visited']} | "
+                f"ProductURLs={len(product_urls)}"
             )
-
 
             raw_products = []
 
-
-            for (
-                index,
-                url,
-            ) in enumerate(
-                product_urls
-            ):
-
-
-                html = (
-                    await self._fetch_text(
-                        session,
-                        url,
-                    )
-                )
-
+            for index, url in enumerate(product_urls):
+                self.diagnostics["product_pages_attempted"] += 1
+                html = await self._fetch_text(session, url)
 
                 if html:
+                    self.diagnostics["product_pages_successful"] += 1
+                    raw_products.append({"url": url, "html": html})
+                else:
+                    self.diagnostics["product_pages_failed"] += 1
 
-                    raw_products.append(
-                        {
-                            "url":
-                                url,
+                if index < len(product_urls) - 1:
+                    await asyncio.sleep(self.request_delay)
 
-                            "html":
-                                html,
-                        }
-                    )
+            return raw_products
 
-
-                if (
-                    index
-                    <
-                    len(
-                        product_urls
-                    ) - 1
-                ):
-
-                    await asyncio.sleep(
-                        self.request_delay
-                    )
-
-
-            return (
-                raw_products
-            )
-
-
-    # =====================================================
-    # NORMALIZE PRODUCT
-    # =====================================================
-
-    def normalize_product(
-        self,
-        product,
-    ):
-
-        if not isinstance(
-            product,
-            dict,
-        ):
-
+    def normalize_product(self, product):
+        if not isinstance(product, dict):
+            self.diagnostics["products_rejected"] += 1
             return None
 
-
-        url = (
-            product.get(
-                "url"
-            )
-        )
-
-
-        html = (
-            product.get(
-                "html"
-            )
-            or ""
-        )
-
+        url = product.get("url")
+        html = product.get("html") or ""
 
         if not url or not html:
-
+            self.diagnostics["products_rejected"] += 1
             return None
 
-
-        schema = (
-            find_product_schema(
-                html
-            )
-        )
-
-
-        offer = (
-            parse_offer(
-                schema
-            )
-        )
-
-
-        # =================================================
-        # TITLE
-        # =================================================
+        schema = find_product_schema(html)
+        offer = parse_offer(schema)
 
         title = None
 
-
-        if isinstance(
-            schema,
-            dict,
-        ):
-
-            title = (
-                clean_text(
-                    schema.get(
-                        "name"
-                    )
-                )
-            )
-
+        if isinstance(schema, dict):
+            title = clean_text(schema.get("name"))
 
         if not title:
-
-            title = (
-                find_meta_value(
-
-                    html,
-
-                    OG_TITLE_PATTERN,
-
-                    OG_TITLE_PATTERN_REVERSED,
-                )
+            title = find_meta_value(
+                html,
+                OG_TITLE_PATTERN,
+                OG_TITLE_PATTERN_REVERSED,
             )
-
 
         if not title:
-
-            match = (
-                TITLE_PATTERN.search(
-                    html
-                )
-            )
-
+            match = TITLE_PATTERN.search(html)
             if match:
-
-                title = (
-                    clean_text(
-                        match.group(
-                            1
-                        )
-                    )
-                )
-
+                title = clean_text(match.group(1))
 
         if not title:
-
+            self.diagnostics["products_rejected"] += 1
             return None
 
-
-        # Remove common Hypno site suffix without making
-        # Hypno-specific assumptions elsewhere.
-
-        title = (
-            re.sub(
-                r"\s*\|\s*Hypno Comics.*$",
-                "",
-                title,
-                flags=re.IGNORECASE,
-            )
-            .strip()
-        )
-
-
-        # =================================================
-        # DESCRIPTION
-        #
-        # Retained only as metadata.
-        #
-        # NOT used for game classification.
-        # =================================================
+        title = re.sub(
+            r"\s*\|\s*Hypno Comics.*$",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        ).strip()
 
         description = ""
 
-
-        if isinstance(
-            schema,
-            dict,
-        ):
-
-            description = (
-                clean_text(
-                    schema.get(
-                        "description"
-                    )
-                )
-            )
-
+        if isinstance(schema, dict):
+            description = clean_text(schema.get("description"))
 
         if not description:
-
             description = (
                 find_meta_value(
-
                     html,
-
                     META_DESCRIPTION_PATTERN,
-
                     META_DESCRIPTION_PATTERN_REVERSED,
-
                 )
                 or ""
             )
 
-
-        # =================================================
-        # STRICT GAME CLASSIFICATION
-        #
-        # TITLE ONLY.
-        # =================================================
-
-        game = (
-            classify_game(
-                title
-            )
-        )
-
+        game = classify_game(title)
 
         if not game:
-
+            self.diagnostics["products_rejected"] += 1
             return None
-
-
-        # =================================================
-        # PRICE
-        # =================================================
 
         price = None
 
-
-        if isinstance(
-            offer,
-            dict,
-        ):
-
-            price = (
-                normalize_price(
-                    offer.get(
-                        "price"
-                    )
-                )
-            )
-
+        if isinstance(offer, dict):
+            price = normalize_price(offer.get("price"))
 
         if price is None:
-
             for pattern in PRICE_PATTERNS:
-
-                match = (
-                    pattern.search(
-                        html
-                    )
-                )
+                match = pattern.search(html)
 
                 if not match:
-
                     continue
 
-
-                raw_price = (
-                    match.group(
-                        1
-                    )
-                    .replace(
-                        ",",
-                        "",
-                    )
-                )
-
-
-                price = (
-                    normalize_price(
-                        raw_price
-                    )
-                )
-
+                raw_price = match.group(1).replace(",", "")
+                price = normalize_price(raw_price)
 
                 if price is not None:
-
                     break
 
+        if price is None:
+            self.diagnostics["missing_prices"] += 1
 
-        # =================================================
-        # CURRENCY
-        # =================================================
+        currency = "USD"
 
-        currency = (
-            "USD"
-        )
-
-
-        if isinstance(
-            offer,
-            dict,
-        ):
-
-            offer_currency = (
-                offer.get(
-                    "priceCurrency"
-                )
-            )
-
-
+        if isinstance(offer, dict):
+            offer_currency = offer.get("priceCurrency")
             if offer_currency:
+                currency = str(offer_currency).strip().upper()
 
-                currency = (
-                    str(
-                        offer_currency
-                    )
-                    .strip()
-                    .upper()
-                )
-
-
-        if (
-            not isinstance(
-                offer,
-                dict,
-            )
-
-            or
-            not offer.get(
-                "priceCurrency"
-            )
-        ):
-
-            match = (
-                CURRENCY_PATTERN.search(
-                    html
-                )
-            )
-
-
+        if not isinstance(offer, dict) or not offer.get("priceCurrency"):
+            match = CURRENCY_PATTERN.search(html)
             if match:
+                currency = match.group(1).upper()
 
-                currency = (
-                    match.group(
-                        1
-                    ).upper()
-                )
-
-
-        # =================================================
-        # AVAILABILITY
-        # =================================================
-
-        (
-            available,
-            availability_known,
-            availability_state,
-        ) = (
-            parse_availability(
-                offer,
-                html,
-            )
+        available, availability_known, availability_state = parse_availability(
+            offer,
+            html,
         )
 
+        if not availability_known:
+            self.diagnostics["unknown_availability"] += 1
 
-        # =================================================
-        # IDENTIFIERS
-        # =================================================
-
-        external_product_id = (
-            parse_product_id_from_url(
-                url
-            )
-        )
-
-
+        external_product_id = parse_product_id_from_url(url)
         sku = None
 
-
-        if isinstance(
-            schema,
-            dict,
-        ):
-
-            schema_sku = (
-                schema.get(
-                    "sku"
-                )
-            )
-
-
+        if isinstance(schema, dict):
+            schema_sku = schema.get("sku")
             if schema_sku:
-
-                sku = (
-                    clean_text(
-                        schema_sku
-                    )
-                )
-
+                sku = clean_text(schema_sku)
 
         if not sku:
-
             for pattern in SKU_PATTERNS:
-
-                match = (
-                    pattern.search(
-                        html
-                    )
-                )
-
+                match = pattern.search(html)
                 if match:
-
-                    sku = (
-                        clean_text(
-                            match.group(
-                                1
-                            )
-                        )
-                    )
-
+                    sku = clean_text(match.group(1))
                     break
-
-
-        # =================================================
-        # IMAGE
-        # =================================================
 
         image_url = None
 
+        if isinstance(schema, dict):
+            schema_image = schema.get("image")
 
-        if isinstance(
-            schema,
-            dict,
-        ):
-
-            schema_image = (
-                schema.get(
-                    "image"
-                )
-            )
-
-
-            if isinstance(
-                schema_image,
-                list,
-            ):
-
+            if isinstance(schema_image, list):
                 if schema_image:
-
-                    image_url = (
-                        str(
-                            schema_image[
-                                0
-                            ]
-                        )
-                    )
-
-
+                    image_url = str(schema_image[0])
             elif schema_image:
-
-                image_url = (
-                    str(
-                        schema_image
-                    )
-                )
-
+                image_url = str(schema_image)
 
         if not image_url:
-
-            image_url = (
-                find_meta_value(
-
-                    html,
-
-                    OG_IMAGE_PATTERN,
-
-                    OG_IMAGE_PATTERN_REVERSED,
-                )
+            image_url = find_meta_value(
+                html,
+                OG_IMAGE_PATTERN,
+                OG_IMAGE_PATTERN_REVERSED,
             )
 
-
-        # =================================================
-        # CATEGORY
-        # =================================================
-
-        product_category = (
-            classify_product_category(
-                title
-            )
-        )
-
-
-        # =================================================
-        # FAMILY
-        #
-        # TITLE ONLY.
-        # Currency is irrelevant.
-        # =================================================
-
-        product_family = (
-            classify_product_family(
-                title
-            )
-        )
-
-
-        language = (
-            family_language(
-                product_family
-            )
-        )
-
-
-        # =================================================
-        # PRODUCT STATE
-        # =================================================
+        product_category = classify_product_category(title)
+        product_type = infer_product_type(title)
+        product_family = classify_product_family(title)
+        language = family_language(product_family)
 
         if availability_state == "IN_STOCK":
-
-            product_state = (
-                "STOCK_AVAILABLE"
-            )
-
+            product_state = "STOCK_AVAILABLE"
         elif availability_state == "OUT_OF_STOCK":
-
-            product_state = (
-                "SOLD_OUT"
-            )
-
+            product_state = "SOLD_OUT"
         else:
-
-            product_state = (
-                "PAGE_LIVE"
-            )
-
-
-        # =================================================
-        # PLATFORM DATA
-        # =================================================
+            product_state = "PAGE_LIVE"
 
         platform_data = {
-
-            "adapter":
-                "square_weebly",
-
-            "external_product_id":
-                external_product_id,
-
-            "language":
-                language,
-
-            "availability_known":
-                availability_known,
-
-            "availability_state":
-                availability_state,
+            "adapter": "square_weebly",
+            "external_product_id": external_product_id,
+            "language": language,
+            "availability_known": availability_known,
+            "availability_state": availability_state,
+            "description_present": bool(description),
         }
 
-
-        # =================================================
-        # NORMALIZED RESULT
-        # =================================================
+        self.diagnostics["products_accepted"] += 1
 
         return RetailerProduct(
-
-            external_id=(
-                external_product_id
-            ),
-
-            title=(
-                title
-            ),
-
-            game=(
-                game
-            ),
-
-            url=(
-                url
-            ),
-
-            price=(
-                price
-            ),
-
-            currency=(
-                currency
-            ),
-
-            # RetailerProduct currently uses a bool.
-            #
-            # Unknown therefore remains False here, but the
-            # availability_known flag in platform_data tells
-            # the monitor NOT to interpret it as sold out.
-
-            available=(
-                available
-            ),
-
-            product_type=(
-                "TCG Product"
-            ),
-
-            product_category=(
-                product_category
-            ),
-
-            product_family=(
-                product_family
-            ),
-
-            product_state=(
-                product_state
-            ),
-
-            image_url=(
-                image_url
-            ),
-
-            vendor=(
-                self.store_name
-            ),
-
+            external_id=external_product_id,
+            title=title,
+            game=game,
+            url=url,
+            price=price,
+            currency=currency,
+            available=available,
+            product_type=product_type,
+            product_category=product_category,
+            product_family=product_family,
+            product_state=product_state,
+            image_url=image_url,
+            vendor=self.store_name,
             tags=None,
-
-            sku=(
-                sku
-            ),
-
-            external_product_id=(
-                external_product_id
-            ),
-
+            sku=sku,
+            external_product_id=external_product_id,
             offer_id=None,
-
             variant_id=None,
-
             purchase_limit=None,
-
             cart_base_url=None,
-
-            platform_data=(
-                platform_data
-            ),
+            platform_data=platform_data,
         )
