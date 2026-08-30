@@ -15,6 +15,7 @@ from app.product_family import (
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
+# Step 6G-A - One Piece Single Recognition
 #
 # Strict Structured TCG Classification
 # Product Family Detection
@@ -325,6 +326,16 @@ ONE_PIECE_SET_PATTERN = re.compile(
 )
 
 
+ONE_PIECE_SINGLE_CARD_PATTERN = re.compile(
+    r"\b(?:"
+    r"(?:OP|EB|PRB|ST|EX)\s*-?\s*\d{1,2}\s*-\s*\d{3}"
+    r"|"
+    r"P\s*-?\s*\d{3}"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 UNSUPPORTED_GAME_TERMS = (
 
     "magic the gathering",
@@ -406,6 +417,17 @@ def classify_game(
 
             and
             SEALED_CONTEXT_PATTERN.search(
+                title
+            )
+        )
+
+        or
+        (
+            "one piece"
+            in text
+
+            and
+            ONE_PIECE_SINGLE_CARD_PATTERN.search(
                 title
             )
         )
@@ -580,10 +602,7 @@ def classify_game(
     return None
 
 
-SINGLE_CARD_NUMBER_PATTERN = re.compile(
-    r"\b(?:OP|EB|ST|P|PRB)\s*-?\s*\d{1,2}\s*-\s*\d{3}\b",
-    re.IGNORECASE,
-)
+SINGLE_CARD_NUMBER_PATTERN = ONE_PIECE_SINGLE_CARD_PATTERN
 
 SINGLE_CARD_DESCRIPTOR_PATTERN = re.compile(
     r"\b(?:full\s*art|alternate\s*art|alt\s*art|parallel|foil|holo|"
@@ -1912,10 +1931,26 @@ class ShopifyAdapter:
 
         if game:
 
+            classification_reason = "structured_game_match"
+
+            if (
+                game == "One Piece"
+                and ONE_PIECE_SINGLE_CARD_PATTERN.search(
+                    normalize_text(
+                        title
+                    )
+                )
+            ):
+
+                classification_reason = (
+                    "one_piece_single_card_number"
+                )
+
             print(
                 (
                     "SHOPIFY PRODUCT CLASSIFIED | "
                     f"Store={self.domain} | "
+                    f"Reason={classification_reason} | "
                     f"Game={game} | "
                     f"Category={product_category} | "
                     f"Family={product_family} | "
