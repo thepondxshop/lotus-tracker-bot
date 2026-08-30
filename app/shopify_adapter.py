@@ -15,7 +15,7 @@ from app.product_family import (
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6G-A - One Piece Single Recognition
+# Step 6G-B - Shopify Inventory Intelligence
 #
 # Strict Structured TCG Classification
 # Product Family Detection
@@ -26,6 +26,8 @@ from app.product_family import (
 # Dynamic Purchasable Variant Selection
 # Variant-Type Matching
 # Purchase Limit Detection
+# Public Inventory Quantity Detection
+# Smart Cart Quantity Guard Metadata
 #
 # IMPORTANT:
 # Game classification does NOT use body_html.
@@ -1120,6 +1122,85 @@ def normalize_variant_id(
     )
 
 
+
+# =========================================================
+# PUBLIC VARIANT INVENTORY QUANTITY
+#
+# Shopify storefront payloads do not always expose an exact
+# quantity. We only accept explicit non-negative integer
+# values. Missing quantity remains UNKNOWN.
+# =========================================================
+
+PUBLIC_INVENTORY_KEYS = (
+    "inventory_quantity",
+    "inventoryQuantity",
+    "quantity_available",
+    "quantityAvailable",
+    "available_quantity",
+    "availableQuantity",
+)
+
+
+def variant_inventory_quantity(
+    variant,
+):
+
+    if not isinstance(
+        variant,
+        dict,
+    ):
+
+        return (
+            None,
+            False,
+        )
+
+    for key in PUBLIC_INVENTORY_KEYS:
+
+        if key not in variant:
+
+            continue
+
+        raw_value = (
+            variant.get(
+                key
+            )
+        )
+
+        if isinstance(
+            raw_value,
+            bool,
+        ):
+
+            continue
+
+        try:
+
+            value = int(
+                raw_value
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            continue
+
+        if value < 0:
+
+            continue
+
+        return (
+            value,
+            True,
+        )
+
+    return (
+        None,
+        False,
+    )
+
 def variant_title(
     variant,
 ):
@@ -1753,6 +1834,8 @@ class ShopifyAdapter:
         selected_variant_title = None
         selected_variant_available = False
         selected_variant_price = None
+        selected_inventory_quantity = None
+        selected_inventory_quantity_known = False
         sku = None
 
         if primary_variant:
@@ -1781,6 +1864,15 @@ class ShopifyAdapter:
 
             selected_variant_price = (
                 variant_price(
+                    primary_variant
+                )
+            )
+
+            (
+                selected_inventory_quantity,
+                selected_inventory_quantity_known,
+            ) = (
+                variant_inventory_quantity(
                     primary_variant
                 )
             )
@@ -1959,6 +2051,8 @@ class ShopifyAdapter:
                     f"Variant={variant_id} | "
                     f"VariantTitle={selected_variant_title} | "
                     f"VariantAvailable={selected_variant_available} | "
+                    f"InventoryKnown={selected_inventory_quantity_known} | "
+                    f"InventoryQuantity={selected_inventory_quantity} | "
                     f"Price={selected_variant_price} | "
                     f"ProductAvailable={available}"
                 )
@@ -2034,6 +2128,12 @@ class ShopifyAdapter:
 
             "variant_price":
                 selected_variant_price,
+
+            "inventory_quantity":
+                selected_inventory_quantity,
+
+            "inventory_quantity_known":
+                selected_inventory_quantity_known,
 
             "purchase_limit":
                 purchase_limit,
