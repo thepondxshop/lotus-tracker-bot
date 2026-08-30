@@ -10,7 +10,7 @@ from urllib.parse import (
 # =========================================================
 # LOTUS SHOPIFY VARIANT VALIDATOR
 # PonDeX Trackers
-# Version 1.0.3
+# Version 1.0.4
 #
 # Smart Cart Variant Validation
 #
@@ -22,6 +22,7 @@ from urllib.parse import (
 # - Variant availability
 # - Current variant price
 # - Variant title
+# - Public exact inventory quantity when exposed
 #
 # Does NOT:
 #
@@ -62,6 +63,10 @@ class ShopifyVariantValidation:
     reason: str | None
 
     product_json_url: str | None
+
+    inventory_quantity: int | None = None
+
+    inventory_quantity_known: bool = False
 
 
 # =========================================================
@@ -116,6 +121,81 @@ def normalize_variant_id(
 
     return value
 
+
+
+# =========================================================
+# PUBLIC INVENTORY QUANTITY
+# =========================================================
+
+PUBLIC_INVENTORY_KEYS = (
+    "inventory_quantity",
+    "inventoryQuantity",
+    "quantity_available",
+    "quantityAvailable",
+    "available_quantity",
+    "availableQuantity",
+)
+
+
+def extract_public_inventory_quantity(
+    variant,
+):
+
+    if not isinstance(
+        variant,
+        dict,
+    ):
+
+        return (
+            None,
+            False,
+        )
+
+    for key in PUBLIC_INVENTORY_KEYS:
+
+        if key not in variant:
+
+            continue
+
+        raw_value = (
+            variant.get(
+                key
+            )
+        )
+
+        if isinstance(
+            raw_value,
+            bool,
+        ):
+
+            continue
+
+        try:
+
+            value = int(
+                raw_value
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            continue
+
+        if value < 0:
+
+            continue
+
+        return (
+            value,
+            True,
+        )
+
+    return (
+        None,
+        False,
+    )
 
 # =========================================================
 # PRODUCT JSON URL
@@ -461,7 +541,7 @@ async def validate_shopify_variant(
             "application/json",
 
         "User-Agent":
-            "PonDeX-Trackers/1.0.3",
+            "PonDeX-Trackers/1.0.4",
     }
 
 
@@ -756,6 +836,16 @@ async def validate_shopify_variant(
     )
 
 
+    (
+        inventory_quantity,
+        inventory_quantity_known,
+    ) = (
+        extract_public_inventory_quantity(
+            variant
+        )
+    )
+
+
     return ShopifyVariantValidation(
 
         checked=True,
@@ -799,6 +889,14 @@ async def validate_shopify_variant(
 
         product_json_url=(
             product_json_url
+        ),
+
+        inventory_quantity=(
+            inventory_quantity
+        ),
+
+        inventory_quantity_known=(
+            inventory_quantity_known
         ),
     )
 
@@ -928,6 +1026,8 @@ def variant_validation_summary(
         f"checked={result.checked}, "
         f"valid={result.valid}, "
         f"available={result.available}, "
+        f"inventory_known={result.inventory_quantity_known}, "
+        f"inventory={result.inventory_quantity}, "
         f"variant={result.variant_id}, "
         f"http={result.http_status}, "
         f"reason={result.reason}"
