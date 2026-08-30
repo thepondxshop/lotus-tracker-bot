@@ -25,7 +25,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6E - Hypno Commerce Intelligence
+# Step 6H-A - Hypno Availability Intelligence
 #
 # SAFETY:
 # - public storefront pages only
@@ -36,6 +36,7 @@ from app.retailer_registry import (
 # - conservative request rate
 # - same-domain discovery only
 # - unknown availability never means sold out
+# - product-scoped availability signals are preferred
 # =========================================================
 
 USER_AGENT = (
@@ -766,49 +767,188 @@ def parse_square_weebly_price(html):
 
     return None, None
 
-def parse_square_weebly_availability(html):
+# =========================================================
+# STEP 6H-A AVAILABILITY INTELLIGENCE
+# =========================================================
+
+AVAILABILITY_URL_PATTERN = re.compile(
+    r"https?://schema\\.org/(InStock|OutOfStock|SoldOut|PreOrder|PreSale|Discontinued)",
+    re.IGNORECASE,
+)
+
+ITEM_AVAILABILITY_PATTERNS = (
+    re.compile(
+        r"""itemprop=["']availability["'][^>]+(?:href|content)=["']([^"']+)["']""",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"""(?:href|content)=["']([^"']+)["'][^>]+itemprop=["']availability["']""",
+        re.IGNORECASE,
+    ),
+)
+
+PURCHASE_CONTROL_PATTERN = re.compile(
+    r"""<(?:button|input)[^>]*(?:add[\\s_-]*to[\\s_-]*(?:cart|bag)|data-action=["'][^"']*(?:cart|bag)[^"']*["'])[^>]*>""",
+    re.IGNORECASE,
+)
+
+
+def normalize_availability_value(value):
+    text = clean_text(value).lower().replace("_", "").replace("-", "")
+    if not text:
+        return None
+
+    if "outofstock" in text or "soldout" in text or "discontinued" in text:
+        return False, True, "OUT_OF_STOCK"
+
+    if "instock" in text or "preorder" in text or "presale" in text:
+        return True, True, "IN_STOCK"
+
+    return None
+
+
+def iter_offer_dicts(value):
+    if isinstance(value, dict):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                yield item
+
+
+def parse_schema_availability(schema):
+    if not isinstance(schema, dict):
+        return None
+
+    candidates = list(iter_offer_dicts(schema.get("offers")))
+
+    for offer in list(candidates):
+        candidates.extend(iter_offer_dicts(offer.get("offers")))
+
+    for offer in candidates:
+        for key in ("availability", "itemAvailability", "stockStatus"):
+            result = normalize_availability_value(offer.get(key))
+            if result is not None:
+                return result
+
+    return None
+
+
+def parse_microdata_availability(html):
+    html = html or ""
+
+    for pattern in ITEM_AVAILABILITY_PATTERNS:
+        match = pattern.search(html)
+        if match:
+            result = normalize_availability_value(match.group(1))
+            if result is not None:
+                return result
+
+    match = AVAILABILITY_URL_PATTERN.search(html)
+    if match:
+        return normalize_availability_value(match.group(1))
+
+    return None
+
+
+def parse_purchase_control_availability(html):
+    for match in PURCHASE_CONTROL_PATTERN.finditer(html or ""):
+        lowered = match.group(0).lower()
+
+        if (
+            " disabled" in lowered
+            or 'aria-disabled="true"' in lowered
+            or "aria-disabled='true'" in lowered
+        ):
+            continue
+
+        return True, True, "IN_STOCK"
+
+    return None
+
+
+def parse_embedded_availability_flags(html):
     lowered = (html or "").lower()
 
     explicit_out = (
         '"sold_out":true',
         '"soldout":true',
         '"out_of_stock":true',
-        '"available":false',
+        '"outofstock":true',
+        '"is_sold_out":true',
         '"is_available":false',
+        '"isavailable":false',
+        '"available_for_sale":false',
+        '"availableforsale":false',
         'data-sold-out="true"',
-        "out of stock",
-        "sold out",
-        "currently unavailable",
     )
 
     if any(term in lowered for term in explicit_out):
         return False, True, "OUT_OF_STOCK"
 
     explicit_in = (
-        '"available":true',
+        '"sold_out":false',
+        '"soldout":false',
+        '"out_of_stock":false',
+        '"outofstock":false',
         '"is_available":true',
+        '"isavailable":true',
+        '"available_for_sale":true',
+        '"availableforsale":true',
         'data-sold-out="false"',
-        "add to cart",
-        "add to bag",
     )
 
     if any(term in lowered for term in explicit_in):
         return True, True, "IN_STOCK"
 
+    return None
+
+
+def parse_square_weebly_availability(html):
+    html = html or ""
+
+    result = parse_microdata_availability(html)
+    if result is not None:
+        return result
+
+    result = parse_purchase_control_availability(html)
+    if result is not None:
+        return result
+
+    result = parse_embedded_availability_flags(html)
+    if result is not None:
+        return result
+
+    lowered = html.lower()
+
+    explicit_out = (
+        "currently unavailable",
+        "this item is unavailable",
+        "item is unavailable",
+        "currently out of stock",
+        "temporarily out of stock",
+        "sold out",
+    )
+
+    if any(term in lowered for term in explicit_out):
+        return False, True, "OUT_OF_STOCK"
+
     return False, False, "UNKNOWN"
 
 
-def parse_availability(offer, html):
+def parse_availability(schema, offer, html):
+    result = parse_schema_availability(schema)
+    if result is not None:
+        return result
+
     if isinstance(offer, dict):
-        availability = str(offer.get("availability") or "").strip().lower()
-
-        if "instock" in availability:
-            return True, True, "IN_STOCK"
-
-        if "outofstock" in availability or "soldout" in availability:
-            return False, True, "OUT_OF_STOCK"
+        for key in ("availability", "itemAvailability", "stockStatus"):
+            result = normalize_availability_value(offer.get(key))
+            if result is not None:
+                return result
 
     return parse_square_weebly_availability(html)
+
 
 def parse_product_id_from_url(url):
     parsed = urlparse(url)
@@ -1362,9 +1502,23 @@ class SquareWeeblyAdapter(RetailerAdapter):
             self.diagnostics["missing_prices"] += 1
 
         available, availability_known, availability_state = parse_availability(
+            schema,
             offer,
             html,
         )
+
+        availability_source = "UNKNOWN"
+
+        if parse_schema_availability(schema) is not None:
+            availability_source = "SCHEMA"
+        elif parse_microdata_availability(html) is not None:
+            availability_source = "MICRODATA"
+        elif parse_purchase_control_availability(html) is not None:
+            availability_source = "PURCHASE_CONTROL"
+        elif parse_embedded_availability_flags(html) is not None:
+            availability_source = "EMBEDDED_FLAG"
+        elif availability_known:
+            availability_source = "VISIBLE_TEXT"
 
         if not availability_known:
             self.diagnostics["unknown_availability"] += 1
@@ -1422,6 +1576,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "language": language,
             "availability_known": availability_known,
             "availability_state": availability_state,
+            "availability_source": availability_source,
             "description_present": bool(description),
         }
 
@@ -1444,6 +1599,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
             f"Family={product_family} | "
             f"Price={price} {currency} | "
             f"Availability={availability_state} | "
+            f"AvailabilitySource={availability_source} | "
             f"Title={title}"
         )
 
