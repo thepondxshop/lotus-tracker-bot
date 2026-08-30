@@ -25,7 +25,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6D - TCG-Aware Discovery + Diagnostics
+# Step 6E - Hypno Commerce Intelligence
 #
 # SAFETY:
 # - public storefront pages only
@@ -51,7 +51,7 @@ MAX_PRODUCT_PAGES = 200
 # Discover broadly, but only fetch a bounded number of product pages.
 # This prevents a large comic/game store from hiding TCG products beyond
 # the first alphabetically sorted product URLs.
-MAX_DISCOVERED_PRODUCT_URLS = 1200
+MAX_DISCOVERED_PRODUCT_URLS = 10000
 
 # Search/catalog seeds are public storefront pages only.
 TCG_DISCOVERY_PATHS = (
@@ -223,6 +223,12 @@ SEALED_KEYWORDS = (
     "etb",
     "starter deck",
     "structure deck",
+    "battle deck",
+    "v battle deck",
+    "vmax battle deck",
+    "ex battle deck",
+    "deluxe battle deck",
+    "league battle deck",
     "collection box",
     "collection set",
     "gift collection",
@@ -580,6 +586,12 @@ def infer_product_type(title):
         (("booster bundle",), "Booster Bundle"),
         (("booster pack", "sleeved booster"), "Booster Pack"),
         (("double pack", "double-pack"), "Double Pack"),
+        (("league battle deck",), "League Battle Deck"),
+        (("vmax battle deck",), "VMAX Battle Deck"),
+        (("v battle deck",), "V Battle Deck"),
+        (("ex battle deck",), "EX Battle Deck"),
+        (("deluxe battle deck",), "Deluxe Battle Deck"),
+        (("battle deck",), "Battle Deck"),
         (("starter deck",), "Starter Deck"),
         (("structure deck",), "Structure Deck"),
         (("premium collection",), "Premium Collection"),
@@ -712,6 +724,80 @@ def parse_offer(schema):
     return offers
 
 
+SQUARE_PRICE_MINOR_PATTERN = re.compile(
+    r'"amount"\s*:\s*([0-9]+)\s*,\s*"currency"\s*:\s*"([A-Z]{3})"',
+    re.IGNORECASE,
+)
+
+SQUARE_PRICE_DECIMAL_PATTERNS = (
+    re.compile(r'data-price=["\']([0-9]+(?:\.[0-9]{1,2})?)["\']', re.IGNORECASE),
+    re.compile(r'\$\s*([0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
+)
+
+SQUARE_CURRENCY_PATTERN = re.compile(
+    r'"currency"\s*:\s*"([A-Z]{3})"',
+    re.IGNORECASE,
+)
+
+def parse_square_weebly_price(html):
+    if not html:
+        return None, None
+
+    match = SQUARE_PRICE_MINOR_PATTERN.search(html)
+    if match:
+        try:
+            return int(match.group(1)) / 100.0, match.group(2).upper()
+        except (TypeError, ValueError):
+            pass
+
+    for pattern in SQUARE_PRICE_DECIMAL_PATTERNS:
+        match = pattern.search(html)
+        if not match:
+            continue
+        try:
+            amount = float(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        currency = None
+        currency_match = SQUARE_CURRENCY_PATTERN.search(html)
+        if currency_match:
+            currency = currency_match.group(1).upper()
+        return amount, currency
+
+    return None, None
+
+def parse_square_weebly_availability(html):
+    lowered = (html or "").lower()
+
+    explicit_out = (
+        '"sold_out":true',
+        '"soldout":true',
+        '"out_of_stock":true',
+        '"available":false',
+        '"is_available":false',
+        'data-sold-out="true"',
+        "out of stock",
+        "sold out",
+        "currently unavailable",
+    )
+
+    if any(term in lowered for term in explicit_out):
+        return False, True, "OUT_OF_STOCK"
+
+    explicit_in = (
+        '"available":true',
+        '"is_available":true',
+        'data-sold-out="false"',
+        "add to cart",
+        "add to bag",
+    )
+
+    if any(term in lowered for term in explicit_in):
+        return True, True, "IN_STOCK"
+
+    return False, False, "UNKNOWN"
+
+
 def parse_availability(offer, html):
     if isinstance(offer, dict):
         availability = str(offer.get("availability") or "").strip().lower()
@@ -722,27 +808,7 @@ def parse_availability(offer, html):
         if "outofstock" in availability or "soldout" in availability:
             return False, True, "OUT_OF_STOCK"
 
-    lowered = html.lower()
-
-    strong_out_terms = (
-        "out of stock",
-        "sold out",
-        "currently unavailable",
-    )
-
-    if any(term in lowered for term in strong_out_terms):
-        return False, True, "OUT_OF_STOCK"
-
-    strong_in_terms = (
-        "add to cart",
-        "add to bag",
-    )
-
-    if any(term in lowered for term in strong_in_terms):
-        return True, True, "IN_STOCK"
-
-    return False, False, "UNKNOWN"
-
+    return parse_square_weebly_availability(html)
 
 def parse_product_id_from_url(url):
     parsed = urlparse(url)
@@ -845,6 +911,8 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "products_rejected": 0,
             "unknown_availability": 0,
             "missing_prices": 0,
+            "in_stock_products": 0,
+            "out_of_stock_products": 0,
             "http_429": 0,
             "http_blocked": 0,
             "last_http_status": None,
@@ -1088,9 +1156,20 @@ class SquareWeeblyAdapter(RetailerAdapter):
             if product_url_priority_score(url) > 0
         )
 
-        selected = ranked[
-            : self.max_product_pages
+        priority_urls = [
+            url for url in ranked
+            if product_url_priority_score(url) > 0
         ]
+        fallback_urls = [
+            url for url in ranked
+            if product_url_priority_score(url) <= 0
+        ]
+
+        selected = list(priority_urls[: self.max_product_pages])
+        if len(selected) < self.max_product_pages:
+            selected.extend(
+                fallback_urls[: self.max_product_pages - len(selected)]
+            )
 
         self.diagnostics[
             "product_urls_total_discovered"
@@ -1260,8 +1339,10 @@ class SquareWeeblyAdapter(RetailerAdapter):
                 if price is not None:
                     break
 
+        square_currency = None
+
         if price is None:
-            self.diagnostics["missing_prices"] += 1
+            price, square_currency = parse_square_weebly_price(html)
 
         currency = "USD"
 
@@ -1274,6 +1355,11 @@ class SquareWeeblyAdapter(RetailerAdapter):
             match = CURRENCY_PATTERN.search(html)
             if match:
                 currency = match.group(1).upper()
+            elif square_currency:
+                currency = square_currency
+
+        if price is None:
+            self.diagnostics["missing_prices"] += 1
 
         available, availability_known, availability_state = parse_availability(
             offer,
@@ -1322,8 +1408,10 @@ class SquareWeeblyAdapter(RetailerAdapter):
         language = family_language(product_family)
 
         if availability_state == "IN_STOCK":
+            self.diagnostics["in_stock_products"] += 1
             product_state = "STOCK_AVAILABLE"
         elif availability_state == "OUT_OF_STOCK":
+            self.diagnostics["out_of_stock_products"] += 1
             product_state = "SOLD_OUT"
         else:
             product_state = "PAGE_LIVE"
@@ -1354,6 +1442,8 @@ class SquareWeeblyAdapter(RetailerAdapter):
             f"Game={game} | "
             f"Category={product_category} | "
             f"Family={product_family} | "
+            f"Price={price} {currency} | "
+            f"Availability={availability_state} | "
             f"Title={title}"
         )
 
