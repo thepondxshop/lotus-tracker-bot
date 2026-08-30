@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 from datetime import datetime
@@ -79,6 +80,8 @@ from app.store_health import (
 # Native Currency
 # Smart Cart
 # Dynamic Variant Switching
+# Inventory Quantity Snapshots
+# Smart Cart Quantity Guard Metadata
 # Variant-Switch Price Protection
 # =========================================================
 
@@ -118,6 +121,15 @@ MONITOR_STATUS = {
         0,
 
     "variant_switches":
+        0,
+
+    "inventory_quantity_changes":
+        0,
+
+    "inventory_quantity_known":
+        0,
+
+    "inventory_quantity_unknown":
         0,
 
     "sealed_products":
@@ -238,6 +250,177 @@ def normalize_category(
         value
     )
 
+
+
+# =========================================================
+# INVENTORY PLATFORM DATA
+# =========================================================
+
+def safe_inventory_quantity(
+    value,
+):
+
+    if value is None or isinstance(
+        value,
+        bool,
+    ):
+
+        return None
+
+    try:
+
+        value = int(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    return (
+        value
+        if value >= 0
+        else None
+    )
+
+
+def load_platform_data(
+    store_product,
+):
+
+    raw_value = getattr(
+        store_product,
+        "platform_data",
+        None,
+    )
+
+    if not raw_value:
+
+        return {}
+
+    if isinstance(
+        raw_value,
+        dict,
+    ):
+
+        return dict(
+            raw_value
+        )
+
+    try:
+
+        parsed = json.loads(
+            raw_value
+        )
+
+        if isinstance(
+            parsed,
+            dict,
+        ):
+
+            return parsed
+
+    except Exception:
+
+        pass
+
+    return {}
+
+
+def save_inventory_platform_data(
+    store_product,
+    *,
+    quantity,
+    quantity_known,
+    variant_id,
+):
+
+    if not hasattr(
+        store_product,
+        "platform_data",
+    ):
+
+        return
+
+    data = (
+        load_platform_data(
+            store_product
+        )
+    )
+
+    data[
+        "shopify_inventory_quantity"
+    ] = (
+        quantity
+        if quantity_known
+        else None
+    )
+
+    data[
+        "shopify_inventory_quantity_known"
+    ] = bool(
+        quantity_known
+    )
+
+    data[
+        "shopify_inventory_variant_id"
+    ] = (
+        normalize_variant_id(
+            variant_id
+        )
+    )
+
+    data[
+        "shopify_inventory_observed_at"
+    ] = (
+        datetime.utcnow().isoformat()
+    )
+
+    store_product.platform_data = (
+        json.dumps(
+            data,
+            separators=(
+                ",",
+                ":",
+            ),
+            sort_keys=True,
+        )
+    )
+
+
+def get_previous_inventory_snapshot(
+    store_product,
+):
+
+    data = (
+        load_platform_data(
+            store_product
+        )
+    )
+
+    known = bool(
+        data.get(
+            "shopify_inventory_quantity_known"
+        )
+    )
+
+    quantity = (
+        safe_inventory_quantity(
+            data.get(
+                "shopify_inventory_quantity"
+            )
+        )
+        if known
+        else None
+    )
+
+    return (
+        quantity,
+        known,
+    )
 
 async def add_shopify_store(
     name,
@@ -1258,6 +1441,15 @@ async def scan_shopify_store(
         "variant_switches":
             0,
 
+        "inventory_quantity_changes":
+            0,
+
+        "inventory_quantity_known":
+            0,
+
+        "inventory_quantity_unknown":
+            0,
+
         "initial_seed":
             False,
 
@@ -1446,6 +1638,57 @@ async def scan_shopify_store(
                     ),
                 )
 
+                save_inventory_platform_data(
+
+                    store_product,
+
+                    quantity=(
+                        safe_inventory_quantity(
+                            item.get(
+                                "inventory_quantity"
+                            )
+                        )
+                    ),
+
+                    quantity_known=(
+                        bool(
+                            item.get(
+                                "inventory_quantity_known"
+                            )
+                        )
+                    ),
+
+                    variant_id=(
+                        item.get(
+                            "variant_id"
+                        )
+                    ),
+                )
+
+                if bool(
+                    item.get(
+                        "inventory_quantity_known"
+                    )
+                ):
+
+                    stats[
+                        "inventory_quantity_known"
+                    ] += 1
+
+                    MONITOR_STATUS[
+                        "inventory_quantity_known"
+                    ] += 1
+
+                else:
+
+                    stats[
+                        "inventory_quantity_unknown"
+                    ] += 1
+
+                    MONITOR_STATUS[
+                        "inventory_quantity_unknown"
+                    ] += 1
+
                 session.add(
                     store_product
                 )
@@ -1588,6 +1831,98 @@ async def scan_shopify_store(
                         "variant_id"
                     )
                 )
+            )
+
+            (
+                old_inventory_quantity,
+                old_inventory_quantity_known,
+            ) = (
+                get_previous_inventory_snapshot(
+                    store_product
+                )
+            )
+
+            new_inventory_quantity_known = bool(
+                item.get(
+                    "inventory_quantity_known"
+                )
+            )
+
+            new_inventory_quantity = (
+                safe_inventory_quantity(
+                    item.get(
+                        "inventory_quantity"
+                    )
+                )
+                if new_inventory_quantity_known
+                else None
+            )
+
+            if new_inventory_quantity_known:
+
+                stats[
+                    "inventory_quantity_known"
+                ] += 1
+
+                MONITOR_STATUS[
+                    "inventory_quantity_known"
+                ] += 1
+
+            else:
+
+                stats[
+                    "inventory_quantity_unknown"
+                ] += 1
+
+                MONITOR_STATUS[
+                    "inventory_quantity_unknown"
+                ] += 1
+
+            inventory_quantity_changed = (
+                old_inventory_quantity_known
+                and
+                new_inventory_quantity_known
+                and
+                old_inventory_quantity
+                != new_inventory_quantity
+            )
+
+            if inventory_quantity_changed:
+
+                stats[
+                    "inventory_quantity_changes"
+                ] += 1
+
+                MONITOR_STATUS[
+                    "inventory_quantity_changes"
+                ] += 1
+
+                print(
+                    (
+                        "SHOPIFY INVENTORY QUANTITY CHANGE | "
+                        f"Store={store.name} | "
+                        f"Product={item['title']} | "
+                        f"Variant={new_variant_id} | "
+                        f"{old_inventory_quantity}"
+                        f"->{new_inventory_quantity}"
+                    )
+                )
+
+            save_inventory_platform_data(
+
+                store_product,
+
+                quantity=(
+                    new_inventory_quantity
+                ),
+
+                quantity_known=(
+                    new_inventory_quantity_known
+                ),
+
+                variant_id=(
+                    new_variant_id
+                ),
             )
 
             variant_changed = (
@@ -2022,7 +2357,10 @@ async def scan_shopify_store(
                 datetime.utcnow()
             )
 
-            if changed:
+            if (
+                changed
+                or inventory_quantity_changed
+            ):
 
                 stats[
                     "updated"
@@ -2085,6 +2423,18 @@ async def scan_all_shopify_stores():
     MONITOR_STATUS[
         "last_error"
     ] = None
+
+    MONITOR_STATUS[
+        "inventory_quantity_changes"
+    ] = 0
+
+    MONITOR_STATUS[
+        "inventory_quantity_known"
+    ] = 0
+
+    MONITOR_STATUS[
+        "inventory_quantity_unknown"
+    ] = 0
 
     for store in stores:
 
