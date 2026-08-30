@@ -64,7 +64,7 @@ from app.shopify_variant_validator import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.3
+# Version 1.0.4
 #
 # Source Routing
 # Strict Member Audience Filtering
@@ -81,6 +81,8 @@ from app.shopify_variant_validator import (
 # Live Shopify Variant Validation
 # Discord Link Buttons
 # Purchase Limit Protection
+# Live Inventory Quantity Guard
+# Conservative Unknown-Quantity Cart Safety
 # Affiliate Links
 # =========================================================
 
@@ -968,6 +970,128 @@ def is_smart_cart_ready(
     return True
 
 
+
+# =========================================================
+# LIVE INVENTORY HELPERS
+# =========================================================
+
+def get_validation_inventory(
+    validation,
+):
+
+    if validation is None:
+
+        return (
+            None,
+            False,
+        )
+
+    known = bool(
+        getattr(
+            validation,
+            "inventory_quantity_known",
+            False,
+        )
+    )
+
+    if not known:
+
+        return (
+            None,
+            False,
+        )
+
+    value = getattr(
+        validation,
+        "inventory_quantity",
+        None,
+    )
+
+    if value is None or isinstance(
+        value,
+        bool,
+    ):
+
+        return (
+            None,
+            False,
+        )
+
+    try:
+
+        value = int(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return (
+            None,
+            False,
+        )
+
+    if value < 0:
+
+        return (
+            None,
+            False,
+        )
+
+    return (
+        value,
+        True,
+    )
+
+
+def get_guarded_cart_quantities(
+    smart_cart,
+    validation,
+):
+
+    if smart_cart is None:
+
+        return []
+
+    base_quantities = list(
+        smart_cart.quantities
+        or []
+    )
+
+    inventory_quantity, inventory_known = (
+        get_validation_inventory(
+            validation
+        )
+    )
+
+    if inventory_known:
+
+        if inventory_quantity <= 0:
+
+            return []
+
+        return [
+            quantity
+            for quantity in base_quantities
+            if quantity <= inventory_quantity
+        ]
+
+    # Exact inventory is unknown. Never imply x5/x10 means
+    # those units definitely exist.
+    if 1 in base_quantities:
+
+        return [
+            1
+        ]
+
+    return (
+        base_quantities[
+            :1
+        ]
+    )
+
 # =========================================================
 # BUILD EVENT EMBED
 # =========================================================
@@ -1756,6 +1880,68 @@ async def build_event_embed(
 
 
     # =====================================================
+    # LIVE INVENTORY QUANTITY
+    # =====================================================
+
+    if (
+        variant_validation is not None
+        and
+        bool(
+            event.get(
+                "in_stock"
+            )
+        )
+    ):
+
+        (
+            live_inventory_quantity,
+            live_inventory_known,
+        ) = (
+            get_validation_inventory(
+                variant_validation
+            )
+        )
+
+        if live_inventory_known:
+
+            if live_inventory_quantity == 1:
+
+                stock_text = (
+                    "⚠️ 1 remaining"
+                )
+
+            elif live_inventory_quantity <= 5:
+
+                stock_text = (
+                    f"⚠️ {live_inventory_quantity} remaining"
+                )
+
+            else:
+
+                stock_text = (
+                    f"📦 {live_inventory_quantity} remaining"
+                )
+
+        else:
+
+            stock_text = (
+                "🟢 In Stock\n"
+                "Quantity Unknown"
+            )
+
+        embed.add_field(
+
+            name="Stock",
+
+            value=(
+                stock_text
+            ),
+
+            inline=True,
+        )
+
+
+    # =====================================================
     # PURCHASE LIMIT
     # =====================================================
 
@@ -1911,13 +2097,20 @@ async def build_event_embed(
 
         if smart_cart_ready:
 
+            guarded_quantities = (
+                get_guarded_cart_quantities(
+                    smart_cart,
+                    variant_validation,
+                )
+            )
+
             quantity_text = (
                 ", ".join(
 
                     f"x{quantity}"
 
                     for quantity
-                    in smart_cart.quantities
+                    in guarded_quantities
                 )
             )
 
@@ -1932,6 +2125,18 @@ async def build_event_embed(
 
                     f"Quantities: "
                     f"{quantity_text}"
+                    + (
+                        "\n📦 Exact stock verified"
+                        if bool(
+                            getattr(
+                                variant_validation,
+                                "inventory_quantity_known",
+                                False,
+                            )
+                        )
+                        else
+                        "\nℹ️ Exact stock unknown — conservative cart"
+                    )
                 ),
 
                 inline=False,
@@ -2174,8 +2379,11 @@ def build_alert_view(
 
     if smart_cart_ready:
 
-        quantities = list(
-            smart_cart.quantities
+        quantities = (
+            get_guarded_cart_quantities(
+                smart_cart,
+                variant_validation,
+            )
         )
 
 
