@@ -406,6 +406,11 @@ RETAILER_PLATFORM_CHOICES = [
         name="Square / Weebly",
         value="square_weebly",
     ),
+
+    app_commands.Choice(
+        name="WooCommerce",
+        value="woocommerce",
+    ),
 ]
 
 
@@ -3376,7 +3381,10 @@ async def addretailer(
 
         return
 
-    if clean_platform != "square_weebly":
+    if clean_platform not in {
+        "square_weebly",
+        "woocommerce",
+    }:
 
         await interaction.followup.send(
 
@@ -3530,9 +3538,14 @@ async def addretailer(
             inline=True,
         )
 
+        platform_label = {
+            "square_weebly": "Square / Weebly",
+            "woocommerce": "WooCommerce",
+        }.get(clean_platform, clean_platform)
+
         embed.add_field(
             name="Platform",
-            value="`Square / Weebly`",
+            value=f"`{platform_label}`",
             inline=True,
         )
 
@@ -3754,7 +3767,10 @@ async def scanretailer(
 
             return
 
-        if platform != "square_weebly":
+        if platform not in {
+            "square_weebly",
+            "woocommerce",
+        }:
 
             await interaction.followup.send(
 
@@ -3782,8 +3798,8 @@ async def scanretailer(
             await interaction.followup.send(
 
                 (
-                    "\u274c The Square / Weebly adapter "
-                    "is not registered."
+                    "\u274c The universal retailer adapter "
+                    f"for `{platform}` is not registered."
                 ),
 
                 ephemeral=True,
@@ -3903,9 +3919,14 @@ async def scanretailer(
             inline=True,
         )
 
+        scan_platform_label = {
+            "square_weebly": "Square / Weebly",
+            "woocommerce": "WooCommerce",
+        }.get(platform, platform)
+
         embed.add_field(
             name="Platform",
-            value="`Square / Weebly`",
+            value=f"`{scan_platform_label}`",
             inline=True,
         )
 
