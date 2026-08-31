@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1B — TCG-Aware Discovery + Singles Classification
+Step 6J-1C — Taxonomy-Aware TCG Discovery
 
 Safety:
 - Public storefront Store API only
@@ -71,6 +71,29 @@ TCG_SEARCH_QUERIES = (
 STORE_API_PRODUCT_PATHS = (
     "/wp-json/wc/store/v1/products",
     "/wp-json/wc/store/products",
+)
+
+STORE_API_CATEGORY_PATHS = (
+    "/wp-json/wc/store/v1/products/categories",
+    "/wp-json/wc/store/products/categories",
+)
+
+STORE_API_TAG_PATHS = (
+    "/wp-json/wc/store/v1/products/tags",
+    "/wp-json/wc/store/products/tags",
+)
+
+MAX_TAXONOMY_PAGES = 5
+MAX_TAXONOMY_TERMS = 500
+MAX_MATCHED_CATEGORIES = 30
+MAX_MATCHED_TAGS = 30
+MAX_TAXONOMY_PRODUCT_PAGES_PER_TERM = 2
+
+TCG_TAXONOMY_TERMS = (
+    "pokemon", "pokémon", "one piece", "gundam",
+    "dragon ball fusion world", "fusion world", "riftbound",
+    "palworld", "naruto", "cyberpunk", "azuki", "hellbreak",
+    "tcg", "trading card", "card game", "singles", "single cards",
 )
 
 
@@ -563,6 +586,11 @@ class WooCommerceAdapter(RetailerAdapter):
             "search_queries_successful": 0,
             "search_products_returned": 0,
             "unique_products_collected": 0,
+            "taxonomy_category_terms_seen": 0,
+            "taxonomy_tag_terms_seen": 0,
+            "taxonomy_categories_matched": 0,
+            "taxonomy_tags_matched": 0,
+            "taxonomy_products_returned": 0,
             "http_429": 0,
             "http_blocked": 0,
             "last_http_status": None,
@@ -659,6 +687,57 @@ class WooCommerceAdapter(RetailerAdapter):
                 return path
 
         return None
+
+    async def _fetch_taxonomy_terms(self, session, paths, diagnostic_key):
+        selected_path = None
+        terms = []
+        for path in paths:
+            payload, _ = await self._fetch_json(
+                session, f"{self.base_url}{path}?per_page=1&page=1"
+            )
+            if isinstance(payload, list):
+                selected_path = path
+                break
+        if not selected_path:
+            return []
+        for page in range(1, MAX_TAXONOMY_PAGES + 1):
+            payload, _ = await self._fetch_json(
+                session,
+                f"{self.base_url}{selected_path}?per_page={DEFAULT_PER_PAGE}&page={page}",
+            )
+            if not isinstance(payload, list):
+                break
+            terms.extend(payload)
+            if len(terms) >= MAX_TAXONOMY_TERMS:
+                terms = terms[:MAX_TAXONOMY_TERMS]
+                break
+            if len(payload) < DEFAULT_PER_PAGE:
+                break
+            await asyncio.sleep(self.request_delay)
+        self.diagnostics[diagnostic_key] = len(terms)
+        return terms
+
+    def _matching_taxonomy_terms(self, terms, limit):
+        matched = []
+        seen = set()
+        for term in terms or []:
+            if not isinstance(term, dict):
+                continue
+            term_id = term.get("id")
+            name = clean_text(term.get("name"))
+            if term_id is None or not name:
+                continue
+            lowered = name.lower()
+            if not any(marker in lowered for marker in TCG_TAXONOMY_TERMS):
+                continue
+            key = str(term_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            matched.append({"id": key, "name": name})
+            if len(matched) >= limit:
+                break
+        return matched
 
     async def fetch_products(self):
         self._reset_diagnostics()
@@ -848,6 +927,54 @@ class WooCommerceAdapter(RetailerAdapter):
 
                 await asyncio.sleep(self.request_delay)
 
+            # Taxonomy is discovery-only. Strict title classification remains final.
+            category_terms = await self._fetch_taxonomy_terms(
+                session, STORE_API_CATEGORY_PATHS, "taxonomy_category_terms_seen"
+            )
+            tag_terms = await self._fetch_taxonomy_terms(
+                session, STORE_API_TAG_PATHS, "taxonomy_tag_terms_seen"
+            )
+            matched_categories = self._matching_taxonomy_terms(
+                category_terms, MAX_MATCHED_CATEGORIES
+            )
+            matched_tags = self._matching_taxonomy_terms(
+                tag_terms, MAX_MATCHED_TAGS
+            )
+            self.diagnostics["taxonomy_categories_matched"] = len(matched_categories)
+            self.diagnostics["taxonomy_tags_matched"] = len(matched_tags)
+            print(
+                "WOOCOMMERCE TAXONOMY DISCOVERY | "
+                f"Store={self.store_name} | CategoriesSeen={len(category_terms)} | "
+                f"CategoriesMatched={len(matched_categories)} | "
+                f"TagsSeen={len(tag_terms)} | TagsMatched={len(matched_tags)}"
+            )
+            from urllib.parse import urlencode
+            for kind, parameter, term in (
+                [("CATEGORY", "category", x) for x in matched_categories]
+                + [("TAG", "tag", x) for x in matched_tags]
+            ):
+                if len(products_by_key) >= MAX_PRODUCTS:
+                    break
+                returned = added_total = 0
+                for page in range(1, MAX_TAXONOMY_PRODUCT_PAGES_PER_TERM + 1):
+                    params = urlencode({"per_page": DEFAULT_PER_PAGE, "page": page, parameter: term["id"]})
+                    payload, _ = await self._fetch_json(session, f"{self.base_url}{path}?{params}")
+                    if not isinstance(payload, list):
+                        break
+                    returned += len(payload)
+                    added_total += add_products(payload)
+                    if len(payload) < DEFAULT_PER_PAGE or len(products_by_key) >= MAX_PRODUCTS:
+                        break
+                    await asyncio.sleep(self.request_delay)
+                self.diagnostics["taxonomy_products_returned"] += returned
+                print(
+                    "WOOCOMMERCE TAXONOMY PRODUCTS | "
+                    f"Store={self.store_name} | Type={kind} | Term={term['name']} | "
+                    f"TermID={term['id']} | Returned={returned} | NewUnique={added_total} | "
+                    f"UniqueTotal={len(products_by_key)}"
+                )
+                await asyncio.sleep(self.request_delay)
+
         products = list(products_by_key.values())[:MAX_PRODUCTS]
 
         self.diagnostics["product_urls_discovered"] = len(products)
@@ -864,6 +991,9 @@ class WooCommerceAdapter(RetailerAdapter):
             f"{self.diagnostics.get('search_queries_attempted')} | "
             f"SearchProductsReturned="
             f"{self.diagnostics.get('search_products_returned')} | "
+            f"CategoriesMatched={self.diagnostics.get('taxonomy_categories_matched')} | "
+            f"TagsMatched={self.diagnostics.get('taxonomy_tags_matched')} | "
+            f"TaxonomyProductsReturned={self.diagnostics.get('taxonomy_products_returned')} | "
             f"UniqueProducts={len(products)}"
         )
 
