@@ -6,6 +6,7 @@ from html import unescape
 from urllib.parse import (
     urljoin,
     urlparse,
+    urlunparse,
 )
 
 import aiohttp
@@ -25,7 +26,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6H-B - Square Storefront Availability Diagnostics
+# Step 6H-C - Safe Public Storefront Resource Discovery
 #
 # SAFETY:
 # - public storefront pages only
@@ -958,6 +959,40 @@ def parse_availability(schema, offer, html):
 DIAGNOSTIC_MAX_MATCHES = 8
 DIAGNOSTIC_CONTEXT_CHARS = 180
 
+SAFE_RESOURCE_MAX_PER_PRODUCT = 6
+SAFE_RESOURCE_TIMEOUT = 10
+SAFE_RESOURCE_MAX_BYTES = 1_000_000
+
+SAFE_RESOURCE_PATH_TERMS = (
+    "/api",
+    "/app",
+    "/product",
+    "/products",
+    "/item",
+    "/items",
+    "/catalog",
+    "/inventory",
+    "/variation",
+    "/variations",
+)
+
+BLOCKED_RESOURCE_PATH_TERMS = (
+    "/checkout",
+    "/cart",
+    "/login",
+    "/signin",
+    "/sign-in",
+    "/account",
+    "/customer",
+    "/customers",
+    "/session",
+    "/sessions",
+    "/payment",
+    "/payments",
+    "/order",
+    "/orders",
+)
+
 SQUARE_DIAGNOSTIC_PATTERNS = (
     ("schema_availability", re.compile(
         r"https?://schema\\.org/(?:InStock|OutOfStock|SoldOut|PreOrder|PreSale|Discontinued)",
@@ -1087,6 +1122,115 @@ def print_square_storefront_diagnostics(
         )
 
 
+
+def normalize_public_resource_hint(base_url, hint):
+    if not hint:
+        return None
+
+    raw = unescape(str(hint).strip()).replace(r"\/", "/")
+
+    if raw.startswith("//"):
+        raw = "https:" + raw
+
+    url = urljoin(base_url, raw)
+    parsed = urlparse(url)
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    if not is_same_domain(url, base_url):
+        return None
+
+    path = (parsed.path or "/").lower()
+
+    if any(term in path for term in BLOCKED_RESOURCE_PATH_TERMS):
+        return None
+
+    if not any(term in path for term in SAFE_RESOURCE_PATH_TERMS):
+        return None
+
+    if path.rstrip("/") == "/app":
+        return None
+
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        parsed.params,
+        parsed.query,
+        "",
+    ))
+
+
+def select_safe_public_resource_urls(base_url, diagnostics):
+    selected = []
+    seen = set()
+
+    for hint in (diagnostics or {}).get("public_endpoint_hints", []):
+        candidate = normalize_public_resource_hint(base_url, hint)
+
+        if not candidate or candidate in seen:
+            continue
+
+        # The product page itself is already fetched; resource discovery is
+        # intended to identify additional public storefront data resources.
+        if canonicalize_product_url(candidate) == canonicalize_product_url(base_url):
+            continue
+
+        seen.add(candidate)
+        selected.append(candidate)
+
+        if len(selected) >= SAFE_RESOURCE_MAX_PER_PRODUCT:
+            break
+
+    return selected
+
+
+def summarize_resource_signals(text):
+    text = text or ""
+    signals = {}
+
+    for label, pattern in SQUARE_DIAGNOSTIC_PATTERNS:
+        count = 0
+        samples = []
+
+        for match in pattern.finditer(text):
+            count += 1
+
+            if len(samples) < 2:
+                samples.append(
+                    compact_diagnostic_text(
+                        diagnostic_context(text, match),
+                        300,
+                    )
+                )
+
+            if count >= 20:
+                break
+
+        if count:
+            signals[label] = {
+                "count": count,
+                "samples": samples,
+            }
+
+    return signals
+
+
+def resource_mentions_product(text, *, external_product_id, title):
+    lowered = (text or "").lower()
+
+    if external_product_id and str(external_product_id).lower() in lowered:
+        return True
+
+    normalized_title = clean_text(title).lower()
+
+    if normalized_title and len(normalized_title) >= 12:
+        return normalized_title in lowered
+
+    return False
+
+
 def parse_product_id_from_url(url):
     parsed = urlparse(url)
     match = re.search(
@@ -1193,6 +1337,10 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "availability_diagnostics": 0,
             "availability_diagnostic_signals": 0,
             "availability_endpoint_hints": 0,
+            "safe_resources_attempted": 0,
+            "safe_resources_successful": 0,
+            "safe_resources_relevant": 0,
+            "safe_resources_blocked": 0,
             "http_429": 0,
             "http_blocked": 0,
             "last_http_status": None,
@@ -1286,6 +1434,153 @@ class SquareWeeblyAdapter(RetailerAdapter):
             print(
                 "SQUARE/WEEBLY REQUEST ERROR | "
                 f"Store={self.store_name} | URL={url} | "
+                f"{type(error).__name__}: {error}"
+            )
+            return None
+
+    async def _inspect_safe_public_resource(
+        self,
+        session,
+        *,
+        resource_url,
+        product_url,
+        external_product_id,
+        title,
+    ):
+        self.diagnostics["safe_resources_attempted"] += 1
+
+        timeout = aiohttp.ClientTimeout(total=SAFE_RESOURCE_TIMEOUT)
+
+        try:
+            async with session.get(
+                resource_url,
+                timeout=timeout,
+                allow_redirects=True,
+            ) as response:
+                final_url = str(response.url)
+
+                if not is_same_domain(final_url, self.base_url):
+                    self.diagnostics["safe_resources_blocked"] += 1
+                    print(
+                        "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                        f"Store={self.store_name} | Reason=CROSS_DOMAIN_REDIRECT | "
+                        f"URL={resource_url} | FinalURL={final_url}"
+                    )
+                    return None
+
+                final_path = (urlparse(final_url).path or "/").lower()
+
+                if any(
+                    term in final_path
+                    for term in BLOCKED_RESOURCE_PATH_TERMS
+                ):
+                    self.diagnostics["safe_resources_blocked"] += 1
+                    print(
+                        "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                        f"Store={self.store_name} | Reason=BLOCKED_PATH | "
+                        f"URL={final_url}"
+                    )
+                    return None
+
+                if response.status == 429:
+                    print(
+                        "SQUARE/WEEBLY RESOURCE RATE LIMITED | "
+                        f"Store={self.store_name} | URL={final_url}"
+                    )
+                    return None
+
+                if response.status in {401, 403}:
+                    print(
+                        "SQUARE/WEEBLY RESOURCE ACCESS DENIED | "
+                        f"Store={self.store_name} | HTTP={response.status} | "
+                        f"URL={final_url}"
+                    )
+                    return None
+
+                if response.status >= 400:
+                    print(
+                        "SQUARE/WEEBLY RESOURCE HTTP ERROR | "
+                        f"Store={self.store_name} | HTTP={response.status} | "
+                        f"URL={final_url}"
+                    )
+                    return None
+
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        if int(content_length) > SAFE_RESOURCE_MAX_BYTES:
+                            print(
+                                "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                                f"Store={self.store_name} | Reason=TOO_LARGE | "
+                                f"URL={final_url}"
+                            )
+                            return None
+                    except (TypeError, ValueError):
+                        pass
+
+                body = await response.content.read(SAFE_RESOURCE_MAX_BYTES + 1)
+
+                if len(body) > SAFE_RESOURCE_MAX_BYTES:
+                    print(
+                        "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                        f"Store={self.store_name} | Reason=TOO_LARGE | "
+                        f"URL={final_url}"
+                    )
+                    return None
+
+                charset = response.charset or "utf-8"
+                try:
+                    text = body.decode(charset, errors="ignore")
+                except LookupError:
+                    text = body.decode("utf-8", errors="ignore")
+
+                self.diagnostics["safe_resources_successful"] += 1
+
+                relevant = resource_mentions_product(
+                    text,
+                    external_product_id=external_product_id,
+                    title=title,
+                )
+
+                signals = summarize_resource_signals(text)
+
+                if relevant:
+                    self.diagnostics["safe_resources_relevant"] += 1
+
+                print(
+                    "SQUARE/WEEBLY RESOURCE DIAGNOSTIC | "
+                    f"Store={self.store_name} | "
+                    f"ProductID={external_product_id or 'UNKNOWN'} | "
+                    f"Relevant={relevant} | "
+                    f"Signals={','.join(sorted(signals.keys())) or 'none'} | "
+                    f"ContentType={response.headers.get('Content-Type', '')} | "
+                    f"URL={final_url}"
+                )
+
+                for label, details in sorted(signals.items()):
+                    for index, sample in enumerate(
+                        details.get("samples", [])[:2],
+                        start=1,
+                    ):
+                        print(
+                            "SQUARE/WEEBLY RESOURCE SIGNAL | "
+                            f"Store={self.store_name} | "
+                            f"ProductID={external_product_id or 'UNKNOWN'} | "
+                            f"Type={label} | Index={index} | "
+                            f"Context={sample}"
+                        )
+
+                return {
+                    "url": final_url,
+                    "relevant": relevant,
+                    "signal_types": sorted(signals.keys()),
+                    "content_type": response.headers.get("Content-Type", ""),
+                }
+
+        except (asyncio.TimeoutError, aiohttp.ClientError) as error:
+            print(
+                "SQUARE/WEEBLY RESOURCE REQUEST ERROR | "
+                f"Store={self.store_name} | URL={resource_url} | "
                 f"{type(error).__name__}: {error}"
             )
             return None
@@ -1521,6 +1816,73 @@ class SquareWeeblyAdapter(RetailerAdapter):
                 if html:
                     self.diagnostics["product_pages_successful"] += 1
                     raw_products.append({"url": url, "html": html})
+
+                    # Step 6H-C: inspect only additional same-origin public
+                    # resources referenced by an accepted TCG product whose
+                    # availability remains unknown. Diagnostic-only.
+                    schema = find_product_schema(html)
+                    offer = parse_offer(schema)
+
+                    diagnostic_title = None
+                    if isinstance(schema, dict):
+                        diagnostic_title = clean_text(schema.get("name"))
+
+                    if not diagnostic_title:
+                        diagnostic_title = find_meta_value(
+                            html,
+                            OG_TITLE_PATTERN,
+                            OG_TITLE_PATTERN_REVERSED,
+                        )
+
+                    if not diagnostic_title:
+                        title_match = TITLE_PATTERN.search(html)
+                        if title_match:
+                            diagnostic_title = clean_text(title_match.group(1))
+
+                    if diagnostic_title:
+                        diagnostic_title = re.sub(
+                            r"\s*\|\s*Hypno Comics.*$",
+                            "",
+                            diagnostic_title,
+                            flags=re.IGNORECASE,
+                        ).strip()
+
+                    diagnostic_game = classify_game(diagnostic_title or "")
+                    _, diagnostic_known, _ = parse_availability(
+                        schema,
+                        offer,
+                        html,
+                    )
+
+                    if diagnostic_game and not diagnostic_known:
+                        diagnostic_product_id = parse_product_id_from_url(url)
+                        page_diagnostics = collect_square_storefront_diagnostics(
+                            html,
+                            diagnostic_product_id,
+                        )
+
+                        safe_resources = select_safe_public_resource_urls(
+                            url,
+                            page_diagnostics,
+                        )
+
+                        print(
+                            "SQUARE/WEEBLY SAFE RESOURCE PLAN | "
+                            f"Store={self.store_name} | "
+                            f"ProductID={diagnostic_product_id or 'UNKNOWN'} | "
+                            f"Selected={len(safe_resources)} | "
+                            f"Title={diagnostic_title}"
+                        )
+
+                        for resource_url in safe_resources:
+                            await self._inspect_safe_public_resource(
+                                session,
+                                resource_url=resource_url,
+                                product_url=url,
+                                external_product_id=diagnostic_product_id,
+                                title=diagnostic_title,
+                            )
+                            await asyncio.sleep(self.request_delay)
                 else:
                     self.diagnostics["product_pages_failed"] += 1
 
