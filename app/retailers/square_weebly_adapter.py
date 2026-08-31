@@ -25,7 +25,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6H-A - Hypno Availability Intelligence
+# Step 6H-B - Square Storefront Availability Diagnostics
 #
 # SAFETY:
 # - public storefront pages only
@@ -950,6 +950,143 @@ def parse_availability(schema, offer, html):
     return parse_square_weebly_availability(html)
 
 
+# =========================================================
+# STEP 6H-B STOREFRONT DIAGNOSTICS
+# Diagnostic-only: inspect already-fetched public product HTML.
+# =========================================================
+
+DIAGNOSTIC_MAX_MATCHES = 8
+DIAGNOSTIC_CONTEXT_CHARS = 180
+
+SQUARE_DIAGNOSTIC_PATTERNS = (
+    ("schema_availability", re.compile(
+        r"https?://schema\\.org/(?:InStock|OutOfStock|SoldOut|PreOrder|PreSale|Discontinued)",
+        re.IGNORECASE,
+    )),
+    ("availability_key", re.compile(
+        r'''["'](?:availability|itemAvailability|stockStatus|sold_out|soldout|out_of_stock|is_available|available_for_sale)["']\\s*[:=]\\s*[^,}\\]\\n<]{1,100}''',
+        re.IGNORECASE,
+    )),
+    ("square_item_id", re.compile(
+        r'''["'](?:item_id|itemId|catalog_object_id|catalogObjectId|square_item_id|squareItemId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+        re.IGNORECASE,
+    )),
+    ("variation_id", re.compile(
+        r'''["'](?:variation_id|variationId|item_variation_id|itemVariationId|catalog_variation_id|catalogVariationId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+        re.IGNORECASE,
+    )),
+    ("merchant_id", re.compile(
+        r'''["'](?:merchant_id|merchantId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+        re.IGNORECASE,
+    )),
+    ("location_id", re.compile(
+        r'''["'](?:location_id|locationId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+        re.IGNORECASE,
+    )),
+    ("purchase_control", re.compile(
+        r'''<(?:button|input)[^>]{0,700}(?:add[\\s_-]*to[\\s_-]*(?:cart|bag)|data-action=["'][^"']*(?:cart|bag)[^"']*["'])[^>]*>''',
+        re.IGNORECASE,
+    )),
+)
+
+PUBLIC_ENDPOINT_PATTERN = re.compile(
+    r'''(?:https?:)?//[^"'<>\\\\\\s]+|/(?:api|app|store|product|products|catalog|inventory|item|items|variation|variations|cart)[^"'<>\\\\\\s]{0,240}''',
+    re.IGNORECASE,
+)
+
+
+def compact_diagnostic_text(value, limit=360):
+    text = clean_text(value)
+    text = re.sub(r"\\s+", " ", text).strip()
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def diagnostic_context(html, match):
+    start = max(0, match.start() - DIAGNOSTIC_CONTEXT_CHARS)
+    end = min(len(html), match.end() + DIAGNOSTIC_CONTEXT_CHARS)
+    return compact_diagnostic_text(html[start:end])
+
+
+def collect_square_storefront_diagnostics(html, external_product_id):
+    html = html or ""
+    diagnostics = {
+        "url_product_id": external_product_id,
+        "signals": {},
+        "public_endpoint_hints": [],
+    }
+
+    for label, pattern in SQUARE_DIAGNOSTIC_PATTERNS:
+        matches = []
+        for match in pattern.finditer(html):
+            matches.append({
+                "match": compact_diagnostic_text(match.group(0)),
+                "context": diagnostic_context(html, match),
+            })
+            if len(matches) >= DIAGNOSTIC_MAX_MATCHES:
+                break
+        if matches:
+            diagnostics["signals"][label] = matches
+
+    hints, seen = [], set()
+    for match in PUBLIC_ENDPOINT_PATTERN.finditer(html):
+        raw = unescape(match.group(0)).replace(r"\\/", "/")
+        lowered = raw.lower()
+        if not any(token in lowered for token in (
+            "square", "weebly", "catalog", "inventory", "variation",
+            "/api", "/app", "/product", "/products", "/item", "/items", "/cart",
+        )):
+            continue
+        if any(suffix in lowered for suffix in (
+            ".css", ".jpg", ".jpeg", ".png", ".gif", ".svg",
+            ".woff", ".woff2", ".ttf",
+        )):
+            continue
+        hint = compact_diagnostic_text(raw, 300)
+        if not hint or hint in seen:
+            continue
+        seen.add(hint)
+        hints.append(hint)
+        if len(hints) >= 20:
+            break
+
+    diagnostics["public_endpoint_hints"] = hints
+    return diagnostics
+
+
+def print_square_storefront_diagnostics(
+    *, store_name, title, product_url, external_product_id, diagnostics
+):
+    signals = diagnostics.get("signals") or {}
+    hints = diagnostics.get("public_endpoint_hints") or []
+    counts = ",".join(
+        f"{key}:{len(value)}" for key, value in sorted(signals.items())
+    ) or "none"
+
+    print(
+        "SQUARE/WEEBLY AVAILABILITY DIAGNOSTIC | "
+        f"Store={store_name} | ProductID={external_product_id or 'UNKNOWN'} | "
+        f"Signals={counts} | EndpointHints={len(hints)} | "
+        f"Title={title} | URL={product_url}"
+    )
+
+    for label, matches in sorted(signals.items()):
+        for index, entry in enumerate(matches[:3], start=1):
+            print(
+                "SQUARE/WEEBLY DIAGNOSTIC SIGNAL | "
+                f"Store={store_name} | ProductID={external_product_id or 'UNKNOWN'} | "
+                f"Type={label} | Index={index} | "
+                f"Match={entry.get('match') or ''} | "
+                f"Context={entry.get('context') or ''}"
+            )
+
+    for index, hint in enumerate(hints[:10], start=1):
+        print(
+            "SQUARE/WEEBLY DIAGNOSTIC ENDPOINT | "
+            f"Store={store_name} | ProductID={external_product_id or 'UNKNOWN'} | "
+            f"Index={index} | Hint={hint}"
+        )
+
+
 def parse_product_id_from_url(url):
     parsed = urlparse(url)
     match = re.search(
@@ -1053,6 +1190,9 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "missing_prices": 0,
             "in_stock_products": 0,
             "out_of_stock_products": 0,
+            "availability_diagnostics": 0,
+            "availability_diagnostic_signals": 0,
+            "availability_endpoint_hints": 0,
             "http_429": 0,
             "http_blocked": 0,
             "last_http_status": None,
@@ -1524,6 +1664,32 @@ class SquareWeeblyAdapter(RetailerAdapter):
             self.diagnostics["unknown_availability"] += 1
 
         external_product_id = parse_product_id_from_url(url)
+
+        storefront_diagnostics = None
+
+        if not availability_known:
+            storefront_diagnostics = collect_square_storefront_diagnostics(
+                html,
+                external_product_id,
+            )
+
+            self.diagnostics["availability_diagnostics"] += 1
+            self.diagnostics["availability_diagnostic_signals"] += sum(
+                len(items)
+                for items in storefront_diagnostics.get("signals", {}).values()
+            )
+            self.diagnostics["availability_endpoint_hints"] += len(
+                storefront_diagnostics.get("public_endpoint_hints", [])
+            )
+
+            print_square_storefront_diagnostics(
+                store_name=self.store_name,
+                title=title,
+                product_url=url,
+                external_product_id=external_product_id,
+                diagnostics=storefront_diagnostics,
+            )
+
         sku = None
 
         if isinstance(schema, dict):
@@ -1577,6 +1743,12 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "availability_known": availability_known,
             "availability_state": availability_state,
             "availability_source": availability_source,
+            "availability_diagnostic_signal_types": sorted(
+                (storefront_diagnostics or {}).get("signals", {}).keys()
+            ),
+            "availability_endpoint_hint_count": len(
+                (storefront_diagnostics or {}).get("public_endpoint_hints", [])
+            ),
             "description_present": bool(description),
         }
 
