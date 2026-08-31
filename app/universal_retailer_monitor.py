@@ -5,7 +5,7 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.1.0
 
-Step 6I — Universal Retailer Capability Enforcement
+Step 6I-B — Automatic Capability-Safe Universal Monitoring
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -1150,7 +1150,27 @@ async def run_universal_retailer_monitor(
     try:
         while True:
             try:
-                await scan_all_universal_stores()
+                logger.info(
+                    "UNIVERSAL AUTOMATIC CYCLE START | "
+                    "CapabilityEnforcement=ENABLED | "
+                    "IntervalSeconds=%s",
+                    scan_interval,
+                )
+                cycle_result = await scan_all_universal_stores()
+
+                logger.info(
+                    "UNIVERSAL AUTOMATIC CYCLE COMPLETE | "
+                    "Success=%s | Stores=%s | Failed=%s | "
+                    "Products=%s | Events=%s | "
+                    "StockEventsBlocked=%s | PriceEventsBlocked=%s",
+                    cycle_result.get("success"),
+                    MONITOR_STATUS.get("stores_scanned", 0),
+                    MONITOR_STATUS.get("stores_failed", 0),
+                    MONITOR_STATUS.get("products_seen", 0),
+                    MONITOR_STATUS.get("events_created", 0),
+                    MONITOR_STATUS.get("capability_stock_events_blocked", 0),
+                    MONITOR_STATUS.get("capability_price_events_blocked", 0),
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:
