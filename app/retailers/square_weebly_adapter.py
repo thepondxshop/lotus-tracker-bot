@@ -26,7 +26,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6H-C - Safe Public Storefront Resource Discovery
+# Step 6H-D - Production-Safe Discovery Mode + Single Classification Cleanup
 #
 # SAFETY:
 # - public storefront pages only
@@ -572,6 +572,15 @@ def classify_product_category(title):
     for keyword in SINGLE_KEYWORDS:
         if keyword in text:
             return "SINGLE"
+
+    # Step 6H-D: narrow promo-card recognition.
+    if (
+        "black star promo" in text
+        or "promo card" in text
+        or "single card" in text
+        or "individual card" in text
+    ):
+        return "SINGLE"
 
     return "UNKNOWN"
 
@@ -1817,72 +1826,11 @@ class SquareWeeblyAdapter(RetailerAdapter):
                     self.diagnostics["product_pages_successful"] += 1
                     raw_products.append({"url": url, "html": html})
 
-                    # Step 6H-C: inspect only additional same-origin public
-                    # resources referenced by an accepted TCG product whose
-                    # availability remains unknown. Diagnostic-only.
-                    schema = find_product_schema(html)
-                    offer = parse_offer(schema)
-
-                    diagnostic_title = None
-                    if isinstance(schema, dict):
-                        diagnostic_title = clean_text(schema.get("name"))
-
-                    if not diagnostic_title:
-                        diagnostic_title = find_meta_value(
-                            html,
-                            OG_TITLE_PATTERN,
-                            OG_TITLE_PATTERN_REVERSED,
-                        )
-
-                    if not diagnostic_title:
-                        title_match = TITLE_PATTERN.search(html)
-                        if title_match:
-                            diagnostic_title = clean_text(title_match.group(1))
-
-                    if diagnostic_title:
-                        diagnostic_title = re.sub(
-                            r"\s*\|\s*Hypno Comics.*$",
-                            "",
-                            diagnostic_title,
-                            flags=re.IGNORECASE,
-                        ).strip()
-
-                    diagnostic_game = classify_game(diagnostic_title or "")
-                    _, diagnostic_known, _ = parse_availability(
-                        schema,
-                        offer,
-                        html,
-                    )
-
-                    if diagnostic_game and not diagnostic_known:
-                        diagnostic_product_id = parse_product_id_from_url(url)
-                        page_diagnostics = collect_square_storefront_diagnostics(
-                            html,
-                            diagnostic_product_id,
-                        )
-
-                        safe_resources = select_safe_public_resource_urls(
-                            url,
-                            page_diagnostics,
-                        )
-
-                        print(
-                            "SQUARE/WEEBLY SAFE RESOURCE PLAN | "
-                            f"Store={self.store_name} | "
-                            f"ProductID={diagnostic_product_id or 'UNKNOWN'} | "
-                            f"Selected={len(safe_resources)} | "
-                            f"Title={diagnostic_title}"
-                        )
-
-                        for resource_url in safe_resources:
-                            await self._inspect_safe_public_resource(
-                                session,
-                                resource_url=resource_url,
-                                product_url=url,
-                                external_product_id=diagnostic_product_id,
-                                title=diagnostic_title,
-                            )
-                            await asyncio.sleep(self.request_delay)
+                    # Step 6H-D: production-safe mode.
+                    # Product HTML is still parsed normally, but speculative
+                    # /app/* resource probing is disabled after 6H-C showed
+                    # those hints were non-actionable for Hypno. Availability
+                    # remains UNKNOWN unless a trustworthy public page signal exists.
                 else:
                     self.diagnostics["product_pages_failed"] += 1
 
@@ -2105,6 +2053,11 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "availability_known": availability_known,
             "availability_state": availability_state,
             "availability_source": availability_source,
+            "availability_capability": (
+                "TRUSTED_PUBLIC_SIGNAL"
+                if availability_known
+                else "DISCOVERY_PRICE_ONLY"
+            ),
             "availability_diagnostic_signal_types": sorted(
                 (storefront_diagnostics or {}).get("signals", {}).keys()
             ),
@@ -2134,6 +2087,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
             f"Price={price} {currency} | "
             f"Availability={availability_state} | "
             f"AvailabilitySource={availability_source} | "
+            f"AvailabilityCapability={'TRUSTED_PUBLIC_SIGNAL' if availability_known else 'DISCOVERY_PRICE_ONLY'} | "
             f"Title={title}"
         )
 
