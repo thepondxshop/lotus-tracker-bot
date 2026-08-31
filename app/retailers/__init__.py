@@ -4,6 +4,7 @@ PonDeX Trackers
 
 Retailer Adapter Loader
 Version: 1.0.4
+Step 6J-1A — WooCommerce Universal Adapter Registration
 """
 
 from __future__ import annotations
@@ -11,32 +12,14 @@ from __future__ import annotations
 import logging
 
 
-# =========================================================
-# VERSION
-# =========================================================
-
 VERSION = "1.0.4"
-
-
-# =========================================================
-# LOGGING
-# =========================================================
 
 logger = logging.getLogger(
     "lotus.retailers"
 )
 
-
-# =========================================================
-# ADAPTER LOADING STATE
-# =========================================================
-
 _ADAPTERS_LOADED = False
 
-
-# =========================================================
-# LOAD RETAILER ADAPTERS
-# =========================================================
 
 def load_retailer_adapters() -> None:
     """
@@ -59,26 +42,26 @@ def load_retailer_adapters() -> None:
     # -----------------------------------------------------
 
     from app.retailers import square_weebly_adapter
-
-    # Keep reference so static analysis does not consider
-    # the import unused.
     _ = square_weebly_adapter
+
+    # -----------------------------------------------------
+    # WooCommerce
+    # -----------------------------------------------------
+
+    from app.retailers import woocommerce_adapter
+    _ = woocommerce_adapter
 
     _ADAPTERS_LOADED = True
 
     logger.info(
         (
             "RETAILER ADAPTERS LOADED | "
-            "Version=%s"
+            "Version=%s | "
+            "Platforms=square_weebly,woocommerce"
         ),
         VERSION,
     )
 
 
-# =========================================================
-# STATUS
-# =========================================================
-
 def retailer_adapters_loaded() -> bool:
-
     return _ADAPTERS_LOADED
