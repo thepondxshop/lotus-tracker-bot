@@ -26,7 +26,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6H-D - Production-Safe Discovery Mode + Single Classification Cleanup
+# Step 6I-A - Discovery Recovery + Capability Alignment
 #
 # SAFETY:
 # - public storefront pages only
@@ -1594,27 +1594,46 @@ class SquareWeeblyAdapter(RetailerAdapter):
             )
             return None
 
+    def _decoded_discovery_html(self, html):
+        """
+        Return a storefront-safe decoded copy for URL discovery only.
+
+        Some Weebly/Square pages serialize product links inside JSON or
+        JavaScript using escaped slashes / unicode slash escapes. This does
+        not affect product parsing; it only makes public product URLs visible
+        to the existing bounded discovery pass.
+        """
+        text = unescape(html or "")
+        text = text.replace(r"\/", "/")
+        text = text.replace(r"\u002F", "/")
+        text = text.replace(r"\u002f", "/")
+        text = text.replace(r"\x2F", "/")
+        text = text.replace(r"\x2f", "/")
+        return text
+
     def _extract_product_urls(self, html, source_url):
         urls = set()
 
         if not html:
             return urls
 
-        for match in HREF_PATTERN.finditer(html):
+        decoded_html = self._decoded_discovery_html(html)
+
+        # Normal anchors.
+        for match in HREF_PATTERN.finditer(decoded_html):
             candidate = normalize_url(source_url, match.group(1))
 
             if not candidate:
                 continue
-
             if not is_same_domain(candidate, self.base_url):
                 continue
-
             if not is_product_url(candidate):
                 continue
 
             urls.add(canonicalize_product_url(candidate))
 
-        for match in PRODUCT_PATH_PATTERN.finditer(html):
+        # Product URLs embedded in HTML / JSON / JavaScript.
+        for match in PRODUCT_PATH_PATTERN.finditer(decoded_html):
             candidate = normalize_url(source_url, match.group(0))
 
             if (
@@ -1624,6 +1643,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
             ):
                 urls.add(canonicalize_product_url(candidate))
 
+        # Keep the original escaped form as a compatibility fallback.
         for match in ESCAPED_PRODUCT_PATH_PATTERN.finditer(html):
             candidate = normalize_url(source_url, match.group(0))
 
@@ -1634,7 +1654,8 @@ class SquareWeeblyAdapter(RetailerAdapter):
             ):
                 urls.add(canonicalize_product_url(candidate))
 
-        for match in XML_LOC_PATTERN.finditer(html):
+        # Sitemap <loc> product entries.
+        for match in XML_LOC_PATTERN.finditer(decoded_html):
             candidate = normalize_url(
                 source_url,
                 clean_text(match.group(1)),
@@ -1667,6 +1688,42 @@ class SquareWeeblyAdapter(RetailerAdapter):
             if is_discovery_candidate(candidate):
                 parsed = urlparse(candidate)
                 links.add(parsed._replace(fragment="").geturl())
+
+        return links
+
+    def _extract_sitemap_discovery_links(self, html, source_url):
+        """
+        Follow only same-domain public sitemap/catalog links from <loc>.
+        This supports sitemap-index layouts without expanding outside the
+        existing MAX_DISCOVERY_PAGES bound.
+        """
+        links = set()
+
+        if not html:
+            return links
+
+        decoded_html = self._decoded_discovery_html(html)
+
+        for match in XML_LOC_PATTERN.finditer(decoded_html):
+            candidate = normalize_url(
+                source_url,
+                clean_text(match.group(1)),
+            )
+
+            if not candidate:
+                continue
+            if not is_same_domain(candidate, self.base_url):
+                continue
+            if is_product_url(candidate):
+                continue
+
+            path = (urlparse(candidate).path or "/").lower()
+
+            if (
+                "sitemap" in path
+                or is_discovery_candidate(candidate)
+            ):
+                links.add(candidate)
 
         return links
 
@@ -1707,13 +1764,37 @@ class SquareWeeblyAdapter(RetailerAdapter):
 
             discovered.update(newly_found)
 
+            decoded_html = self._decoded_discovery_html(html)
+            href_count = len(HREF_PATTERN.findall(decoded_html))
+            xml_loc_count = len(XML_LOC_PATTERN.findall(decoded_html))
+
+            print(
+                "SQUARE/WEEBLY DISCOVERY PAGE | "
+                f"Store={self.store_name} | "
+                f"URL={url} | "
+                f"Bytes={len(html)} | "
+                f"Hrefs={href_count} | "
+                f"XmlLocs={xml_loc_count} | "
+                f"ProductsFound={len(newly_found)}"
+            )
+
             if len(discovered) >= MAX_DISCOVERED_PRODUCT_URLS:
                 break
 
-            for candidate in self._extract_discovery_links(
-                html,
-                url,
-            ):
+            discovery_links = set(
+                self._extract_discovery_links(
+                    html,
+                    url,
+                )
+            )
+            discovery_links.update(
+                self._extract_sitemap_discovery_links(
+                    html,
+                    url,
+                )
+            )
+
+            for candidate in discovery_links:
                 if candidate in visited or candidate in queued:
                     continue
 
@@ -2054,7 +2135,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
             "availability_state": availability_state,
             "availability_source": availability_source,
             "availability_capability": (
-                "TRUSTED_PUBLIC_SIGNAL"
+                "FULL_AVAILABILITY"
                 if availability_known
                 else "DISCOVERY_PRICE_ONLY"
             ),
@@ -2087,7 +2168,7 @@ class SquareWeeblyAdapter(RetailerAdapter):
             f"Price={price} {currency} | "
             f"Availability={availability_state} | "
             f"AvailabilitySource={availability_source} | "
-            f"AvailabilityCapability={'TRUSTED_PUBLIC_SIGNAL' if availability_known else 'DISCOVERY_PRICE_ONLY'} | "
+            f"AvailabilityCapability={'FULL_AVAILABILITY' if availability_known else 'DISCOVERY_PRICE_ONLY'} | "
             f"Title={title}"
         )
 
