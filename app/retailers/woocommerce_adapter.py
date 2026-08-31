@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1E — Hierarchical WooCommerce Taxonomy Intelligence
+Step 6J-1F — Taxonomy Rejection Intelligence
 
 Safety:
 - Public storefront Store API only
@@ -86,6 +86,7 @@ STORE_API_TAG_PATHS = (
 MAX_TAXONOMY_PAGES = 5
 MAX_TAXONOMY_TERMS = 500
 MAX_MATCHED_CATEGORIES = 30
+MAX_TAXONOMY_REJECTION_LOGS = 40
 MAX_MATCHED_TAGS = 30
 MAX_TAXONOMY_PRODUCT_PAGES_PER_TERM = 2
 
@@ -652,6 +653,9 @@ class WooCommerceAdapter(RetailerAdapter):
             "taxonomy_tags_matched": 0,
             "taxonomy_hierarchy_roots": 0,
             "taxonomy_category_descendants_matched": 0,
+            "taxonomy_assisted_candidates": 0,
+            "taxonomy_rejections_logged": 0,
+            "taxonomy_rejections_card_structure": 0,
             "taxonomy_products_returned": 0,
             "http_429": 0,
             "http_blocked": 0,
@@ -1155,6 +1159,14 @@ class WooCommerceAdapter(RetailerAdapter):
         )
 
         print(
+            "WOOCOMMERCE TAXONOMY REJECTION SUMMARY | "
+            f"Store={self.store_name} | "
+            f"Candidates={self.diagnostics.get('taxonomy_assisted_candidates')} | "
+            f"Logged={self.diagnostics.get('taxonomy_rejections_logged')} | "
+            f"CardStructureRejects={self.diagnostics.get('taxonomy_rejections_card_structure')}"
+        )
+
+        print(
             "WOOCOMMERCE FETCH COMPLETE | "
             f"Store={self.store_name} | "
             f"ProductsFetched={len(products)} | "
@@ -1163,6 +1175,42 @@ class WooCommerceAdapter(RetailerAdapter):
         )
 
         return products
+
+    def _log_taxonomy_rejection(
+        self,
+        *,
+        title,
+        taxonomy_context,
+        game_hint,
+        card_structure,
+        reason,
+    ):
+        categories = list(taxonomy_context.get("categories") or [])
+        tags = list(taxonomy_context.get("tags") or [])
+
+        if not categories and not tags:
+            return
+
+        self.diagnostics["taxonomy_assisted_candidates"] += 1
+
+        if card_structure:
+            self.diagnostics["taxonomy_rejections_card_structure"] += 1
+
+        if self.diagnostics["taxonomy_rejections_logged"] >= MAX_TAXONOMY_REJECTION_LOGS:
+            return
+
+        self.diagnostics["taxonomy_rejections_logged"] += 1
+
+        print(
+            "WOOCOMMERCE TAXONOMY REJECTED | "
+            f"Store={self.store_name} | "
+            f"Title={title} | "
+            f"GameHint={game_hint or 'none'} | "
+            f"CardStructure={card_structure} | "
+            f"Categories={','.join(categories) or 'none'} | "
+            f"Tags={','.join(tags) or 'none'} | "
+            f"Reason={reason}"
+        )
 
     def normalize_product(self, product):
         if not isinstance(product, dict):
@@ -1196,6 +1244,25 @@ class WooCommerceAdapter(RetailerAdapter):
         )
 
         if not game:
+            game_hint = taxonomy_game_hint(taxonomy_terms)
+            card_structure = strong_card_listing_structure(title)
+
+            if taxonomy_terms:
+                if not game_hint:
+                    rejection_reason = "NO_SUPPORTED_GAME_HINT"
+                elif not card_structure:
+                    rejection_reason = "GAME_HINT_PRESENT_BUT_NO_STRONG_CARD_STRUCTURE"
+                else:
+                    rejection_reason = "CLASSIFIER_REJECTED_DESPITE_SUPPORTING_EVIDENCE"
+
+                self._log_taxonomy_rejection(
+                    title=title,
+                    taxonomy_context=taxonomy_context,
+                    game_hint=game_hint,
+                    card_structure=card_structure,
+                    reason=rejection_reason,
+                )
+
             self.diagnostics["products_rejected"] += 1
             return None
 
