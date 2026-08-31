@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1C — Taxonomy-Aware TCG Discovery
+Step 6J-1D — Taxonomy-Assisted Strict Classification + Availability Integrity
 
 Safety:
 - Public storefront Store API only
@@ -290,6 +290,65 @@ def normalize_domain(domain):
     return value.strip("/")
 
 
+def product_identity_key(product):
+    if not isinstance(product, dict):
+        return None
+    product_id = product.get("id")
+    if product_id is not None:
+        return f"id:{product_id}"
+    permalink = clean_text(product.get("permalink"))
+    return f"url:{permalink}" if permalink else None
+
+
+def taxonomy_game_hint(term_names):
+    text = " ".join(clean_text(x).lower() for x in (term_names or []) if clean_text(x))
+    if "pokemon" in text or "pokémon" in text:
+        return "Pokemon"
+    if "one piece" in text:
+        return "One Piece"
+    if "gundam" in text:
+        return "Gundam"
+    if "dragon ball fusion world" in text or "fusion world" in text:
+        return "Dragon Ball Fusion World"
+    if "riftbound" in text:
+        return "Riftbound"
+    if "palworld" in text:
+        return "Palworld"
+    if "naruto" in text:
+        return "Naruto"
+    if "cyberpunk" in text:
+        return "Cyberpunk TCG"
+    if "azuki" in text:
+        return "Azuki TCG"
+    if "hellbreak" in text:
+        return "Hellbreak TCG"
+    return None
+
+
+def strong_card_listing_structure(title):
+    text = clean_text(title)
+    lowered = text.lower()
+    return bool(
+        ONE_PIECE_CARD_NUMBER_PATTERN.search(text)
+        or POKEMON_SET_NUMBER_PATTERN.search(text)
+        or (
+            POKEMON_SINGLE_NUMBER_PATTERN.search(text)
+            and POKEMON_CONDITION_PATTERN.search(text)
+        )
+        or any(term in lowered for term in SINGLE_KEYWORDS)
+    )
+
+
+def classify_game_with_taxonomy(title, taxonomy_terms):
+    direct = classify_game(title)
+    if direct:
+        return direct, "TITLE"
+    hint = taxonomy_game_hint(taxonomy_terms)
+    if hint and strong_card_listing_structure(title):
+        return hint, "TAXONOMY_PLUS_CARD_STRUCTURE"
+    return None, "TAXONOMY_INSUFFICIENT" if hint else "NONE"
+
+
 def classify_game(title):
     text = clean_text(title).lower()
 
@@ -563,6 +622,7 @@ class WooCommerceAdapter(RetailerAdapter):
         self.max_pages = max(1, min(int(max_pages), MAX_GENERAL_PAGES))
         self.store_api_path = None
         self.diagnostics = {}
+        self.product_taxonomy_context = {}
         self._reset_diagnostics()
 
     def _reset_diagnostics(self):
@@ -741,6 +801,7 @@ class WooCommerceAdapter(RetailerAdapter):
 
     async def fetch_products(self):
         self._reset_diagnostics()
+        self.product_taxonomy_context = {}
 
         headers = {
             "User-Agent": USER_AGENT,
@@ -962,6 +1023,18 @@ class WooCommerceAdapter(RetailerAdapter):
                     if not isinstance(payload, list):
                         break
                     returned += len(payload)
+
+                    for taxonomy_product in payload:
+                        key = product_identity_key(taxonomy_product)
+                        if not key:
+                            continue
+                        context = self.product_taxonomy_context.setdefault(
+                            key, {"categories": [], "tags": []}
+                        )
+                        bucket = "categories" if kind == "CATEGORY" else "tags"
+                        if term["name"] not in context[bucket]:
+                            context[bucket].append(term["name"])
+
                     added_total += add_products(payload)
                     if len(payload) < DEFAULT_PER_PAGE or len(products_by_key) >= MAX_PRODUCTS:
                         break
@@ -1024,7 +1097,19 @@ class WooCommerceAdapter(RetailerAdapter):
             self.diagnostics["products_rejected"] += 1
             return None
 
-        game = classify_game(title)
+        product_key = product_identity_key(product)
+        taxonomy_context = self.product_taxonomy_context.get(
+            product_key, {"categories": [], "tags": []}
+        ) if product_key else {"categories": [], "tags": []}
+
+        taxonomy_terms = (
+            list(taxonomy_context.get("categories") or [])
+            + list(taxonomy_context.get("tags") or [])
+        )
+
+        game, game_classification_source = classify_game_with_taxonomy(
+            title, taxonomy_terms
+        )
 
         if not game:
             self.diagnostics["products_rejected"] += 1
@@ -1090,6 +1175,9 @@ class WooCommerceAdapter(RetailerAdapter):
             "is_purchasable": product.get("is_purchasable"),
             "low_stock_remaining": product.get("low_stock_remaining"),
             "woo_product_type": product.get("type"),
+            "game_classification_source": game_classification_source,
+            "taxonomy_categories": taxonomy_context.get("categories") or [],
+            "taxonomy_tags": taxonomy_context.get("tags") or [],
         }
 
         self.diagnostics["products_accepted"] += 1
@@ -1114,6 +1202,18 @@ class WooCommerceAdapter(RetailerAdapter):
             f"AvailabilitySource={availability_source} | "
             f"AvailabilityCapability="
             f"{platform_data['availability_capability']} | "
+            f"GameSource={game_classification_source} | "
+            f"TaxonomyCategories={','.join(taxonomy_context.get('categories') or []) or 'none'} | "
+            f"TaxonomyTags={','.join(taxonomy_context.get('tags') or []) or 'none'} | "
+            f"Title={title}"
+        )
+
+        print(
+            "WOOCOMMERCE AVAILABILITY INTEGRITY | "
+            f"Store={self.store_name} | ProductID={external_product_id} | "
+            f"AdapterAvailable={available} | AvailabilityKnown={availability_known} | "
+            f"AvailabilityState={availability_state} | "
+            f"AvailabilityCapability={platform_data['availability_capability']} | "
             f"Title={title}"
         )
 
