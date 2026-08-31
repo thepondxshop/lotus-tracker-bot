@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1G — Native Product Taxonomy Context + Pokemon Single Evidence
+Step 6J-1H — WooCommerce Single Category + Zero-Price Integrity
 
 Safety:
 - Public storefront Store API only
@@ -716,6 +716,7 @@ class WooCommerceAdapter(RetailerAdapter):
             "normalized_products": 0,
             "unknown_availability": 0,
             "missing_prices": 0,
+            "zero_prices_suppressed": 0,
             "in_stock_products": 0,
             "out_of_stock_products": 0,
             "store_api_endpoint": None,
@@ -1248,6 +1249,7 @@ class WooCommerceAdapter(RetailerAdapter):
             "WOOCOMMERCE FETCH COMPLETE | "
             f"Store={self.store_name} | "
             f"ProductsFetched={len(products)} | "
+            f"ZeroPricesSuppressed={self.diagnostics.get('zero_prices_suppressed')} | "
             f"StoreTotal={self.diagnostics.get('store_api_total_products')} | "
             f"StorePages={self.diagnostics.get('store_api_total_pages')}"
         )
@@ -1411,6 +1413,13 @@ class WooCommerceAdapter(RetailerAdapter):
 
         price, currency = parse_wc_price(product)
 
+        # WooCommerce can expose 0.00 for unavailable/archived catalog rows.
+        # Treat non-positive values as unknown so they cannot become fake
+        # price drops or contaminate pricing/deal history.
+        if price is not None and price <= 0:
+            self.diagnostics["zero_prices_suppressed"] += 1
+            price = None
+
         if price is None:
             self.diagnostics["missing_prices"] += 1
 
@@ -1429,7 +1438,29 @@ class WooCommerceAdapter(RetailerAdapter):
             self.diagnostics["out_of_stock_products"] += 1
 
         product_category = classify_product_category(title)
+
+        taxonomy_category_text = " ".join(
+            clean_text(value).lower()
+            for value in (taxonomy_context.get("categories") or [])
+            if clean_text(value)
+        )
+
+        if (
+            product_category == "UNKNOWN"
+            and any(
+                marker in taxonomy_category_text
+                for marker in ("singles", "single cards", "single card")
+            )
+        ):
+            product_category = "SINGLE"
+
         product_type = infer_product_type(title)
+
+        if (
+            product_category == "SINGLE"
+            and product_type == "Unknown"
+        ):
+            product_type = "Single Card"
         product_family = classify_product_family(title, product)
         language = family_language(product_family)
 
