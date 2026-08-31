@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1A — WooCommerce Public Store API Foundation
+Step 6J-1B — TCG-Aware Discovery + Singles Classification
 
 Safety:
 - Public storefront Store API only
@@ -46,8 +46,27 @@ USER_AGENT = (
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.65
 DEFAULT_PER_PAGE = 100
-MAX_STORE_API_PAGES = 5
-MAX_PRODUCTS = DEFAULT_PER_PAGE * MAX_STORE_API_PAGES
+
+# Lotus does not crawl an entire large WooCommerce catalog every cycle.
+# A small general sample is combined with bounded TCG-specific Store API
+# searches. Results are deduplicated by WooCommerce product ID/permalink.
+MAX_GENERAL_PAGES = 2
+MAX_SEARCH_PAGES_PER_QUERY = 2
+MAX_PRODUCTS = 1500
+
+TCG_SEARCH_QUERIES = (
+    "Pokemon TCG",
+    "Pokémon TCG",
+    "One Piece",
+    "Gundam Card Game",
+    "Dragon Ball Fusion World",
+    "Riftbound",
+    "Palworld",
+    "Naruto TCG",
+    "Cyberpunk TCG",
+    "Azuki TCG",
+    "Hellbreak TCG",
+)
 
 STORE_API_PRODUCT_PATHS = (
     "/wp-json/wc/store/v1/products",
@@ -69,6 +88,23 @@ UNSUPPORTED_GAME_TERMS = (
     "warhammer",
     "games workshop",
 )
+
+POKEMON_SINGLE_NUMBER_PATTERN = re.compile(
+    r"(?:^|[\s\-–—])#\s*[A-Z0-9]{1,6}(?:\s*/\s*[A-Z0-9]{1,6})?(?:\b|$)",
+    re.IGNORECASE,
+)
+
+POKEMON_SET_NUMBER_PATTERN = re.compile(
+    r"\b\d{1,4}\s*/\s*\d{1,4}\b",
+    re.IGNORECASE,
+)
+
+POKEMON_CONDITION_PATTERN = re.compile(
+    r"(?:^|[\s\-–—])(NM|LP|MP|HP|DMG|MINT|NEAR MINT|LIGHTLY PLAYED|"
+    r"MODERATELY PLAYED|HEAVILY PLAYED|DAMAGED)(?:[\s\-–—]|$)",
+    re.IGNORECASE,
+)
+
 
 GAME_PATTERNS = {
     "Pokemon": (
@@ -280,7 +316,47 @@ def has_strong_single_card_evidence(title):
     ):
         return True
 
-    return any(term in lowered for term in SINGLE_KEYWORDS)
+    if any(term in lowered for term in SINGLE_KEYWORDS):
+        return True
+
+    # Strict Pokémon single-card evidence:
+    # require Pokémon TCG context plus card-listing structure.
+    # This intentionally does not classify sealed products from a bare
+    # number or condition abbreviation alone.
+    pokemon_context = (
+        "pokemon tcg" in lowered
+        or "pokémon tcg" in lowered
+        or "pokemon trading card" in lowered
+        or "pokémon trading card" in lowered
+    )
+
+    if pokemon_context:
+        has_number = bool(
+            POKEMON_SINGLE_NUMBER_PATTERN.search(text)
+            or POKEMON_SET_NUMBER_PATTERN.search(text)
+        )
+        has_condition = bool(
+            POKEMON_CONDITION_PATTERN.search(text)
+        )
+
+        if has_number and has_condition:
+            return True
+
+        # Evolved TCG and similar singles catalogs commonly use several
+        # dash-separated card metadata fields ending in a collector number.
+        dash_parts = [
+            part.strip()
+            for part in re.split(r"\s+[\-–—]\s+", text)
+            if part.strip()
+        ]
+
+        if (
+            len(dash_parts) >= 4
+            and has_number
+        ):
+            return True
+
+    return False
 
 
 def classify_product_category(title):
@@ -450,7 +526,7 @@ class WooCommerceAdapter(RetailerAdapter):
         region="US",
         store_name=None,
         request_delay=DEFAULT_REQUEST_DELAY,
-        max_pages=MAX_STORE_API_PAGES,
+        max_pages=MAX_GENERAL_PAGES,
     ):
         super().__init__(
             domain=domain,
@@ -461,7 +537,7 @@ class WooCommerceAdapter(RetailerAdapter):
         self.domain = normalize_domain(self.domain)
         self.base_url = f"https://{self.domain}"
         self.request_delay = max(float(request_delay), 0.5)
-        self.max_pages = max(1, min(int(max_pages), MAX_STORE_API_PAGES))
+        self.max_pages = max(1, min(int(max_pages), MAX_GENERAL_PAGES))
         self.store_api_path = None
         self.diagnostics = {}
         self._reset_diagnostics()
@@ -483,6 +559,10 @@ class WooCommerceAdapter(RetailerAdapter):
             "store_api_endpoint": None,
             "store_api_total_products": None,
             "store_api_total_pages": None,
+            "search_queries_attempted": 0,
+            "search_queries_successful": 0,
+            "search_products_returned": 0,
+            "unique_products_collected": 0,
             "http_429": 0,
             "http_blocked": 0,
             "last_http_status": None,
@@ -594,7 +674,38 @@ class WooCommerceAdapter(RetailerAdapter):
             limit_per_host=2,
         )
 
-        products = []
+        products_by_key = {}
+
+        def add_products(items):
+            if not isinstance(items, list):
+                return 0
+
+            added = 0
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+
+                product_id = item.get("id")
+                permalink = clean_text(item.get("permalink"))
+
+                if product_id is not None:
+                    key = f"id:{product_id}"
+                elif permalink:
+                    key = f"url:{permalink}"
+                else:
+                    continue
+
+                if key in products_by_key:
+                    continue
+
+                products_by_key[key] = item
+                added += 1
+
+                if len(products_by_key) >= MAX_PRODUCTS:
+                    break
+
+            return added
 
         async with aiohttp.ClientSession(
             headers=headers,
@@ -609,7 +720,11 @@ class WooCommerceAdapter(RetailerAdapter):
                     f"Store={self.store_name} | "
                     "Reason=PUBLIC_STORE_API_NOT_FOUND"
                 )
-                return products
+                return []
+
+            # -------------------------------------------------
+            # General bounded sample.
+            # -------------------------------------------------
 
             total_pages = self.diagnostics.get("store_api_total_pages")
             pages_to_fetch = self.max_pages
@@ -627,12 +742,16 @@ class WooCommerceAdapter(RetailerAdapter):
 
                 if not isinstance(payload, list):
                     if page == 1:
-                        self.diagnostics["last_error"] = "INVALID_STORE_API_RESPONSE"
+                        self.diagnostics["last_error"] = (
+                            "INVALID_STORE_API_RESPONSE"
+                        )
                     break
 
                 if response is not None:
                     total = response.headers.get("X-WP-Total")
-                    total_pages_header = response.headers.get("X-WP-TotalPages")
+                    total_pages_header = response.headers.get(
+                        "X-WP-TotalPages"
+                    )
 
                     try:
                         self.diagnostics["store_api_total_products"] = int(total)
@@ -641,32 +760,112 @@ class WooCommerceAdapter(RetailerAdapter):
 
                     try:
                         parsed_total_pages = int(total_pages_header)
-                        self.diagnostics["store_api_total_pages"] = parsed_total_pages
+                        self.diagnostics["store_api_total_pages"] = (
+                            parsed_total_pages
+                        )
                     except (TypeError, ValueError):
-                        parsed_total_pages = None
+                        pass
 
-                products.extend(payload)
+                added = add_products(payload)
 
                 print(
-                    "WOOCOMMERCE PRODUCT PAGE | "
+                    "WOOCOMMERCE GENERAL PAGE | "
                     f"Store={self.store_name} | "
                     f"Page={page} | "
-                    f"Products={len(payload)} | "
-                    f"Accumulated={len(products)}"
+                    f"Returned={len(payload)} | "
+                    f"NewUnique={added} | "
+                    f"UniqueTotal={len(products_by_key)}"
                 )
 
                 if len(payload) < DEFAULT_PER_PAGE:
                     break
 
-                if len(products) >= MAX_PRODUCTS:
+                if len(products_by_key) >= MAX_PRODUCTS:
                     break
 
                 await asyncio.sleep(self.request_delay)
 
-        products = products[:MAX_PRODUCTS]
+            # -------------------------------------------------
+            # TCG-aware public Store API searches.
+            #
+            # WooCommerce Store API supports a public `search`
+            # collection parameter. We use bounded searches rather
+            # than crawling all 27k+ products from a large store.
+            # Final game acceptance remains strict title-based.
+            # -------------------------------------------------
+
+            from urllib.parse import urlencode
+
+            for query in TCG_SEARCH_QUERIES:
+                if len(products_by_key) >= MAX_PRODUCTS:
+                    break
+
+                self.diagnostics["search_queries_attempted"] += 1
+                query_returned = 0
+                query_added = 0
+                query_success = False
+
+                for page in range(1, MAX_SEARCH_PAGES_PER_QUERY + 1):
+                    params = urlencode(
+                        {
+                            "per_page": DEFAULT_PER_PAGE,
+                            "page": page,
+                            "search": query,
+                        }
+                    )
+                    url = f"{self.base_url}{path}?{params}"
+
+                    payload, _ = await self._fetch_json(session, url)
+
+                    if not isinstance(payload, list):
+                        break
+
+                    query_success = True
+                    query_returned += len(payload)
+                    query_added += add_products(payload)
+
+                    if len(payload) < DEFAULT_PER_PAGE:
+                        break
+
+                    if len(products_by_key) >= MAX_PRODUCTS:
+                        break
+
+                    await asyncio.sleep(self.request_delay)
+
+                if query_success:
+                    self.diagnostics["search_queries_successful"] += 1
+
+                self.diagnostics["search_products_returned"] += query_returned
+
+                print(
+                    "WOOCOMMERCE TCG SEARCH | "
+                    f"Store={self.store_name} | "
+                    f"Query={query} | "
+                    f"Returned={query_returned} | "
+                    f"NewUnique={query_added} | "
+                    f"UniqueTotal={len(products_by_key)}"
+                )
+
+                await asyncio.sleep(self.request_delay)
+
+        products = list(products_by_key.values())[:MAX_PRODUCTS]
 
         self.diagnostics["product_urls_discovered"] = len(products)
         self.diagnostics["product_pages_successful"] = len(products)
+        self.diagnostics["unique_products_collected"] = len(products)
+
+        print(
+            "WOOCOMMERCE TCG-AWARE DISCOVERY | "
+            f"Store={self.store_name} | "
+            f"StoreTotal={self.diagnostics.get('store_api_total_products')} | "
+            f"StorePages={self.diagnostics.get('store_api_total_pages')} | "
+            f"GeneralPages={self.max_pages} | "
+            f"SearchQueries="
+            f"{self.diagnostics.get('search_queries_attempted')} | "
+            f"SearchProductsReturned="
+            f"{self.diagnostics.get('search_products_returned')} | "
+            f"UniqueProducts={len(products)}"
+        )
 
         print(
             "WOOCOMMERCE FETCH COMPLETE | "
