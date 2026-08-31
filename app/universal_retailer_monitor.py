@@ -3,9 +3,9 @@ Lotus Tracker Bot
 PonDeX Trackers
 
 Universal Retailer Monitor
-Version: 1.0.4
+Version: 1.1.0
 
-Step 6C — Square / Weebly Discovery Diagnostics
+Step 6I — Universal Retailer Capability Enforcement
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -43,7 +43,7 @@ from app.retailer_registry import (
 from app.retailers import load_retailer_adapters
 
 
-VERSION = "1.0.4"
+VERSION = "1.1.0"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
@@ -70,12 +70,21 @@ MONITOR_STATUS: dict[str, Any] = {
     "restocks": 0,
     "sold_out": 0,
     "unknown_availability": 0,
+    "preorders": 0,
+    "availability_high_confidence": 0,
+    "availability_medium_confidence": 0,
+    "availability_low_confidence": 0,
     "missing_prices": 0,
     "discovery_pages_checked": 0,
     "discovery_pages_successful": 0,
     "discovery_product_urls": 0,
     "product_pages_successful": 0,
     "adapter_rejected_products": 0,
+    "capability_full_availability": 0,
+    "capability_discovery_price_only": 0,
+    "capability_discovery_only": 0,
+    "capability_stock_events_blocked": 0,
+    "capability_price_events_blocked": 0,
 }
 
 
@@ -203,7 +212,86 @@ def deserialize_platform_data(value: Any) -> dict[str, Any]:
     return {}
 
 
+CAPABILITY_FULL_AVAILABILITY = "FULL_AVAILABILITY"
+CAPABILITY_DISCOVERY_PRICE_ONLY = "DISCOVERY_PRICE_ONLY"
+CAPABILITY_DISCOVERY_ONLY = "DISCOVERY_ONLY"
+
+VALID_RETAILER_CAPABILITIES = {
+    CAPABILITY_FULL_AVAILABILITY,
+    CAPABILITY_DISCOVERY_PRICE_ONLY,
+    CAPABILITY_DISCOVERY_ONLY,
+}
+
+STOCK_EVENT_TYPES = {
+    ProductEventType.STOCK_AVAILABLE,
+    ProductEventType.RESTOCK,
+    ProductEventType.SOLD_OUT,
+}
+
+PRICE_EVENT_TYPES = {
+    ProductEventType.PRICE_DROP,
+    ProductEventType.PRICE_INCREASE,
+}
+
+
+def get_retailer_capability(item: dict[str, Any]) -> str:
+    platform_data = deserialize_platform_data(item.get("platform_data"))
+    raw = normalize_text(platform_data.get("availability_capability"), "").upper()
+
+    if raw in VALID_RETAILER_CAPABILITIES:
+        return raw
+
+    availability_known = platform_data.get("availability_known")
+    availability_state = normalize_text(
+        platform_data.get("availability_state"), ""
+    ).upper()
+
+    if availability_known is True or availability_state in {
+        "IN_STOCK", "OUT_OF_STOCK", "PREORDER",
+    }:
+        return CAPABILITY_FULL_AVAILABILITY
+
+    if normalize_price(item.get("price")) is not None:
+        return CAPABILITY_DISCOVERY_PRICE_ONLY
+
+    return CAPABILITY_DISCOVERY_ONLY
+
+
+def capability_allows_stock_events(capability: str) -> bool:
+    return capability == CAPABILITY_FULL_AVAILABILITY
+
+
+def capability_allows_price_events(capability: str) -> bool:
+    return capability in {
+        CAPABILITY_FULL_AVAILABILITY,
+        CAPABILITY_DISCOVERY_PRICE_ONLY,
+    }
+
+
+def capability_allows_event(capability: str, event_type: ProductEventType) -> bool:
+    if event_type in STOCK_EVENT_TYPES:
+        return capability_allows_stock_events(capability)
+    if event_type in PRICE_EVENT_TYPES:
+        return capability_allows_price_events(capability)
+    return True
+
+
+def record_capability_diagnostic(capability: str) -> None:
+    key = {
+        CAPABILITY_FULL_AVAILABILITY: "capability_full_availability",
+        CAPABILITY_DISCOVERY_PRICE_ONLY: "capability_discovery_price_only",
+        CAPABILITY_DISCOVERY_ONLY: "capability_discovery_only",
+    }.get(capability)
+    if key:
+        MONITOR_STATUS[key] += 1
+
+
 def get_availability_info(item: dict[str, Any]) -> tuple[bool, bool, str]:
+    capability = get_retailer_capability(item)
+
+    if not capability_allows_stock_events(capability):
+        return False, False, "UNKNOWN"
+
     platform_data = deserialize_platform_data(item.get("platform_data"))
     availability_known = platform_data.get("availability_known")
     availability_state = normalize_text(
@@ -214,6 +302,8 @@ def get_availability_info(item: dict[str, Any]) -> tuple[bool, bool, str]:
         return True, True, "IN_STOCK"
     if availability_state == "OUT_OF_STOCK":
         return False, True, "OUT_OF_STOCK"
+    if availability_state == "PREORDER":
+        return True, True, "PREORDER"
     if availability_state == "UNKNOWN":
         return False, False, "UNKNOWN"
 
@@ -225,6 +315,19 @@ def get_availability_info(item: dict[str, Any]) -> tuple[bool, bool, str]:
 
     available = normalize_bool(item.get("available"))
     return available, True, "IN_STOCK" if available else "OUT_OF_STOCK"
+
+
+def record_availability_diagnostics(item: dict[str, Any]) -> None:
+    platform_data = deserialize_platform_data(item.get("platform_data"))
+    confidence = normalize_text(
+        platform_data.get("availability_confidence"), "LOW"
+    ).upper()
+    key = {
+        "HIGH": "availability_high_confidence",
+        "MEDIUM": "availability_medium_confidence",
+        "LOW": "availability_low_confidence",
+    }.get(confidence, "availability_low_confidence")
+    MONITOR_STATUS[key] += 1
 
 
 def ensure_retailer_adapters_loaded() -> None:
@@ -419,6 +522,9 @@ async def create_store_product(
         product_state = "STOCK_AVAILABLE"
     elif availability_state == "OUT_OF_STOCK":
         product_state = "SOLD_OUT"
+    elif availability_state == "PREORDER":
+        product_state = "PREORDER"
+        MONITOR_STATUS["preorders"] += 1
     else:
         product_state = "PAGE_LIVE"
 
@@ -459,7 +565,7 @@ async def create_store_product(
 
     event_type = (
         ProductEventType.STOCK_AVAILABLE
-        if availability_known and available
+        if availability_state == "IN_STOCK"
         else ProductEventType.DISCOVERED
     )
     events.append(
@@ -526,7 +632,7 @@ async def update_store_product(
     if item.get("purchase_limit") is not None:
         store_product.purchase_limit = item.get("purchase_limit")
 
-    if availability_known:
+    if availability_state in {"IN_STOCK", "OUT_OF_STOCK"}:
         if not old_stock and new_stock:
             if suppress_events:
                 suppressed += 1
@@ -558,9 +664,12 @@ async def update_store_product(
                 )
                 MONITOR_STATUS["sold_out"] += 1
 
+    capability = get_retailer_capability(item)
+
     price_changed = False
     if (
-        old_price is not None
+        capability_allows_price_events(capability)
+        and old_price is not None
         and parsed_price is not None
         and old_currency == new_currency
         and old_price != parsed_price
@@ -604,13 +713,15 @@ async def update_store_product(
     if parsed_price is not None:
         store_product.price = parsed_price
     store_product.currency = new_currency
-    if availability_known:
+    if availability_state in {"IN_STOCK", "OUT_OF_STOCK"}:
         store_product.in_stock = new_stock
 
     if availability_state == "IN_STOCK":
         store_product.status = "STOCK_AVAILABLE"
     elif availability_state == "OUT_OF_STOCK":
         store_product.status = "SOLD_OUT"
+    elif availability_state == "PREORDER":
+        store_product.status = "PREORDER"
     elif not store_product.status:
         store_product.status = "PAGE_LIVE"
 
@@ -659,6 +770,10 @@ async def process_normalized_product(
     item["product_family"] = normalize_product_family(item.get("product_family"))
     item["product_category"] = normalize_product_category(item.get("product_category"))
     item["currency"] = normalize_currency(item.get("currency"))
+
+    capability = get_retailer_capability(item)
+    record_capability_diagnostic(capability)
+    record_availability_diagnostics(item)
 
     effective_suppress = bool(baseline_mode) or bool(suppress_events)
     events_to_send: list[ProductEvent] = []
@@ -736,6 +851,22 @@ async def process_normalized_product(
 
     published_events = 0
     for event in events_to_send:
+        if not capability_allows_event(capability, event.event_type):
+            if event.event_type in STOCK_EVENT_TYPES:
+                MONITOR_STATUS["capability_stock_events_blocked"] += 1
+            elif event.event_type in PRICE_EVENT_TYPES:
+                MONITOR_STATUS["capability_price_events_blocked"] += 1
+
+            logger.info(
+                "UNIVERSAL CAPABILITY EVENT BLOCKED | "
+                "Store=%s | Capability=%s | Event=%s | Title=%s",
+                store.name,
+                capability,
+                event.event_type.value,
+                title,
+            )
+            continue
+
         try:
             await process_product_event(event)
             published_events += 1
@@ -930,12 +1061,21 @@ def reset_cycle_status() -> None:
         "restocks",
         "sold_out",
         "unknown_availability",
+        "preorders",
+        "availability_high_confidence",
+        "availability_medium_confidence",
+        "availability_low_confidence",
         "missing_prices",
         "discovery_pages_checked",
         "discovery_pages_successful",
         "discovery_product_urls",
         "product_pages_successful",
         "adapter_rejected_products",
+        "capability_full_availability",
+        "capability_discovery_price_only",
+        "capability_discovery_only",
+        "capability_stock_events_blocked",
+        "capability_price_events_blocked",
     )
     for key in keys:
         MONITOR_STATUS[key] = 0
