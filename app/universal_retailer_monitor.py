@@ -5,7 +5,7 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.1.0
 
-Step 6J-1A — WooCommerce Universal Platform Staging
+Step 6J-1D — WooCommerce Availability Integrity Diagnostics
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -289,10 +289,21 @@ def record_capability_diagnostic(capability: str) -> None:
 def get_availability_info(item: dict[str, Any]) -> tuple[bool, bool, str]:
     capability = get_retailer_capability(item)
 
+    platform_data = deserialize_platform_data(item.get("platform_data"))
+
+    if platform_data.get("adapter") == "woocommerce":
+        print(
+            "UNIVERSAL WOOCOMMERCE AVAILABILITY CONSUMED | "
+            f"Title={item.get('title')} | "
+            f"ItemAvailable={item.get('available')} | "
+            f"PlatformKnown={platform_data.get('availability_known')} | "
+            f"PlatformState={platform_data.get('availability_state')} | "
+            f"Capability={capability}"
+        )
+
     if not capability_allows_stock_events(capability):
         return False, False, "UNKNOWN"
 
-    platform_data = deserialize_platform_data(item.get("platform_data"))
     availability_known = platform_data.get("availability_known")
     availability_state = normalize_text(
         platform_data.get("availability_state"), ""
