@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1F — Taxonomy Rejection Intelligence
+Step 6J-1G — Native Product Taxonomy Context + Pokemon Single Evidence
 
 Safety:
 - Public storefront Store API only
@@ -91,10 +91,58 @@ MAX_MATCHED_TAGS = 30
 MAX_TAXONOMY_PRODUCT_PAGES_PER_TERM = 2
 
 TCG_TAXONOMY_TERMS = (
-    "pokemon", "pokémon", "one piece", "gundam",
-    "dragon ball fusion world", "fusion world", "riftbound",
-    "palworld", "naruto", "cyberpunk", "azuki", "hellbreak",
-    "tcg", "trading card", "card game", "singles", "single cards",
+    "pokemon",
+    "pokémon",
+    "one piece",
+    "gundam",
+    "dragon ball",
+    "fusion world",
+    "riftbound",
+    "palworld",
+    "naruto",
+    "cyberpunk",
+    "azuki",
+    "hellbreak",
+)
+
+# Pokémon-era/set taxonomy names are supporting evidence only.
+# These are used together with strong single-card title structure.
+POKEMON_TAXONOMY_HINT_TERMS = (
+    "base",
+    "jungle",
+    "fossil",
+    "team rocket",
+    "gym",
+    "neo",
+    "e-card",
+    "ex",
+    "diamond & pearl",
+    "diamond and pearl",
+    "dp",
+    "platinum",
+    "heartgold & soulsilver",
+    "heartgold and soulsilver",
+    "hgss",
+    "black & white",
+    "black and white",
+    "bw",
+    "xy",
+    "sun & moon",
+    "sun and moon",
+    "sm",
+    "sword & shield",
+    "sword and shield",
+    "swsh",
+    "scarlet & violet",
+    "scarlet and violet",
+    "sv",
+    "pokemon go",
+    "pokémon go",
+)
+
+POKEMON_CARD_TITLE_PATTERN = re.compile(
+    r"\(#?\d{1,4}\)|\b[A-Z0-9]{2,6}\s+\d{1,4}\b",
+    re.IGNORECASE,
 )
 
 
@@ -302,8 +350,22 @@ def product_identity_key(product):
 
 
 def taxonomy_game_hint(term_names):
-    text = " ".join(clean_text(x).lower() for x in (term_names or []) if clean_text(x))
+    names = [
+        clean_text(x).lower()
+        for x in (term_names or [])
+        if clean_text(x)
+    ]
+    text = " ".join(names)
+
     if "pokemon" in text or "pokémon" in text:
+        return "Pokemon"
+
+    if any(
+        hint == name
+        or hint in name
+        for name in names
+        for hint in POKEMON_TAXONOMY_HINT_TERMS
+    ):
         return "Pokemon"
     if "one piece" in text:
         return "One Piece"
@@ -329,15 +391,30 @@ def taxonomy_game_hint(term_names):
 def strong_card_listing_structure(title):
     text = clean_text(title)
     lowered = text.lower()
-    return bool(
-        ONE_PIECE_CARD_NUMBER_PATTERN.search(text)
-        or POKEMON_SET_NUMBER_PATTERN.search(text)
-        or (
-            POKEMON_SINGLE_NUMBER_PATTERN.search(text)
-            and POKEMON_CONDITION_PATTERN.search(text)
-        )
-        or any(term in lowered for term in SINGLE_KEYWORDS)
-    )
+
+    if ONE_PIECE_CARD_NUMBER_PATTERN.search(text):
+        return True
+
+    if POKEMON_SET_NUMBER_PATTERN.search(text):
+        return True
+
+    if (
+        POKEMON_SINGLE_NUMBER_PATTERN.search(text)
+        and POKEMON_CONDITION_PATTERN.search(text)
+    ):
+        return True
+
+    if any(term in lowered for term in SINGLE_KEYWORDS):
+        return True
+
+    # Evolved and similar single-card stores commonly use:
+    #   Card Name (#117) ... ASC 117
+    #   M Mewtwo EX (#63) ... BKT 63
+    # The title must contain an explicit collector/card number structure.
+    if POKEMON_CARD_TITLE_PATTERN.search(text):
+        return True
+
+    return False
 
 
 def classify_game_with_taxonomy(title, taxonomy_terms):
@@ -624,6 +701,7 @@ class WooCommerceAdapter(RetailerAdapter):
         self.store_api_path = None
         self.diagnostics = {}
         self.product_taxonomy_context = {}
+        self.category_terms_by_id = {}
         self._reset_diagnostics()
 
     def _reset_diagnostics(self):
@@ -882,6 +960,7 @@ class WooCommerceAdapter(RetailerAdapter):
     async def fetch_products(self):
         self._reset_diagnostics()
         self.product_taxonomy_context = {}
+        self.category_terms_by_id = {}
 
         headers = {
             "User-Agent": USER_AGENT,
@@ -1075,6 +1154,13 @@ class WooCommerceAdapter(RetailerAdapter):
             tag_terms = await self._fetch_taxonomy_terms(
                 session, STORE_API_TAG_PATHS, "taxonomy_tag_terms_seen"
             )
+            self.category_terms_by_id = {
+                str(term.get("id")): term
+                for term in (category_terms or [])
+                if isinstance(term, dict)
+                and term.get("id") is not None
+            }
+
             matched_categories = self._matching_hierarchical_categories(
                 category_terms, MAX_MATCHED_CATEGORIES
             )
@@ -1159,14 +1245,6 @@ class WooCommerceAdapter(RetailerAdapter):
         )
 
         print(
-            "WOOCOMMERCE TAXONOMY REJECTION SUMMARY | "
-            f"Store={self.store_name} | "
-            f"Candidates={self.diagnostics.get('taxonomy_assisted_candidates')} | "
-            f"Logged={self.diagnostics.get('taxonomy_rejections_logged')} | "
-            f"CardStructureRejects={self.diagnostics.get('taxonomy_rejections_card_structure')}"
-        )
-
-        print(
             "WOOCOMMERCE FETCH COMPLETE | "
             f"Store={self.store_name} | "
             f"ProductsFetched={len(products)} | "
@@ -1175,6 +1253,47 @@ class WooCommerceAdapter(RetailerAdapter):
         )
 
         return products
+
+    def _native_product_taxonomy_context(self, product):
+        context = {
+            "categories": [],
+            "tags": [],
+        }
+
+        if not isinstance(product, dict):
+            return context
+
+        for category in product.get("categories") or []:
+            if not isinstance(category, dict):
+                continue
+
+            category_id = category.get("id")
+            category_name = clean_text(category.get("name"))
+
+            names = []
+
+            if category_id is not None and self.category_terms_by_id:
+                names = self._category_ancestry_names(
+                    str(category_id),
+                    self.category_terms_by_id,
+                )
+
+            if not names and category_name:
+                names = [category_name]
+
+            for name in names:
+                if name and name not in context["categories"]:
+                    context["categories"].append(name)
+
+        for tag in product.get("tags") or []:
+            if not isinstance(tag, dict):
+                continue
+
+            tag_name = clean_text(tag.get("name"))
+            if tag_name and tag_name not in context["tags"]:
+                context["tags"].append(tag_name)
+
+        return context
 
     def _log_taxonomy_rejection(
         self,
@@ -1212,6 +1331,21 @@ class WooCommerceAdapter(RetailerAdapter):
             f"Reason={reason}"
         )
 
+    async def get_normalized_products(self):
+        products = await super().get_normalized_products()
+
+        print(
+            "WOOCOMMERCE TAXONOMY REJECTION SUMMARY | "
+            f"Store={self.store_name} | "
+            f"Candidates={self.diagnostics.get('taxonomy_assisted_candidates')} | "
+            f"Logged={self.diagnostics.get('taxonomy_rejections_logged')} | "
+            f"CardStructureRejects="
+            f"{self.diagnostics.get('taxonomy_rejections_card_structure')} | "
+            f"Accepted={self.diagnostics.get('products_accepted')}"
+        )
+
+        return products
+
     def normalize_product(self, product):
         if not isinstance(product, dict):
             self.diagnostics["products_rejected"] += 1
@@ -1233,6 +1367,15 @@ class WooCommerceAdapter(RetailerAdapter):
         taxonomy_context = self.product_taxonomy_context.get(
             product_key, {"categories": [], "tags": []}
         ) if product_key else {"categories": [], "tags": []}
+
+        native_taxonomy = self._native_product_taxonomy_context(
+            product
+        )
+
+        for bucket in ("categories", "tags"):
+            for value in native_taxonomy.get(bucket) or []:
+                if value not in taxonomy_context[bucket]:
+                    taxonomy_context[bucket].append(value)
 
         taxonomy_terms = (
             list(taxonomy_context.get("categories") or [])
