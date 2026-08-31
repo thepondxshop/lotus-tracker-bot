@@ -5,7 +5,7 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.1.0
 
-Step 6I-B — Automatic Capability-Safe Universal Monitoring
+Step 6J-1A — WooCommerce Universal Platform Staging
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -47,7 +47,7 @@ VERSION = "1.1.0"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
-SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly"}
+SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly", "woocommerce"}
 
 
 MONITOR_STATUS: dict[str, Any] = {
