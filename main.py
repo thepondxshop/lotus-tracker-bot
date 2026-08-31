@@ -161,6 +161,7 @@ from app.retailers import (
 
 from app.universal_retailer_monitor import (
     get_universal_retailer_monitor_status,
+    run_universal_retailer_monitor,
     scan_store,
 )
 
@@ -995,6 +996,8 @@ class LotusTrackerBot(
 
         self.pokemon_product_task = None
 
+        self.universal_retailer_monitor_task = None
+
 
     async def setup_hook(
         self,
@@ -1093,10 +1096,21 @@ class LotusTrackerBot(
             "Pok\xe9mon Center Product Monitor task created."
         )
 
-        # NOTE:
-        # Universal retailer monitor is intentionally NOT
-        # started in v1.0.4 Step 6. Retailers are validated
-        # manually through /scanretailer first.
+        # Step 6I-B:
+        # Start the capability-safe universal retailer monitor.
+        # Only Store rows explicitly marked active are scanned.
+        # DISCOVERY_PRICE_ONLY retailers can never emit stock-dependent
+        # events through the Step 6I capability enforcement layer.
+        self.universal_retailer_monitor_task = (
+            asyncio.create_task(
+                run_universal_retailer_monitor()
+            )
+        )
+
+        print(
+            "Lotus Universal Retailer Monitor task created "
+            "(capability-safe automatic mode)."
+        )
 
         synced = (
             await self.tree.sync()
@@ -4056,139 +4070,6 @@ async def scanretailer(
 
 
 # =========================================================
-# /ENABLERETAILER + /DISABLERETAILER
-# Universal retailer staging controls
-# =========================================================
-
-async def set_universal_retailer_active(
-    store_id: int,
-    active: bool,
-):
-
-    if SessionLocal is None:
-        return None, "DATABASE_UNAVAILABLE"
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Store)
-            .where(Store.id == store_id)
-            .limit(1)
-        )
-
-        store = result.scalar_one_or_none()
-
-        if store is None:
-            return None, "NOT_FOUND"
-
-        platform = normalize_platform(
-            store.platform
-            or ""
-        )
-
-        if platform == "shopify":
-            return store, "SHOPIFY"
-
-        if platform not in set(
-            get_registered_retailer_platforms()
-        ):
-            return store, "UNSUPPORTED_PLATFORM"
-
-        store.active = bool(active)
-
-        if active:
-            if store.disabled_reason in {
-                "UNIVERSAL_STAGING",
-                "MANUAL",
-                "MANUAL_DISABLED",
-            }:
-                store.disabled_reason = None
-        else:
-            store.disabled_reason = "MANUAL_DISABLED"
-
-        await session.commit()
-        await session.refresh(store)
-
-        return store, "OK"
-
-
-@bot.tree.command(
-    name="enableretailer",
-    description="Enable a validated universal retailer in the registry.",
-)
-@app_commands.checks.has_permissions(
-    administrator=True
-)
-async def enableretailer(
-    interaction,
-    store_id: int,
-):
-
-    load_retailer_adapters()
-
-    store, reason = await set_universal_retailer_active(
-        store_id,
-        True,
-    )
-
-    if reason == "DATABASE_UNAVAILABLE":
-        message = "\u274c PostgreSQL is unavailable."
-    elif reason == "NOT_FOUND":
-        message = "\u274c Retailer Store ID not found."
-    elif reason == "SHOPIFY":
-        message = "\u274c This is a Shopify store. Use `/enablestore`."
-    elif reason == "UNSUPPORTED_PLATFORM":
-        message = "\u274c No registered universal adapter exists for this retailer."
-    else:
-        message = (
-            f"\U0001f7e2 **{store.name}** enabled in the retailer registry.\n\n"
-            "Universal background monitoring is still intentionally disabled "
-            "in v1.0.4; use `/scanretailer` for controlled scans."
-        )
-
-    await interaction.response.send_message(
-        message,
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(
-    name="disableretailer",
-    description="Disable a universal retailer in the registry.",
-)
-@app_commands.checks.has_permissions(
-    administrator=True
-)
-async def disableretailer(
-    interaction,
-    store_id: int,
-):
-
-    load_retailer_adapters()
-
-    store, reason = await set_universal_retailer_active(
-        store_id,
-        False,
-    )
-
-    if reason == "DATABASE_UNAVAILABLE":
-        message = "\u274c PostgreSQL is unavailable."
-    elif reason == "NOT_FOUND":
-        message = "\u274c Retailer Store ID not found."
-    elif reason == "SHOPIFY":
-        message = "\u274c This is a Shopify store. Use `/disablestore`."
-    elif reason == "UNSUPPORTED_PLATFORM":
-        message = "\u274c No registered universal adapter exists for this retailer."
-    else:
-        message = f"\u26ab **{store.name}** disabled in the retailer registry."
-
-    await interaction.response.send_message(
-        message,
-        ephemeral=True,
-    )
-
-
-# =========================================================
 # SHOPIFY STORE MANAGEMENT
 # =========================================================
 
@@ -4258,7 +4139,7 @@ async def addshopifystore(
 
 @bot.tree.command(
     name="stores",
-    description="List all Lotus retailer registry stores.",
+    description="List monitored Shopify stores.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -4271,29 +4152,14 @@ async def stores(
         ephemeral=True
     )
 
-    if SessionLocal is None:
-
-        await interaction.followup.send(
-            "\u274c PostgreSQL is unavailable.",
-            ephemeral=True,
-        )
-
-        return
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Store).order_by(Store.id.asc())
-        )
-
-        store_list = list(
-            result.scalars().all()
-        )
+    store_list = (
+        await list_shopify_stores()
+    )
 
     if not store_list:
 
         await interaction.followup.send(
-            "No retailers are registered in Lotus.",
+            "No monitored Shopify stores.",
             ephemeral=True,
         )
 
@@ -4303,41 +4169,38 @@ async def stores(
 
     for store in store_list:
 
-        platform = normalize_platform(
-            store.platform
-            or "unknown"
-        )
-
-        platform_label = {
-            "shopify": "Shopify",
-            "square_weebly": "Square / Weebly",
-            "pokemon_center": "Pokemon Center",
-            "major_retailer": "Major Retailer",
-        }.get(
-            platform,
-            platform.replace("_", " ").title(),
-        )
-
         lines.append(
+
             (
-                f"**ID {store.id} \u2014 {store.name}**\n"
-                f"`{store.domain or 'No domain'}`\n"
-                f"Platform: `{platform_label}` \u2022 "
+                f"**ID {store.id} \u2014 "
+                f"{store.name}**\n"
+
+                f"`{store.domain}`\n"
+
                 f"Region: `{store.region or 'Unknown'}`\n"
+
                 f"{'\U0001f7e2' if store.active else '\u26ab'} "
-                f"{store.health_status or 'UNKNOWN'}"
+                f"{store.health_status}"
+
                 + (
+
                     f" \u2022 {store.disabled_reason}"
+
                     if store.disabled_reason
+
                     else ""
                 )
             )
         )
 
-    message = "\U0001f3ea **Lotus Retailer Registry**\n\n" + "\n\n".join(lines)
-
     await interaction.followup.send(
-        message[:1900],
+
+        (
+            "\n\n".join(
+                lines
+            )
+        )[:1900],
+
         ephemeral=True,
     )
 
@@ -4348,7 +4211,7 @@ async def stores(
 
 @bot.tree.command(
     name="storeinfo",
-    description="View detailed retailer information.",
+    description="View detailed store information.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -4358,24 +4221,11 @@ async def storeinfo(
     store_id: int,
 ):
 
-    if SessionLocal is None:
-
-        await interaction.response.send_message(
-            "\u274c PostgreSQL is unavailable.",
-            ephemeral=True,
+    store = (
+        await get_shopify_store(
+            store_id
         )
-
-        return
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Store)
-            .where(Store.id == store_id)
-            .limit(1)
-        )
-
-        store = result.scalar_one_or_none()
+    )
 
     if store is None:
 
@@ -4386,33 +4236,24 @@ async def storeinfo(
 
         return
 
-    platform = normalize_platform(
-        store.platform
-        or "unknown"
-    )
-
-    platform_label = {
-        "shopify": "Shopify",
-        "square_weebly": "Square / Weebly",
-        "pokemon_center": "Pokemon Center",
-        "major_retailer": "Major Retailer",
-    }.get(
-        platform,
-        platform.replace("_", " ").title(),
-    )
-
     embed = discord.Embed(
-        title=f"\U0001f3ea {store.name}"
+        title=(
+            f"\U0001f3ea {store.name}"
+        )
     )
 
     embed.add_field(
         name="Store ID",
-        value=str(store.id),
+        value=str(
+            store.id
+        ),
     )
 
     embed.add_field(
-        name="Platform",
-        value=platform_label,
+        name="Health",
+        value=(
+            store.health_status
+        ),
     )
 
     embed.add_field(
@@ -4426,45 +4267,42 @@ async def storeinfo(
 
     embed.add_field(
         name="Domain",
-        value=store.domain or "Unknown",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="Region",
-        value=store.region or "Unknown",
-    )
-
-    embed.add_field(
-        name="Health",
-        value=store.health_status or "UNKNOWN",
-    )
-
-    embed.add_field(
-        name="Failures",
-        value=str(store.consecutive_failures or 0),
-    )
-
-    embed.add_field(
-        name="Disabled Reason",
-        value=store.disabled_reason or "None",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="Monitoring Mode",
         value=(
-            "Automatic Shopify monitor"
-            if platform == "shopify"
-            else "Manual validation only in v1.0.4"
+            store.domain
+            or "Unknown"
         ),
         inline=False,
     )
 
     embed.add_field(
+        name="Region",
+        value=(
+            store.region
+            or "Unknown"
+        ),
+    )
+
+    embed.add_field(
+        name="Failures",
+        value=str(
+            store.consecutive_failures
+        ),
+    )
+
+    embed.add_field(
+        name="Disabled Reason",
+        value=(
+            store.disabled_reason
+            or "None"
+        ),
+    )
+
+    embed.add_field(
         name="Last Success",
         value=(
-            str(store.last_success_at)
+            str(
+                store.last_success_at
+            )
             if store.last_success_at
             else "None"
         ),
@@ -4474,7 +4312,9 @@ async def storeinfo(
     embed.add_field(
         name="Last Failure",
         value=(
-            str(store.last_failure_at)
+            str(
+                store.last_failure_at
+            )
             if store.last_failure_at
             else "None"
         ),
@@ -4484,7 +4324,9 @@ async def storeinfo(
     embed.add_field(
         name="Last Error",
         value=(
-            store.last_error[:1000]
+            store.last_error[
+                :1000
+            ]
             if store.last_error
             else "None \u2705"
         ),
@@ -4857,13 +4699,6 @@ async def scanshopify(
             )
         )
 
-        categories = (
-            result.get(
-                "categories",
-                {}
-            )
-        )
-
         lines.append(
 
             (
@@ -4872,14 +4707,8 @@ async def scanshopify(
                 f"Currency: "
                 f"`{result.get('currency', 'Unknown')}`\n"
 
-                f"Raw Shopify Products: "
-                f"`{result.get('raw', 0)}`\n"
-
                 f"Relevant TCG Products: "
                 f"`{result['seen']}`\n"
-
-                f"Rejected / Unsupported: "
-                f"`{result.get('rejected', 0)}`\n"
 
                 f"New: "
                 f"`{result['new']}`\n"
@@ -4891,23 +4720,7 @@ async def scanshopify(
                 f"`{result['events']}`\n"
 
                 f"Flickers: "
-                f"`{result['flickers']}`\n\n"
-
-                "**Categories**\n"
-
-                f"\U0001f4e6 Sealed: "
-                f"`{categories.get('SEALED', 0)}` | "
-
-                f"\U0001f0cf Singles: "
-                f"`{categories.get('SINGLE', 0)}` | "
-
-                f"\U0001f9f0 Accessories: "
-                f"`{categories.get('ACCESSORY', 0)}` | "
-
-                f"\u2753 Unknown: "
-                f"`{categories.get('UNKNOWN', 0)}`\n\n"
-
-                "**Families**\n"
+                f"`{result['flickers']}`\n"
 
                 f"\U0001f30e Global: "
                 f"`{families.get('GLOBAL_STANDARD', 0)}` | "
@@ -4992,18 +4805,6 @@ async def shopifystatus(
 
             f"**TCG Products Seen:** "
             f"{data['products_seen']}\n"
-
-            f"**Sealed:** "
-            f"`{data.get('sealed_products', 0)}`\n"
-
-            f"**Singles:** "
-            f"`{data.get('single_products', 0)}`\n"
-
-            f"**Accessories:** "
-            f"`{data.get('accessory_products', 0)}`\n"
-
-            f"**Unknown Category:** "
-            f"`{data.get('unknown_category_products', 0)}`\n"
 
             f"**Events:** "
             f"{data['events_created']}\n"
@@ -6177,6 +5978,15 @@ async def status(
         get_universal_retailer_monitor_status()
     )
 
+    universal_monitor_online = (
+        bot.universal_retailer_monitor_task
+        is not None
+        and
+        not bot.universal_retailer_monitor_task.done()
+        and
+        bool(universal_status.get("running"))
+    )
+
     embed = discord.Embed(
 
         title="\U0001f7e2 Lotus Tracker Bot Status",
@@ -6201,8 +6011,12 @@ async def status(
             f"**Pok\xe9mon Product Monitor:** "
             f"{'\u2705' if pokemon_products_online else '\u274c'}\n"
 
-            "**Universal Retailer Monitor:** "
-            "\U0001f9ea Manual Validation Only\n\n"
+            f"**Universal Retailer Monitor:** "
+            f"{'\u2705 Automatic / Capability Safe' if universal_monitor_online else '\u274c Offline'}\n"
+            f"**Universal Stores Last Cycle:** "
+            f"`{universal_status.get('stores_scanned', 0)}`\n"
+            f"**Universal Stock Events Blocked:** "
+            f"`{universal_status.get('capability_stock_events_blocked', 0)}`\n\n"
 
             "**Strict TCG Classification:** \u2705\n"
 
