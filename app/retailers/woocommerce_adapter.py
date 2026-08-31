@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1D — Taxonomy-Assisted Strict Classification + Availability Integrity
+Step 6J-1E — Hierarchical WooCommerce Taxonomy Intelligence
 
 Safety:
 - Public storefront Store API only
@@ -650,6 +650,8 @@ class WooCommerceAdapter(RetailerAdapter):
             "taxonomy_tag_terms_seen": 0,
             "taxonomy_categories_matched": 0,
             "taxonomy_tags_matched": 0,
+            "taxonomy_hierarchy_roots": 0,
+            "taxonomy_category_descendants_matched": 0,
             "taxonomy_products_returned": 0,
             "http_429": 0,
             "http_blocked": 0,
@@ -776,6 +778,80 @@ class WooCommerceAdapter(RetailerAdapter):
             await asyncio.sleep(self.request_delay)
         self.diagnostics[diagnostic_key] = len(terms)
         return terms
+
+    def _build_category_hierarchy(self, terms):
+        by_id = {}
+        children = {}
+        for term in terms or []:
+            if not isinstance(term, dict) or term.get("id") is None:
+                continue
+            by_id[str(term["id"])] = term
+        for key, term in by_id.items():
+            try:
+                parent_key = str(int(term.get("parent") or 0))
+            except (TypeError, ValueError):
+                parent_key = "0"
+            children.setdefault(parent_key, []).append(key)
+        return by_id, children
+
+    def _category_ancestry_names(self, term_id, by_id):
+        names, visited = [], set()
+        current = str(term_id)
+        for _ in range(12):
+            if current in visited:
+                break
+            visited.add(current)
+            term = by_id.get(current)
+            if not term:
+                break
+            name = clean_text(term.get("name"))
+            if name:
+                names.append(name)
+            try:
+                parent_id = int(term.get("parent") or 0)
+            except (TypeError, ValueError):
+                break
+            if parent_id <= 0:
+                break
+            current = str(parent_id)
+        return names
+
+    def _matching_hierarchical_categories(self, terms, limit):
+        by_id, children = self._build_category_hierarchy(terms)
+        roots = []
+        for term_id, term in by_id.items():
+            name = clean_text(term.get("name")).lower()
+            if any(marker in name for marker in TCG_TAXONOMY_TERMS):
+                roots.append(term_id)
+
+        selected, seen, queue = [], set(), list(roots)
+        while queue and len(selected) < limit:
+            term_id = queue.pop(0)
+            if term_id in seen:
+                continue
+            seen.add(term_id)
+            selected.append(term_id)
+            queue.extend(
+                child for child in children.get(term_id, [])
+                if child not in seen
+            )
+
+        matched = []
+        for term_id in selected:
+            term = by_id.get(term_id)
+            if term:
+                matched.append({
+                    "id": term_id,
+                    "name": clean_text(term.get("name")),
+                    "ancestry": self._category_ancestry_names(term_id, by_id),
+                    "is_direct_root": term_id in roots,
+                })
+
+        self.diagnostics["taxonomy_hierarchy_roots"] = len(roots)
+        self.diagnostics["taxonomy_category_descendants_matched"] = sum(
+            1 for item in matched if not item["is_direct_root"]
+        )
+        return matched
 
     def _matching_taxonomy_terms(self, terms, limit):
         matched = []
@@ -995,7 +1071,7 @@ class WooCommerceAdapter(RetailerAdapter):
             tag_terms = await self._fetch_taxonomy_terms(
                 session, STORE_API_TAG_PATHS, "taxonomy_tag_terms_seen"
             )
-            matched_categories = self._matching_taxonomy_terms(
+            matched_categories = self._matching_hierarchical_categories(
                 category_terms, MAX_MATCHED_CATEGORIES
             )
             matched_tags = self._matching_taxonomy_terms(
@@ -1006,7 +1082,9 @@ class WooCommerceAdapter(RetailerAdapter):
             print(
                 "WOOCOMMERCE TAXONOMY DISCOVERY | "
                 f"Store={self.store_name} | CategoriesSeen={len(category_terms)} | "
+                f"HierarchyRoots={self.diagnostics.get('taxonomy_hierarchy_roots')} | "
                 f"CategoriesMatched={len(matched_categories)} | "
+                f"DescendantsMatched={self.diagnostics.get('taxonomy_category_descendants_matched')} | "
                 f"TagsSeen={len(tag_terms)} | TagsMatched={len(matched_tags)}"
             )
             from urllib.parse import urlencode
@@ -1032,8 +1110,14 @@ class WooCommerceAdapter(RetailerAdapter):
                             key, {"categories": [], "tags": []}
                         )
                         bucket = "categories" if kind == "CATEGORY" else "tags"
-                        if term["name"] not in context[bucket]:
-                            context[bucket].append(term["name"])
+                        evidence_names = (
+                            (term.get("ancestry") or [term["name"]])
+                            if kind == "CATEGORY"
+                            else [term["name"]]
+                        )
+                        for evidence_name in evidence_names:
+                            if evidence_name not in context[bucket]:
+                                context[bucket].append(evidence_name)
 
                     added_total += add_products(payload)
                     if len(payload) < DEFAULT_PER_PAGE or len(products_by_key) >= MAX_PRODUCTS:
