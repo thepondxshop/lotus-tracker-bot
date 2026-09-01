@@ -5,7 +5,7 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.1.0
 
-Step 6J-2C — Per-Scan Diagnostic Counter Integrity
+Step 6J-3A — PrestaShop Universal Platform Registration
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -47,7 +47,7 @@ VERSION = "1.1.0"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
-SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly", "woocommerce", "bigcommerce"}
+SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly", "woocommerce", "bigcommerce", "prestashop"}
 
 
 MONITOR_STATUS: dict[str, Any] = {
