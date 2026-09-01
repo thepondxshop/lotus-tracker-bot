@@ -415,6 +415,11 @@ RETAILER_PLATFORM_CHOICES = [
         name="BigCommerce",
         value="bigcommerce",
     ),
+
+    app_commands.Choice(
+        name="PrestaShop",
+        value="prestashop",
+    ),
 ]
 
 
@@ -3389,6 +3394,7 @@ async def addretailer(
         "square_weebly",
         "woocommerce",
         "bigcommerce",
+        "prestashop",
     }:
 
         await interaction.followup.send(
@@ -3547,6 +3553,7 @@ async def addretailer(
             "square_weebly": "Square / Weebly",
             "woocommerce": "WooCommerce",
             "bigcommerce": "BigCommerce",
+            "prestashop": "PrestaShop",
         }.get(clean_platform, clean_platform)
 
         embed.add_field(
@@ -3777,6 +3784,7 @@ async def scanretailer(
             "square_weebly",
             "woocommerce",
             "bigcommerce",
+            "prestashop",
         }:
 
             await interaction.followup.send(
@@ -3930,6 +3938,7 @@ async def scanretailer(
             "square_weebly": "Square / Weebly",
             "woocommerce": "WooCommerce",
             "bigcommerce": "BigCommerce",
+            "prestashop": "PrestaShop",
         }.get(platform, platform)
 
         embed.add_field(
