@@ -2,17 +2,18 @@
 Lotus Tracker Bot / PonDeX Trackers
 PrestaShop Universal Retailer Adapter
 Version 1.0.4
-Step 6J-3A — PrestaShop Public Storefront Foundation
+Step 6J-3B — Multi-Store Discovery + Public Product Signal Compatibility
 
 Safety:
-- Public storefront pages and public sitemap GETs only
+- Public storefront pages, robots.txt, and public sitemap GETs only
 - No authentication guessing or private PrestaShop Webservice access
-- No cart mutation or checkout automation
+- No login, cart mutation, or checkout automation
 - No CAPTCHA / queue / anti-bot bypass
 - Conservative bounded discovery and request pacing
-- Availability is trusted only when explicitly published in Product JSON-LD
+- Availability is trusted only from explicit product-scoped public signals
 - Unknown availability never means sold out
 - Non-positive/missing prices are treated as unknown
+- Product family/language is never inferred from currency
 """
 
 from __future__ import annotations
@@ -21,91 +22,233 @@ import asyncio
 import html as html_lib
 import json
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
 
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
+
 VERSION = "1.0.4"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.70
+
 MAX_SITEMAPS = 25
+MAX_DISCOVERY_PAGES = 40
 MAX_DISCOVERED_URLS = 12000
 MAX_PRODUCT_PAGES = 200
+MAX_LINKS_PER_PAGE = 2500
 
+# PrestaShop installations are not uniform. Some expose XML sitemaps,
+# some use language-prefixed XML sitemaps, and some only expose an HTML
+# sitemap/catalog navigation. Step 6J-3B supports all three public patterns.
 SITEMAP_PATHS = (
     "/1_index_sitemap.xml",
     "/sitemap.xml",
     "/sitemap_index.xml",
+    "/index_sitemap.xml",
+)
+
+HTML_DISCOVERY_PATHS = (
+    "/",
+    "/sitemap",
+    "/en/sitemap",
+    "/es/sitemap",
+    "/fr/sitemap",
+    "/it/sitemap",
+    "/sv/sitemap",
+    "/site-map",
+    "/plan-du-site",
+    "/mapa-del-sitio",
+    "/new-products",
+    "/best-sales",
 )
 
 TCG_PRIORITY = (
-    "pokemon", "pokémon", "one-piece", "onepiece", "gundam", "fusion-world",
-    "riftbound", "palworld", "naruto", "cyberpunk", "azuki", "hellbreak",
-    "booster", "deck", "tcg", "trading-card", "card", "single",
+    "pokemon", "pokémon", "one-piece", "onepiece", "one_piece",
+    "gundam", "fusion-world", "fusion_world", "riftbound", "palworld",
+    "naruto", "cyberpunk", "azuki", "hellbreak", "booster", "deck",
+    "tcg", "trading-card", "trading_card", "card-game", "card_game",
+    "single", "preorder", "pre-order", "preventa",
+)
+
+DISCOVERY_PRIORITY = TCG_PRIORITY + (
+    "new-products", "best-sales", "preventa", "preorder", "pre-order",
+    "trading-card", "trading_card", "card-game", "card_game", "cards",
+    "cartes", "pokemon-tcg", "one-piece-card-game",
 )
 
 UNSUPPORTED = (
-    "magic the gathering", "magic: the gathering", "yu-gi-oh", "yugioh",
-    "lorcana", "digimon", "weiss schwarz", "union arena", "flesh and blood",
-    "star wars unlimited", "warhammer", "games workshop",
+    "magic the gathering", "magic: the gathering", "magic-the-gathering",
+    "yu-gi-oh", "yugioh", "lorcana", "digimon", "weiss schwarz",
+    "weiss-schwarz", "union arena", "union-arena", "flesh and blood",
+    "flesh-and-blood", "star wars unlimited", "star-wars-unlimited",
+    "warhammer", "games workshop", "games-workshop",
 )
 
 GAME_TERMS = {
-    "Pokemon": (
-        "pokemon tcg", "pokémon tcg", "pokemon trading card", "pokémon trading card",
-        "pokemon card game", "pokémon card game",
+    "Gundam": (
+        "gundam card game", "gundam tcg", "gundam-card-game", "gundam-tcg",
     ),
-    "Gundam": ("gundam card game", "gundam tcg"),
-    "Dragon Ball Fusion World": ("dragon ball fusion world", "fusion world tcg"),
-    "Riftbound": ("riftbound",),
-    "Palworld": ("palworld tcg", "palworld card game"),
-    "Naruto": ("naruto tcg", "naruto card game"),
-    "Cyberpunk TCG": ("cyberpunk tcg", "cyberpunk trading card game"),
-    "Azuki TCG": ("azuki tcg", "azuki trading card game"),
-    "Hellbreak TCG": ("hellbreak tcg", "hellbreak trading card game"),
+    "Dragon Ball Fusion World": (
+        "dragon ball fusion world", "fusion world tcg", "dbscg fusion world",
+        "dragon-ball-fusion-world", "fusion-world-tcg", "dbscg-fusion-world",
+    ),
+    "Riftbound": (
+        "riftbound", "riftbound league of legends", "riftbound-tcg",
+    ),
+    "Palworld": (
+        "palworld tcg", "palworld card game", "palworld-tcg", "palworld-card-game",
+    ),
+    "Naruto": (
+        "naruto tcg", "naruto card game", "naruto-tcg", "naruto-card-game",
+    ),
+    "Cyberpunk TCG": (
+        "cyberpunk tcg", "cyberpunk trading card game", "cyberpunk-tcg",
+        "cyberpunk-trading-card-game",
+    ),
+    "Azuki TCG": (
+        "azuki tcg", "azuki trading card game", "azuki-tcg",
+        "azuki-trading-card-game",
+    ),
+    "Hellbreak TCG": (
+        "hellbreak tcg", "hellbreak trading card game", "hellbreak-tcg",
+        "hellbreak-trading-card-game",
+    ),
 }
 
 SEALED_TERMS = (
-    "booster box", "booster display", "booster pack", "booster bundle",
-    "elite trainer box", "starter deck", "battle deck", "structure deck",
-    "collection box", "collection set", "special collection", "premium collection",
-    "figure collection", "v box", "vstar box", "v star", "world championship deck",
-    "world championships deck", "build & battle stadium", "build and battle stadium",
-    "deluxe box", "deluxe pack", "double pack", "blister", "tin", "case",
-)
-SINGLE_TERMS = (
-    "single card", "tcg single", "card single", "singles", "individual card",
-    "black star promo", "promo card",
-)
-ACCESSORY_TERMS = (
-    "sleeves", "deck box", "binder", "playmat", "play mat", "portfolio",
-    "toploader", "top loader",
+    "booster box", "booster display", "display box", "booster pack",
+    "booster bundle", "elite trainer box", " etb", "starter deck",
+    "battle deck", "structure deck", "collection box", "collection set",
+    "special collection", "premium collection", "figure collection",
+    "v box", "vstar box", "v star", "world championship deck",
+    "world championships deck", "build & battle stadium",
+    "build and battle stadium", "deluxe box", "deluxe pack", "double pack",
+    "blister", "mini tin", " tin", "case", "display", "gift collection",
+    "gift set", "illustration box", "special pack set", "deck set",
+    # Common European storefront wording seen on our test stores.
+    "boite de", "boîte de", "lot de boosters", "pack 2 boosters",
+    "pack 3 boosters", "sobres", "mazos",
 )
 
-ONE_PIECE_CODE = re.compile(r"\b(?:OP|EB|PRB|ST|EX)\d{1,2}-\d{2,4}\b", re.I)
+SINGLE_TERMS = (
+    "single card", "tcg single", "card single", "singles", "individual card",
+    "black star promo", "promo card", "carte à l'unité", "carte a l'unite",
+)
+
+ACCESSORY_TERMS = (
+    "sleeves", "deck box", "binder", "playmat", "play mat", "portfolio",
+    "toploader", "top loader", "fundas", "tapete", "classeur",
+)
+
+ONE_PIECE_CARD_CODE = re.compile(
+    r"\b(?:OP|EB|PRB|ST|EX)\d{1,2}-\d{2,4}\b",
+    re.I,
+)
+ONE_PIECE_SET_CODE = re.compile(
+    r"\b(?:OP|EB|PRB|ST|EX)[\s-]?\d{1,2}\b",
+    re.I,
+)
 POKEMON_NUMBER = re.compile(r"\b\d{1,4}\s*/\s*\d{1,4}\b")
+
 JSON_LD = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
     re.I | re.S,
 )
 LOC = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.I | re.S)
+HREF = re.compile(r'''href\s*=\s*["']([^"']+)["']''', re.I)
+
 OG_TITLE = re.compile(
-    r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', re.I
+    r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+    re.I,
 )
 OG_TITLE_REVERSED = re.compile(
-    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', re.I
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']',
+    re.I,
 )
 OG_IMAGE = re.compile(
-    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', re.I
+    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    re.I,
 )
 OG_IMAGE_REVERSED = re.compile(
-    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', re.I
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+    re.I,
 )
 TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+H1 = re.compile(r"<h1[^>]*>(.*?)</h1>", re.I | re.S)
+
+SKU_PATTERNS = (
+    re.compile(r'''itemprop=["']sku["'][^>]+content=["']([^"']+)["']''', re.I),
+    re.compile(r'''content=["']([^"']+)["'][^>]+itemprop=["']sku["']''', re.I),
+    re.compile(r'''["']sku["']\s*:\s*["']([^"']+)["']''', re.I),
+    re.compile(
+        r"(?:Reference|Référence|Referencia|Artikelnummer)\s*:?\s*</?[^>]*>?\s*([A-Za-z0-9_.:/-]{1,80})",
+        re.I,
+    ),
+)
+
+PRICE_PATTERNS = (
+    re.compile(
+        r'''itemprop=["']price["'][^>]{0,250}?content=["']([0-9][0-9\s.,]*)["']''',
+        re.I,
+    ),
+    re.compile(
+        r'''content=["']([0-9][0-9\s.,]*)["'][^>]{0,250}?itemprop=["']price["']''',
+        re.I,
+    ),
+    re.compile(
+        r'''property=["']product:price:amount["'][^>]{0,250}?content=["']([0-9][0-9\s.,]*)["']''',
+        re.I,
+    ),
+    re.compile(
+        r'''content=["']([0-9][0-9\s.,]*)["'][^>]{0,250}?property=["']product:price:amount["']''',
+        re.I,
+    ),
+    re.compile(
+        r'''class=["'][^"']*(?:current-price-value|product-price|current-price)[^"']*["'][^>]{0,300}?(?:content=["']([0-9][0-9\s.,]*)["']|>\s*([0-9][0-9\s.,]*))''',
+        re.I | re.S,
+    ),
+)
+
+CURRENCY_PATTERNS = (
+    re.compile(
+        r'''itemprop=["']priceCurrency["'][^>]{0,250}?content=["']([A-Z]{3})["']''',
+        re.I,
+    ),
+    re.compile(
+        r'''content=["']([A-Z]{3})["'][^>]{0,250}?itemprop=["']priceCurrency["']''',
+        re.I,
+    ),
+    re.compile(
+        r'''property=["']product:price:currency["'][^>]{0,250}?content=["']([A-Z]{3})["']''',
+        re.I,
+    ),
+    re.compile(r'''["']priceCurrency["']\s*:\s*["']([A-Z]{3})["']''', re.I),
+)
+
+SCHEMA_AVAILABILITY = re.compile(
+    r'''(?:itemprop=["']availability["'][^>]{0,300}?(?:href|content)=["']([^"']+)["']|(?:href|content)=["']([^"']+)["'][^>]{0,300}?itemprop=["']availability["'])''',
+    re.I,
+)
+PRODUCT_AVAILABILITY_META = re.compile(
+    r'''property=["']product:availability["'][^>]{0,250}?content=["']([^"']+)["']''',
+    re.I,
+)
+PRODUCT_AVAILABILITY_BLOCK = re.compile(
+    r'''<(?:span|div|p)[^>]+(?:id|class)=["'][^"']*(?:product-availability|availability)[^"']*["'][^>]*>(.*?)</(?:span|div|p)>''',
+    re.I | re.S,
+)
+
+
+REGION_CURRENCY = {
+    "AT": "EUR", "BE": "EUR", "DE": "EUR", "ES": "EUR", "FI": "EUR",
+    "FR": "EUR", "IE": "EUR", "IT": "EUR", "NL": "EUR", "PT": "EUR",
+    "SE": "SEK", "NO": "NOK", "DK": "DKK", "GB": "GBP", "UK": "GBP",
+    "CA": "CAD", "US": "USD", "AU": "AUD", "JP": "JPY", "KR": "KRW",
+}
 
 
 def clean(value):
@@ -121,30 +264,164 @@ def normalize_domain(value):
     return value.strip("/")
 
 
+def normalize_url(url):
+    try:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        # Query strings are intentionally dropped. They are usually faceting,
+        # sorting, session, or tracking state and would duplicate product pages.
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+    except Exception:
+        return ""
+
+
 def same_domain(url, domain):
     try:
         host = urlparse(url).netloc.lower().split(":")[0]
         dom = domain.lower().split(":")[0]
-        return host == dom or host.endswith("." + dom)
+        return host == dom or host.endswith("." + dom) or dom.endswith("." + host)
     except Exception:
         return False
 
 
-def classify_game(title):
-    text = clean(title).lower()
-    if not text or any(term in text for term in UNSUPPORTED):
+def url_path(url):
+    try:
+        return (urlparse(url).path or "/").lower()
+    except Exception:
+        return ""
+
+
+def is_asset_or_account_url(url):
+    path = url_path(url)
+    if not path:
+        return True
+    blocked_suffixes = (
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".css",
+        ".js", ".woff", ".woff2", ".ttf", ".pdf", ".zip", ".xml",
+    )
+    if path.endswith(blocked_suffixes):
+        return True
+    blocked_terms = (
+        "/login", "/signin", "/sign-in", "/my-account", "/account",
+        "/cart", "/basket", "/checkout", "/order", "/contact", "/privacy",
+        "/terms", "/cookie", "/module/", "/search", "/manufacturer/",
+        "/supplier/", "/brand/", "/stores", "/our-stores",
+    )
+    return any(term in path for term in blocked_terms)
+
+
+def url_priority(url):
+    lowered = str(url or "").lower()
+    score = sum(10 for term in TCG_PRIORITY if term in lowered)
+    path = url_path(url)
+    if path.endswith(".html"):
+        score += 8
+    if re.search(r"/\d{2,}-[^/]+\.html$", path):
+        score += 15
+    if any(part in path for part in ("/product/", "/products/", "/produit/", "/produkt/")):
+        score += 15
+    return score
+
+
+def looks_like_tcg_discovery_url(url):
+    path = url_path(url)
+    if is_asset_or_account_url(url):
+        return False
+    return any(term in path for term in DISCOVERY_PRIORITY)
+
+
+def looks_like_product_url(url):
+    path = url_path(url)
+    if is_asset_or_account_url(url):
+        return False
+
+    if re.search(r"/\d{2,}-[^/]+\.html$", path):
+        return True
+
+    if path.endswith(".html") and any(term in path for term in TCG_PRIORITY):
+        return True
+
+    if any(part in path for part in ("/product/", "/products/", "/produit/", "/produkt/")):
+        return True
+
+    # Modern/custom PrestaShop themes may omit .html and numeric IDs.
+    # Only consider such URLs when the path is clearly inside a supported TCG
+    # area. Product-page validation later still requires product-scoped evidence.
+    game_path_terms = (
+        "/pokemon/", "/pokemon-tcg/", "/one-piece/", "/one-piece-card-game/",
+        "/gundam/", "/gundam-card-game/", "/riftbound/", "/palworld/",
+        "/cyberpunk/", "/fusion-world/", "/dragon-ball-fusion-world/",
+        "/naruto/", "/azuki/", "/hellbreak/",
+    )
+    if any(term in path for term in game_path_terms):
+        parts = [part for part in path.split("/") if part]
+        return len(parts) >= 2
+
+    return False
+
+
+def extract_links(text, page_url, domain):
+    output = []
+    seen = set()
+    for raw_href in HREF.findall(text or "")[:MAX_LINKS_PER_PAGE]:
+        href = html_lib.unescape(raw_href).strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        absolute = normalize_url(urljoin(page_url, href))
+        if not absolute or absolute in seen or not same_domain(absolute, domain):
+            continue
+        seen.add(absolute)
+        output.append(absolute)
+    return output
+
+
+def classify_game(title, url=""):
+    title_text = clean(title).lower()
+    url_text = str(url or "").lower().replace("_", "-")
+    combined = f" {title_text} {url_text} "
+
+    if not title_text:
         return None
-    if "one piece card game" in text or "one piece tcg" in text or ONE_PIECE_CODE.search(title or ""):
+    if any(term in combined for term in UNSUPPORTED):
+        return None
+
+    if (
+        "one piece card game" in combined
+        or "one piece tcg" in combined
+        or "one-piece-card-game" in combined
+        or "one-piece-tcg" in combined
+        or ONE_PIECE_CARD_CODE.search(title or "")
+    ):
         return "One Piece"
+
+    pokemon_direct = (
+        "pokemon tcg", "pokémon tcg", "pokemon trading card", "pokémon trading card",
+        "pokemon card game", "pokémon card game", "pokemon-tcg",
+    )
+    if any(term in combined for term in pokemon_direct):
+        return "Pokemon"
+
+    # Cards Capital-style singles often have a character/card name only, while
+    # the public canonical URL carries the Pokémon category evidence.
+    if "pokemon" in url_text or "pokémon" in url_text:
+        safe_url_context = any(
+            term in url_text
+            for term in ("booster", "cartes", "card", "tcg", "/pokemon/", "pokemon-")
+        )
+        if safe_url_context:
+            return "Pokemon"
+
     for game, terms in GAME_TERMS.items():
-        if any(term in text for term in terms):
+        if any(term in combined for term in terms):
             return game
+
     return None
 
 
 def product_category(title):
     text = clean(title).lower()
-    if ONE_PIECE_CODE.search(title or ""):
+    if ONE_PIECE_CARD_CODE.search(title or ""):
         return "SINGLE"
     if POKEMON_NUMBER.search(title or "") and ("pokemon" in text or "pokémon" in text):
         return "SINGLE"
@@ -161,21 +438,28 @@ def product_type(title):
     category = product_category(title)
     if category == "SINGLE":
         return "Single Card"
+
     text = clean(title).lower()
     mapping = (
-        (("elite trainer box",), "Elite Trainer Box"),
-        (("booster box", "booster display"), "Booster Box"),
+        (("elite trainer box", " etb"), "Elite Trainer Box"),
+        (("booster box", "booster display", "display box"), "Booster Box"),
         (("booster bundle",), "Booster Bundle"),
         (("booster pack",), "Booster Pack"),
-        (("starter deck",), "Starter Deck"),
+        (("starter deck", "starter deck display"), "Starter Deck"),
         (("battle deck",), "Battle Deck"),
         (("structure deck",), "Structure Deck"),
-        (("premium collection",), "Premium Collection"),
-        (("tin",), "Tin"),
-        (("playmat", "play mat"), "Playmat"),
-        (("sleeves",), "Sleeves"),
-        (("binder",), "Binder"),
+        (("premium collection", "premium card collection"), "Premium Collection"),
+        (("double pack", "double-pack"), "Double Pack"),
+        (("illustration box",), "Illustration Box"),
+        (("gift collection", "gift set"), "Gift Collection"),
+        (("special pack set",), "Special Pack Set"),
+        (("mini tin",), "Mini Tin"),
+        ((" tin",), "Tin"),
+        (("playmat", "play mat", "tapete"), "Playmat"),
+        (("sleeves", "fundas"), "Sleeves"),
+        (("binder", "portfolio", "classeur"), "Binder"),
         (("deck box",), "Deck Box"),
+        (("case",), "Case"),
     )
     for terms, label in mapping:
         if any(term in text for term in terms):
@@ -185,15 +469,29 @@ def product_type(title):
 
 def product_family(title):
     text = f" {clean(title).lower()} "
-    if any(term in text for term in (" japanese ", " japan ", " jp version ", " jp edition ", " jp ")):
+
+    jp_terms = (
+        " japanese ", " japan ", " jp version ", " jp edition ", " jp ",
+        " japonés ", " japones ", " japonais ", " giapponese ",
+        " japansk ", " japanska ",
+    )
+    kr_terms = (
+        " korean ", " korea ", " kr version ", " kr edition ", " kr ",
+        " coreano ", " coréen ", " coreen ", " koreansk ", " koreanska ",
+    )
+    cn_terms = (
+        " simplified chinese ", " chinese ", " china ", " cn version ",
+        " cn edition ", " cn ", " chino ", " chinois ", " kinesisk ", " kinesiska ",
+    )
+    import_terms = (" import ", " imported ", " importado ", " importé ", " importe ")
+
+    if any(term in text for term in jp_terms):
         return "JP"
-    if any(term in text for term in (" korean ", " korea ", " kr version ", " kr edition ", " kr ")):
+    if any(term in text for term in kr_terms):
         return "KR"
-    if any(term in text for term in (
-        " simplified chinese ", " chinese ", " china ", " cn version ", " cn edition ", " cn ",
-    )):
+    if any(term in text for term in cn_terms):
         return "CN"
-    if " import " in text:
+    if any(term in text for term in import_terms):
         return "UNKNOWN"
     return "GLOBAL_STANDARD"
 
@@ -250,39 +548,176 @@ def first_offer(schema):
     return offers if isinstance(offers, dict) else None
 
 
-def parse_price(offer):
-    if not isinstance(offer, dict):
-        return None, "USD"
-    raw = offer.get("price") or offer.get("lowPrice")
-    currency = clean(offer.get("priceCurrency")).upper() or "USD"
-    price = normalize_price(raw)
+def parse_decimal_text(raw):
+    value = clean(raw).replace("\xa0", " ").replace(" ", "")
+    if not value:
+        return None
+
+    # European pages often use comma decimals. Preserve thousands separators
+    # conservatively rather than treating a comma as always thousands.
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+    elif "," in value:
+        tail = value.rsplit(",", 1)[-1]
+        if len(tail) in {1, 2}:
+            value = value.replace(".", "").replace(",", ".")
+        else:
+            value = value.replace(",", "")
+
+    price = normalize_price(value)
     if price is not None and price <= 0:
-        price = None
-    return price, currency
+        return None
+    return price
 
 
-def parse_availability(schema, offer):
+def region_currency(region):
+    return REGION_CURRENCY.get(clean(region).upper(), "USD")
+
+
+def parse_price(schema, offer, text, region):
+    fallback_currency = region_currency(region)
+
+    if isinstance(offer, dict):
+        raw = offer.get("price") or offer.get("lowPrice")
+        currency = clean(offer.get("priceCurrency")).upper() or fallback_currency
+        price = parse_decimal_text(raw)
+        if price is not None:
+            return price, currency, "JSON_LD_OFFER_PRICE"
+
+    html_price = None
+    for pattern in PRICE_PATTERNS:
+        match = pattern.search(text or "")
+        if not match:
+            continue
+        raw = next((group for group in match.groups() if group), "")
+        html_price = parse_decimal_text(raw)
+        if html_price is not None:
+            break
+
+    currency = ""
+    for pattern in CURRENCY_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            currency = clean(match.group(1)).upper()
+            break
+
+    if not currency:
+        currency = fallback_currency
+
+    if html_price is not None:
+        return html_price, currency, "PUBLIC_PRODUCT_PRICE_MARKUP"
+
+    return None, currency, "UNKNOWN"
+
+
+def normalize_availability_token(raw):
+    compact = re.sub(r"[^a-z]", "", clean(raw).lower())
+    if "instock" in compact or "limitedavailability" in compact:
+        return True, True, "IN_STOCK"
+    if "outofstock" in compact or "soldout" in compact or "discontinued" in compact:
+        return False, True, "OUT_OF_STOCK"
+    if "preorder" in compact or "presale" in compact:
+        return True, True, "PREORDER"
+    return False, False, "UNKNOWN"
+
+
+def parse_availability(schema, offer, text):
+    # 1. Product JSON-LD is the strongest public product-scoped signal.
     raw = ""
     if isinstance(offer, dict):
-        raw = clean(offer.get("availability") or offer.get("itemAvailability")).lower()
+        raw = clean(offer.get("availability") or offer.get("itemAvailability"))
     if not raw and isinstance(schema, dict):
-        raw = clean(schema.get("availability")).lower()
+        raw = clean(schema.get("availability"))
+    if raw:
+        available, known, state = normalize_availability_token(raw)
+        if known:
+            return available, known, state, "JSON_LD_OFFER_AVAILABILITY", "HIGH"
 
-    compact = re.sub(r"[^a-z]", "", raw)
-    if "instock" in compact or "limitedavailability" in compact:
-        return True, True, "IN_STOCK", "JSON_LD_OFFER_AVAILABILITY"
-    if "outofstock" in compact or "soldout" in compact or "discontinued" in compact:
-        return False, True, "OUT_OF_STOCK", "JSON_LD_OFFER_AVAILABILITY"
-    if "preorder" in compact or "presale" in compact:
-        return True, True, "PREORDER", "JSON_LD_OFFER_AVAILABILITY"
-    return False, False, "UNKNOWN", "UNKNOWN"
+    # 2. schema.org availability markup in the product page.
+    match = SCHEMA_AVAILABILITY.search(text or "")
+    if match:
+        raw = next((group for group in match.groups() if group), "")
+        available, known, state = normalize_availability_token(raw)
+        if known:
+            return available, known, state, "SCHEMA_ORG_AVAILABILITY_MARKUP", "HIGH"
+
+    match = PRODUCT_AVAILABILITY_META.search(text or "")
+    if match:
+        available, known, state = normalize_availability_token(match.group(1))
+        if known:
+            return available, known, state, "PRODUCT_AVAILABILITY_META", "HIGH"
+
+    # 3. PrestaShop's product-specific availability container.
+    block = PRODUCT_AVAILABILITY_BLOCK.search(text or "")
+    if block:
+        block_text = clean(block.group(1)).lower()
+        if any(term in block_text for term in (
+            "out of stock", "sold out", "stock épuisé", "stock epuise",
+            "rupture de stock", "agotado", "sin stock", "slutsåld", "slutsald",
+            "slut i lager",
+        )):
+            return False, True, "OUT_OF_STOCK", "PRODUCT_AVAILABILITY_BLOCK", "MEDIUM"
+        if any(term in block_text for term in (
+            "pre-order", "preorder", "précommande", "precommande", "preventa",
+            "förbeställ", "forbestall",
+        )):
+            return True, True, "PREORDER", "PRODUCT_AVAILABILITY_BLOCK", "MEDIUM"
+        if any(term in block_text for term in (
+            "in stock", "en stock", "available", "disponible", "i lager",
+        )):
+            return True, True, "IN_STOCK", "PRODUCT_AVAILABILITY_BLOCK", "MEDIUM"
+
+    # 4. Explicit product quantity signals seen on classic PrestaShop themes.
+    plain = clean(text).lower()
+    quantity_match = re.search(
+        r"(?:quantit[eé]\s+en\s+stock|quantity\s+in\s+stock|stock\s+quantity)\s*:?\s*(\d+)",
+        plain,
+        re.I,
+    )
+    if quantity_match:
+        quantity = int(quantity_match.group(1))
+        if quantity > 0:
+            return True, True, "IN_STOCK", "EXPLICIT_PRODUCT_STOCK_QUANTITY", "MEDIUM"
+        return False, True, "OUT_OF_STOCK", "EXPLICIT_PRODUCT_STOCK_QUANTITY", "MEDIUM"
+
+    # 5. Store-specific but still explicit main-product phrases observed on
+    # our PrestaShop validation stores. Out-of-stock phrases are deliberately
+    # stronger than generic "in stock" text to reduce related-product bleed.
+    if any(term in plain for term in (
+        "produkten är tyvärr slut i lager",
+        "produkten ar tyvarr slut i lager",
+        "0 disponible stock épuisé",
+        "0 disponible stock epuise",
+    )):
+        return False, True, "OUT_OF_STOCK", "EXPLICIT_PRODUCT_STATUS_TEXT", "MEDIUM"
+
+    # TCG Factory publishes a Product status field even when wholesale price is
+    # hidden until login. Pre-order and Available are safe; Backorder is not
+    # treated as in-stock or sold-out.
+    status_match = re.search(
+        r"product status\s*:?\s*(pre[- ]?order|available|backorder)",
+        plain,
+        re.I,
+    )
+    if status_match:
+        status = status_match.group(1).lower().replace(" ", "-")
+        if status in {"pre-order", "preorder"}:
+            return True, True, "PREORDER", "EXPLICIT_PRODUCT_STATUS_FIELD", "MEDIUM"
+        if status == "available":
+            return True, True, "IN_STOCK", "EXPLICIT_PRODUCT_STATUS_FIELD", "MEDIUM"
+        # Backorder intentionally remains UNKNOWN.
+
+    return False, False, "UNKNOWN", "UNKNOWN", "LOW"
 
 
 def parse_title(schema, text):
     title = clean(schema.get("name")) if isinstance(schema, dict) else ""
     if title:
         return title
-    for pattern in (OG_TITLE, OG_TITLE_REVERSED, TITLE):
+    for pattern in (OG_TITLE, OG_TITLE_REVERSED, H1, TITLE):
         match = pattern.search(text or "")
         if match:
             return clean(match.group(1))
@@ -308,9 +743,36 @@ def parse_image(schema, text):
     return None
 
 
-def url_priority(url):
-    lowered = str(url or "").lower()
-    return sum(10 for term in TCG_PRIORITY if term in lowered)
+def parse_sku(schema, text):
+    if isinstance(schema, dict):
+        sku = clean(schema.get("sku") or schema.get("mpn"))
+        if sku:
+            return sku
+    for pattern in SKU_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            value = clean(match.group(1))
+            if value:
+                return value
+    return None
+
+
+def has_product_page_evidence(schema, text, url):
+    if isinstance(schema, dict):
+        return True
+
+    sku = parse_sku(None, text)
+    if sku:
+        return True
+
+    # Meta price is product-scoped on PrestaShop product pages. Requiring a
+    # product-looking URL prevents category/listing pages from being accepted.
+    if looks_like_product_url(url):
+        for pattern in PRICE_PATTERNS[:4]:
+            if pattern.search(text or ""):
+                return True
+
+    return False
 
 
 @retailer_adapter("prestashop")
@@ -347,6 +809,9 @@ class PrestaShopAdapter(RetailerAdapter):
             "adapter_unknown_availability": 0,
             "adapter_missing_prices": 0,
             "sitemaps_seen": 0,
+            "html_discovery_pages": 0,
+            "xml_product_candidates": 0,
+            "html_product_candidates": 0,
             "last_error": None,
         }
 
@@ -363,26 +828,36 @@ class PrestaShopAdapter(RetailerAdapter):
             ) as response:
                 if response.status >= 400:
                     self.diagnostics["pages_failed"] += 1
-                    return None
+                    return None, None
                 self.diagnostics["pages_successful"] += 1
-                return await response.text(errors="ignore")
+                final_url = normalize_url(str(response.url)) or normalize_url(url)
+                return await response.text(errors="ignore"), final_url
         except (asyncio.TimeoutError, aiohttp.ClientError) as error:
             self.diagnostics["pages_failed"] += 1
             self.diagnostics["last_error"] = f"{type(error).__name__}: {error}"
-            return None
+            return None, None
 
-    async def _discover(self, session):
+    async def _discover_xml(self, session):
         queue = [urljoin(self.base_url + "/", path.lstrip("/")) for path in SITEMAP_PATHS]
         visited = set()
-        product_urls = set()
+        candidates = set()
 
-        while queue and len(visited) < MAX_SITEMAPS and len(product_urls) < MAX_DISCOVERED_URLS:
+        # robots.txt may advertise a non-standard sitemap URL.
+        robots_url = urljoin(self.base_url + "/", "robots.txt")
+        robots_text, _ = await self._get(session, robots_url)
+        if robots_text:
+            for raw in re.findall(r"(?im)^\s*Sitemap\s*:\s*(\S+)", robots_text):
+                sitemap_url = normalize_url(html_lib.unescape(raw))
+                if sitemap_url and same_domain(sitemap_url, self.domain) and sitemap_url not in queue:
+                    queue.append(sitemap_url)
+
+        while queue and len(visited) < MAX_SITEMAPS and len(candidates) < MAX_DISCOVERED_URLS:
             sitemap_url = queue.pop(0)
             if sitemap_url in visited:
                 continue
             visited.add(sitemap_url)
 
-            text = await self._get(session, sitemap_url)
+            text, final_url = await self._get(session, sitemap_url)
             if not text:
                 continue
 
@@ -392,28 +867,97 @@ class PrestaShopAdapter(RetailerAdapter):
 
             self.diagnostics["sitemaps_seen"] += 1
             for location in locations:
+                location = normalize_url(location)
                 if not location or not same_domain(location, self.domain):
                     continue
                 lowered = location.lower()
                 if lowered.endswith(".xml") or "sitemap" in lowered:
                     if location not in visited and location not in queue:
                         queue.append(location)
-                else:
-                    product_urls.add(location)
-                    if len(product_urls) >= MAX_DISCOVERED_URLS:
+                elif not is_asset_or_account_url(location):
+                    # XML product sitemaps often contain only products, but some
+                    # installations mix content. Product validation remains the
+                    # final authority.
+                    candidates.add(location)
+                    if len(candidates) >= MAX_DISCOVERED_URLS:
                         break
 
             await asyncio.sleep(self.request_delay)
 
-        ranked = sorted(product_urls, key=lambda value: (-url_priority(value), value))
+        self.diagnostics["xml_product_candidates"] = len(candidates)
+        return candidates
+
+    async def _discover_html(self, session):
+        seed_urls = [
+            urljoin(self.base_url + "/", path.lstrip("/"))
+            for path in HTML_DISCOVERY_PATHS
+        ]
+        queue = []
+        queued = set()
+        for url in seed_urls:
+            normalized = normalize_url(url)
+            if normalized and normalized not in queued:
+                queue.append((normalized, 0))
+                queued.add(normalized)
+
+        visited = set()
+        candidates = set()
+
+        while queue and len(visited) < MAX_DISCOVERY_PAGES and len(candidates) < MAX_DISCOVERED_URLS:
+            page_url, depth = queue.pop(0)
+            if page_url in visited:
+                continue
+            visited.add(page_url)
+
+            text, final_url = await self._get(session, page_url)
+            if not text:
+                continue
+
+            self.diagnostics["html_discovery_pages"] += 1
+            effective_url = final_url or page_url
+
+            for link in extract_links(text, effective_url, self.domain):
+                if looks_like_product_url(link):
+                    candidates.add(link)
+                    if len(candidates) >= MAX_DISCOVERED_URLS:
+                        break
+
+                if depth >= 2:
+                    continue
+
+                # Only crawl public category/catalog pages likely to yield a
+                # supported TCG product. This prevents a generic site crawl.
+                if looks_like_tcg_discovery_url(link) and link not in visited and link not in queued:
+                    queue.append((link, depth + 1))
+                    queued.add(link)
+
+            await asyncio.sleep(self.request_delay)
+
+        self.diagnostics["html_product_candidates"] = len(candidates)
+        return candidates
+
+    async def _discover(self, session):
+        xml_candidates = await self._discover_xml(session)
+        html_candidates = await self._discover_html(session)
+
+        product_urls = set(xml_candidates)
+        product_urls.update(html_candidates)
+
+        ranked = sorted(
+            product_urls,
+            key=lambda value: (-url_priority(value), value),
+        )
         selected = ranked[: self.max_product_pages]
         self.diagnostics["product_urls_discovered"] = len(product_urls)
 
         print(
             "PRESTASHOP DISCOVERY | "
             f"Store={self.store_name} | "
-            f"Sitemaps={self.diagnostics['sitemaps_seen']} | "
-            f"TotalURLs={len(product_urls)} | "
+            f"XmlSitemaps={self.diagnostics['sitemaps_seen']} | "
+            f"HtmlDiscoveryPages={self.diagnostics['html_discovery_pages']} | "
+            f"XmlCandidates={self.diagnostics['xml_product_candidates']} | "
+            f"HtmlCandidates={self.diagnostics['html_product_candidates']} | "
+            f"TotalCandidates={len(product_urls)} | "
             f"SelectedForFetch={len(selected)}"
         )
         return selected
@@ -423,6 +967,7 @@ class PrestaShopAdapter(RetailerAdapter):
         headers = {
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.8",
         }
         raw_products = []
 
@@ -432,13 +977,22 @@ class PrestaShopAdapter(RetailerAdapter):
         ) as session:
             product_urls = await self._discover(session)
             for url in product_urls:
-                text = await self._get(session, url)
+                text, final_url = await self._get(session, url)
                 if not text:
                     continue
+
+                effective_url = final_url or url
                 schema = product_schema(text)
-                if not isinstance(schema, dict):
+                if not has_product_page_evidence(schema, text, effective_url):
                     continue
-                raw_products.append({"url": url, "html": text, "schema": schema})
+
+                raw_products.append(
+                    {
+                        "url": effective_url,
+                        "html": text,
+                        "schema": schema,
+                    }
+                )
                 self.diagnostics["product_pages_successful"] += 1
                 await asyncio.sleep(self.request_delay)
 
@@ -460,26 +1014,39 @@ class PrestaShopAdapter(RetailerAdapter):
         url = clean(raw_product.get("url"))
         text = raw_product.get("html") or ""
         schema = raw_product.get("schema")
-        if not url or not isinstance(schema, dict):
+        if schema is not None and not isinstance(schema, dict):
+            schema = None
+
+        if not url or not has_product_page_evidence(schema, text, url):
             self.diagnostics["products_rejected"] += 1
             self.diagnostics["rejected_products"] += 1
             return None
 
         title = parse_title(schema, text)
-        game = classify_game(title)
+        game = classify_game(title, url=url)
         if not game:
             self.diagnostics["products_rejected"] += 1
             self.diagnostics["rejected_products"] += 1
             return None
 
         offer = first_offer(schema)
-        price, currency = parse_price(offer)
+        price, currency, price_source = parse_price(
+            schema,
+            offer,
+            text,
+            self.region,
+        )
         if price is None:
             self.diagnostics["adapter_missing_prices"] += 1
 
-        available, availability_known, availability_state, availability_source = (
-            parse_availability(schema, offer)
-        )
+        (
+            available,
+            availability_known,
+            availability_state,
+            availability_source,
+            availability_confidence,
+        ) = parse_availability(schema, offer, text)
+
         if not availability_known:
             self.diagnostics["adapter_unknown_availability"] += 1
 
@@ -487,14 +1054,19 @@ class PrestaShopAdapter(RetailerAdapter):
         ptype = product_type(title)
         family = product_family(title)
         image = parse_image(schema, text)
+        sku = parse_sku(schema, text)
+
         product_state = {
             "IN_STOCK": "STOCK_AVAILABLE",
             "OUT_OF_STOCK": "SOLD_OUT",
             "PREORDER": "PREORDER",
         }.get(availability_state, "PAGE_LIVE")
 
-        sku = clean(schema.get("sku")) or None
-        external_id = clean(schema.get("productID") or schema.get("mpn") or sku) or None
+        external_id = None
+        if isinstance(schema, dict):
+            external_id = clean(schema.get("productID") or schema.get("mpn") or sku) or None
+        if not external_id:
+            external_id = sku
 
         capability = (
             "FULL_AVAILABILITY"
@@ -504,12 +1076,15 @@ class PrestaShopAdapter(RetailerAdapter):
 
         platform_data = {
             "adapter": "prestashop",
+            "adapter_step": "6J-3B",
             "availability_known": availability_known,
             "availability_state": availability_state,
             "availability_source": availability_source,
+            "availability_confidence": availability_confidence,
             "availability_capability": capability,
+            "price_source": price_source,
             "language": family_language(family),
-            "structured_data": "JSON_LD_PRODUCT",
+            "structured_data": "JSON_LD_PRODUCT" if isinstance(schema, dict) else "PUBLIC_PRODUCT_MARKUP",
         }
 
         self.diagnostics["products_accepted"] += 1
@@ -517,7 +1092,8 @@ class PrestaShopAdapter(RetailerAdapter):
             "PRESTASHOP TCG ACCEPTED | "
             f"Store={self.store_name} | Game={game} | Category={category} | "
             f"Family={family} | Price={price} {currency} | PriceKnown={price is not None} | "
-            f"Availability={availability_state} | AvailabilitySource={availability_source} | "
+            f"PriceSource={price_source} | Availability={availability_state} | "
+            f"AvailabilitySource={availability_source} | "
             f"AvailabilityCapability={capability} | Title={title}"
         )
 
