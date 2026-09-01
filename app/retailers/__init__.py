@@ -51,13 +51,16 @@ def load_retailer_adapters() -> None:
     from app.retailers import woocommerce_adapter
     _ = woocommerce_adapter
 
+    from app.retailers import bigcommerce_adapter
+    _ = bigcommerce_adapter
+
     _ADAPTERS_LOADED = True
 
     logger.info(
         (
             "RETAILER ADAPTERS LOADED | "
             "Version=%s | "
-            "Platforms=square_weebly,woocommerce"
+            "Platforms=square_weebly,woocommerce,bigcommerce"
         ),
         VERSION,
     )
