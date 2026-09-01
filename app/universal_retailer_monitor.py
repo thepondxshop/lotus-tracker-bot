@@ -5,7 +5,7 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.1.0
 
-Step 6J-1J — Production Diagnostic Cleanup
+Step 6J-2C — Per-Scan Diagnostic Counter Integrity
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -743,6 +743,8 @@ async def process_normalized_product(
         "updated": False,
         "events": 0,
         "suppressed": 0,
+        "unknown_availability": 0,
+        "missing_price": 0,
         "reason": None,
     }
 
@@ -775,6 +777,10 @@ async def process_normalized_product(
     capability = get_retailer_capability(item)
     record_capability_diagnostic(capability)
     record_availability_diagnostics(item)
+
+    _, item_availability_known, _ = get_availability_info(item)
+    result["unknown_availability"] = 0 if item_availability_known else 1
+    result["missing_price"] = 1 if normalize_price(item.get("price")) is None else 0
 
     effective_suppress = bool(baseline_mode) or bool(suppress_events)
     events_to_send: list[ProductEvent] = []
@@ -903,6 +909,8 @@ async def scan_store(
         "updated": 0,
         "events": 0,
         "suppressed": 0,
+        "unknown_availability": 0,
+        "missing_prices": 0,
         "diagnostics": {},
         "error": None,
     }
@@ -1021,9 +1029,30 @@ async def scan_store(
             result["updated"] += 1
         result["events"] += int(product_result.get("events", 0) or 0)
         result["suppressed"] += int(product_result.get("suppressed", 0) or 0)
+        result["unknown_availability"] += int(
+            product_result.get("unknown_availability", 0) or 0
+        )
+        result["missing_prices"] += int(
+            product_result.get("missing_price", 0) or 0
+        )
 
     if suppress_events and not baseline_mode:
         MONITOR_STATUS["events_suppressed_manual"] += result["suppressed"]
+
+    logger.info(
+        "UNIVERSAL STORE SCAN COMPLETE | Store=%s | Platform=%s | "
+        "Products=%s | Created=%s | Updated=%s | Events=%s | Suppressed=%s | "
+        "UnknownAvailability=%s | MissingPrices=%s",
+        store.name,
+        platform,
+        result["products"],
+        result["created"],
+        result["updated"],
+        result["events"],
+        result["suppressed"],
+        result["unknown_availability"],
+        result["missing_prices"],
+    )
 
     result["success"] = True
     return result
