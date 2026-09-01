@@ -3,7 +3,7 @@
 Lotus Tracker Bot / PonDeX Trackers
 BigCommerce Universal Retailer Adapter
 Version 1.0.4
-Step 6J-2A — BigCommerce Public Storefront Foundation
+Step 6J-2B — BigCommerce Classification + Diagnostic Integrity
 
 Public storefront + sitemap GETs only.
 No auth guessing, cart mutation, checkout automation, CAPTCHA/queue bypass.
@@ -51,7 +51,13 @@ GAME_TERMS = {
     "Azuki TCG": ("azuki tcg","azuki trading card game"),
     "Hellbreak TCG": ("hellbreak tcg","hellbreak trading card game"),
 }
-SEALED = ("booster box","booster display","booster pack","booster bundle","elite trainer box","starter deck","battle deck","structure deck","collection box","double pack","blister","tin","premium collection","case")
+SEALED = (
+    "booster box","booster display","booster pack","booster bundle","elite trainer box",
+    "starter deck","battle deck","structure deck","collection box","collection set",
+    "special collection","premium collection","figure collection","v box","vstar box",
+    "v star","world championship deck","world championships deck","build & battle stadium",
+    "build and battle stadium","deluxe box","deluxe pack","double pack","blister","tin","case"
+)
 SINGLE = ("single card","tcg single","card single","singles","individual card","black star promo","promo card")
 ACCESSORY = ("sleeves","deck box","binder","playmat","play mat","portfolio","toploader","top loader")
 ONE_PIECE_CODE = re.compile(r"\b(?:OP|EB|PRB|ST|EX)\d{1,2}-\d{2,4}\b", re.I)
@@ -123,10 +129,28 @@ def product_type(title):
 
 def family(title):
     t = f" {clean(title).lower()} "
-    if any(x in t for x in (" japanese "," jp version "," jp edition ")): return "JP"
-    if any(x in t for x in (" korean "," kr version "," kr edition ")): return "KR"
-    if any(x in t for x in (" simplified chinese "," cn version "," cn edition ")): return "CN"
-    if " import " in t: return "UNKNOWN"
+
+    # Family/language is derived from explicit title metadata only.
+    # Currency is intentionally never used for this decision.
+    if any(x in t for x in (
+        " japanese ", " japan ", " jp version ", " jp edition ", " jp ",
+    )):
+        return "JP"
+
+    if any(x in t for x in (
+        " korean ", " korea ", " kr version ", " kr edition ", " kr ",
+    )):
+        return "KR"
+
+    if any(x in t for x in (
+        " simplified chinese ", " chinese ", " china ",
+        " cn version ", " cn edition ", " cn ",
+    )):
+        return "CN"
+
+    if " import " in t:
+        return "UNKNOWN"
+
     return "GLOBAL_STANDARD"
 
 def language(f):
@@ -210,7 +234,7 @@ class BigCommerceAdapter(RetailerAdapter):
         self._reset()
 
     def _reset(self):
-        self.diagnostics={"pages_checked":0,"pages_successful":0,"pages_failed":0,"product_urls_discovered":0,"product_pages_successful":0,"products_accepted":0,"products_rejected":0,"unknown_availability":0,"missing_prices":0,"sitemaps_seen":0,"last_error":None}
+        self.diagnostics={"pages_checked":0,"pages_successful":0,"pages_failed":0,"product_urls_discovered":0,"product_pages_successful":0,"products_accepted":0,"products_rejected":0,"adapter_unknown_availability":0,"adapter_missing_prices":0,"sitemaps_seen":0,"last_error":None}
 
     def get_diagnostics(self): return dict(self.diagnostics)
 
@@ -281,9 +305,9 @@ class BigCommerceAdapter(RetailerAdapter):
         if not game:
             self.diagnostics["products_rejected"]+=1; return None
         o=offer(schema); price,currency=parse_price(schema,o)
-        if price is None:self.diagnostics["missing_prices"]+=1
+        if price is None:self.diagnostics["adapter_missing_prices"]+=1
         available,known,state,source=parse_availability(schema,o)
-        if not known:self.diagnostics["unknown_availability"]+=1
+        if not known:self.diagnostics["adapter_unknown_availability"]+=1
         cat=category(title); ptype=product_type(title); fam=family(title); image=parse_image(schema,text)
         pstate={"IN_STOCK":"STOCK_AVAILABLE","OUT_OF_STOCK":"SOLD_OUT","PREORDER":"PREORDER"}.get(state,"PAGE_LIVE")
         sku=clean(schema.get("sku")) or None
@@ -291,5 +315,5 @@ class BigCommerceAdapter(RetailerAdapter):
         capability="FULL_AVAILABILITY" if known else ("DISCOVERY_PRICE_ONLY" if price is not None else "DISCOVERY_ONLY")
         pdata={"adapter":"bigcommerce","availability_known":known,"availability_state":state,"availability_source":source,"availability_capability":capability,"language":language(fam),"structured_data":"JSON_LD_PRODUCT"}
         self.diagnostics["products_accepted"]+=1
-        print(f"BIGCOMMERCE TCG ACCEPTED | Store={self.store_name} | Game={game} | Category={cat} | Family={fam} | Price={price} {currency} | Availability={state} | AvailabilitySource={source} | AvailabilityCapability={capability} | Title={title}")
+        print(f"BIGCOMMERCE TCG ACCEPTED | Store={self.store_name} | Game={game} | Category={cat} | Family={fam} | Price={price} {currency} | PriceKnown={price is not None} | Availability={state} | AvailabilitySource={source} | AvailabilityCapability={capability} | Title={title}")
         return RetailerProduct(external_id=ext,title=title,game=game,url=url,price=price,currency=currency,available=available,product_type=ptype,product_category=cat,product_family=fam,product_state=pstate,image_url=image,vendor=self.store_name,tags=None,sku=sku,external_product_id=ext,offer_id=None,variant_id=None,purchase_limit=None,cart_base_url=None,platform_data=pdata)
