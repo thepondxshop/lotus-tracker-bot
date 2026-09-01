@@ -15,7 +15,7 @@ from app.product_family import (
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6G-C - Shopify Preorder Lifecycle + Priority Discovery
+# Step 6G-C1 - Shopify Discovery Backfill Guard
 #
 # Strict Structured TCG Classification
 # Product Family Detection
@@ -2406,6 +2406,18 @@ class ShopifyAdapter:
 
             "cart_base_url":
                 self.base_url,
+
+            # Public Shopify catalog timestamps are used only as a
+            # freshness guard for collection-only discovery. They do not
+            # affect game/category/family classification.
+            "published_at":
+                product.get("published_at"),
+
+            "created_at":
+                product.get("created_at"),
+
+            "updated_at":
+                product.get("updated_at"),
 
             "discovery_sources":
                 list(
