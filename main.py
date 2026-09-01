@@ -4038,6 +4038,14 @@ async def scanretailer(
         )
 
         embed.add_field(
+            name="Backorders",
+            value=(
+                f"`{scan_result.get('backorders', 0)}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
 
             name="Safety Mode",
 
