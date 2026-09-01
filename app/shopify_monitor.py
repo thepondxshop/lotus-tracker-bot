@@ -83,6 +83,9 @@ from app.store_health import (
 # Inventory Quantity Snapshots
 # Smart Cart Quantity Guard Metadata
 # Variant-Switch Price Protection
+# Preorder Lifecycle Persistence
+# PREORDER_PAGE -> PREORDER_LIVE Detection
+# Shopify Discovery Source Persistence
 # =========================================================
 
 
@@ -130,6 +133,15 @@ MONITOR_STATUS = {
         0,
 
     "inventory_quantity_unknown":
+        0,
+
+    "preorder_activations":
+        0,
+
+    "preorder_pages":
+        0,
+
+    "preorder_live_products":
         0,
 
     "sealed_products":
@@ -336,6 +348,8 @@ def save_inventory_platform_data(
     quantity,
     quantity_known,
     variant_id,
+    product_state=None,
+    discovery_sources=None,
 ):
 
     if not hasattr(
@@ -379,6 +393,57 @@ def save_inventory_platform_data(
         datetime.utcnow().isoformat()
     )
 
+    if product_state:
+
+        data[
+            "shopify_product_state"
+        ] = (
+            str(
+                product_state
+            ).strip().upper()
+        )
+
+        data[
+            "shopify_product_state_observed_at"
+        ] = (
+            datetime.utcnow().isoformat()
+        )
+
+    if discovery_sources is not None:
+
+        normalized_sources = []
+
+        for source in (
+            discovery_sources
+            if isinstance(
+                discovery_sources,
+                (
+                    list,
+                    tuple,
+                    set,
+                ),
+            )
+            else [discovery_sources]
+        ):
+
+            source = str(
+                source
+                or ""
+            ).strip()
+
+            if (
+                source
+                and source not in normalized_sources
+            ):
+
+                normalized_sources.append(
+                    source
+                )
+
+        data[
+            "shopify_discovery_sources"
+        ] = normalized_sources
+
     store_product.platform_data = (
         json.dumps(
             data,
@@ -421,6 +486,70 @@ def get_previous_inventory_snapshot(
         quantity,
         known,
     )
+
+
+def get_previous_product_state(
+    store_product,
+):
+
+    data = (
+        load_platform_data(
+            store_product
+        )
+    )
+
+    value = str(
+        data.get(
+            "shopify_product_state"
+        )
+        or ""
+    ).strip().upper()
+
+    return (
+        value
+        or None
+    )
+
+
+def normalize_shopify_product_state(
+    value,
+):
+
+    value = str(
+        value
+        or "PAGE_LIVE"
+    ).strip().upper()
+
+    if value not in {
+        "PAGE_LIVE",
+        "COMING_SOON",
+        "PREORDER_PAGE",
+        "PREORDER_LIVE",
+        "STOCK_AVAILABLE",
+    }:
+
+        return (
+            "PAGE_LIVE"
+        )
+
+    return value
+
+
+def is_preorder_title(
+    value,
+):
+
+    text = str(
+        value
+        or ""
+    ).strip().lower()
+
+    return (
+        "preorder" in text
+        or "pre-order" in text
+        or "pre order" in text
+    )
+
 
 async def add_shopify_store(
     name,
@@ -1373,6 +1502,18 @@ async def scan_shopify_store(
             + 1
         )
 
+        product_state = (
+            normalize_shopify_product_state(
+                item.get(
+                    "product_state"
+                )
+            )
+        )
+
+        item[
+            "product_state"
+        ] = product_state
+
         normalized_products.append(
             item
         )
@@ -1449,6 +1590,23 @@ async def scan_shopify_store(
 
         "inventory_quantity_unknown":
             0,
+
+        "preorder_activations":
+            0,
+
+        "preorder_pages":
+            sum(
+                1
+                for item in normalized_products
+                if item.get("product_state") == "PREORDER_PAGE"
+            ),
+
+        "preorder_live_products":
+            sum(
+                1
+                for item in normalized_products
+                if item.get("product_state") == "PREORDER_LIVE"
+            ),
 
         "initial_seed":
             False,
@@ -1608,11 +1766,11 @@ async def scan_shopify_store(
                     ),
 
                     status=(
-                        "in_stock"
-                        if item[
-                            "available"
-                        ]
-                        else "sold_out"
+                        normalize_shopify_product_state(
+                            item.get(
+                                "product_state"
+                            )
+                        )
                     ),
 
                     price=(
@@ -1661,6 +1819,18 @@ async def scan_shopify_store(
                     variant_id=(
                         item.get(
                             "variant_id"
+                        )
+                    ),
+
+                    product_state=(
+                        item.get(
+                            "product_state"
+                        )
+                    ),
+
+                    discovery_sources=(
+                        item.get(
+                            "discovery_sources"
                         )
                     ),
                 )
@@ -1798,6 +1968,20 @@ async def scan_shopify_store(
                 )
             )
 
+            old_product_state = (
+                get_previous_product_state(
+                    store_product
+                )
+            )
+
+            new_product_state = (
+                normalize_shopify_product_state(
+                    item.get(
+                        "product_state"
+                    )
+                )
+            )
+
             old_price = (
                 store_product.price
             )
@@ -1923,6 +2107,16 @@ async def scan_shopify_store(
                 variant_id=(
                     new_variant_id
                 ),
+
+                product_state=(
+                    new_product_state
+                ),
+
+                discovery_sources=(
+                    item.get(
+                        "discovery_sources"
+                    )
+                ),
             )
 
             variant_changed = (
@@ -1986,6 +2180,16 @@ async def scan_shopify_store(
 
             product_row = (
                 product_result.scalars().first()
+            )
+
+            old_product_title = (
+                getattr(
+                    product_row,
+                    "name",
+                    None,
+                )
+                if product_row is not None
+                else None
             )
 
             if product_row is not None:
@@ -2079,6 +2283,115 @@ async def scan_shopify_store(
                         )
                     )
 
+            preorder_title_transition = (
+                is_preorder_title(
+                    item.get(
+                        "title"
+                    )
+                )
+                and not is_preorder_title(
+                    old_product_title
+                )
+            )
+
+            preorder_activation = (
+                new_product_state
+                == "PREORDER_LIVE"
+                and (
+                    old_product_state
+                    != "PREORDER_LIVE"
+                )
+                and (
+                    not old_stock
+                    or old_product_state is not None
+                    or preorder_title_transition
+                )
+            )
+
+            if preorder_activation:
+
+                changed = True
+
+                stats[
+                    "preorder_activations"
+                ] += 1
+
+                MONITOR_STATUS[
+                    "preorder_activations"
+                ] += 1
+
+                preorder_deal_data = None
+
+                if new_price is not None:
+
+                    preorder_deal_data = (
+                        await get_deal_data(
+
+                            session,
+
+                            item=item,
+
+                            store_product=(
+                                store_product
+                            ),
+
+                            current_price=(
+                                new_price
+                            ),
+
+                            old_price=(
+                                old_price
+                            ),
+
+                            currency=(
+                                new_currency
+                            ),
+                        )
+                    )
+
+                events_to_send.append(
+
+                    make_product_event(
+
+                        event_type=(
+                            ProductEventType.PREORDER_LIVE
+                        ),
+
+                        item=item,
+
+                        store=store,
+
+                        in_stock=True,
+
+                        old_price=(
+                            old_price
+                            if (
+                                old_price is not None
+                                and new_price is not None
+                                and old_price != new_price
+                            )
+                            else None
+                        ),
+
+                        deal_data=(
+                            preorder_deal_data
+                        ),
+                    )
+                )
+
+                print(
+                    (
+                        "SHOPIFY PREORDER ACTIVATED | "
+                        f"Store={store.name} | "
+                        f"Product={item['title']} | "
+                        f"OldState={old_product_state or 'UNTRACKED'} | "
+                        f"NewState={new_product_state} | "
+                        f"OldStock={old_stock} | "
+                        f"NewStock={new_stock} | "
+                        f"DiscoverySources={item.get('discovery_sources')}"
+                    )
+                )
+
             if old_stock != new_stock:
 
                 changed = True
@@ -2097,12 +2410,19 @@ async def scan_shopify_store(
                 )
 
                 stock_event = (
-                    ProductEventType.RESTOCK
+                    None
                     if (
-                        not old_stock
+                        preorder_activation
                         and new_stock
                     )
-                    else ProductEventType.SOLD_OUT
+                    else (
+                        ProductEventType.RESTOCK
+                        if (
+                            not old_stock
+                            and new_stock
+                        )
+                        else ProductEventType.SOLD_OUT
+                    )
                 )
 
                 restock_deal_data = None
@@ -2140,13 +2460,15 @@ async def scan_shopify_store(
                         )
                     )
 
-                events_to_send.append(
+                if stock_event is not None:
 
-                    make_product_event(
+                    events_to_send.append(
 
-                        event_type=(
-                            stock_event
-                        ),
+                        make_product_event(
+
+                            event_type=(
+                                stock_event
+                            ),
 
                         item=item,
 
@@ -2348,9 +2670,7 @@ async def scan_shopify_store(
             )
 
             store_product.status = (
-                "in_stock"
-                if new_stock
-                else "sold_out"
+                new_product_state
             )
 
             store_product.last_seen_at = (
@@ -2401,6 +2721,9 @@ async def scan_all_shopify_stores():
     total_events = 0
     total_flickers = 0
     total_variant_switches = 0
+    total_preorder_activations = 0
+    total_preorder_pages = 0
+    total_preorder_live_products = 0
     stores_scanned = 0
 
     total_categories = {
@@ -2434,6 +2757,18 @@ async def scan_all_shopify_stores():
 
     MONITOR_STATUS[
         "inventory_quantity_unknown"
+    ] = 0
+
+    MONITOR_STATUS[
+        "preorder_activations"
+    ] = 0
+
+    MONITOR_STATUS[
+        "preorder_pages"
+    ] = 0
+
+    MONITOR_STATUS[
+        "preorder_live_products"
     ] = 0
 
     for store in stores:
@@ -2477,6 +2812,27 @@ async def scan_all_shopify_stores():
             total_variant_switches += (
                 result.get(
                     "variant_switches",
+                    0,
+                )
+            )
+
+            total_preorder_activations += (
+                result.get(
+                    "preorder_activations",
+                    0,
+                )
+            )
+
+            total_preorder_pages += (
+                result.get(
+                    "preorder_pages",
+                    0,
+                )
+            )
+
+            total_preorder_live_products += (
+                result.get(
+                    "preorder_live_products",
                     0,
                 )
             )
@@ -2577,6 +2933,24 @@ async def scan_all_shopify_stores():
         "variant_switches"
     ] = (
         total_variant_switches
+    )
+
+    MONITOR_STATUS[
+        "preorder_activations"
+    ] = (
+        total_preorder_activations
+    )
+
+    MONITOR_STATUS[
+        "preorder_pages"
+    ] = (
+        total_preorder_pages
+    )
+
+    MONITOR_STATUS[
+        "preorder_live_products"
+    ] = (
+        total_preorder_live_products
     )
 
     MONITOR_STATUS[
