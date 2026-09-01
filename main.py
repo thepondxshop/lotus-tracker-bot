@@ -411,6 +411,10 @@ RETAILER_PLATFORM_CHOICES = [
         name="WooCommerce",
         value="woocommerce",
     ),
+    app_commands.Choice(
+        name="BigCommerce",
+        value="bigcommerce",
+    ),
 ]
 
 
@@ -3384,6 +3388,7 @@ async def addretailer(
     if clean_platform not in {
         "square_weebly",
         "woocommerce",
+        "bigcommerce",
     }:
 
         await interaction.followup.send(
@@ -3541,6 +3546,7 @@ async def addretailer(
         platform_label = {
             "square_weebly": "Square / Weebly",
             "woocommerce": "WooCommerce",
+            "bigcommerce": "BigCommerce",
         }.get(clean_platform, clean_platform)
 
         embed.add_field(
@@ -3922,6 +3928,7 @@ async def scanretailer(
         scan_platform_label = {
             "square_weebly": "Square / Weebly",
             "woocommerce": "WooCommerce",
+            "bigcommerce": "BigCommerce",
         }.get(platform, platform)
 
         embed.add_field(
