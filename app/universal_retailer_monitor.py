@@ -47,7 +47,7 @@ VERSION = "1.1.0"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
-SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly", "woocommerce"}
+SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly", "woocommerce", "bigcommerce"}
 
 
 MONITOR_STATUS: dict[str, Any] = {
