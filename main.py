@@ -3822,10 +3822,6 @@ async def scanretailer(
 
             return
 
-        before_status = (
-            get_universal_retailer_monitor_status()
-        )
-
         scan_result = (
             await scan_store(
 
@@ -3833,10 +3829,6 @@ async def scanretailer(
 
                 suppress_events=True,
             )
-        )
-
-        after_status = (
-            get_universal_retailer_monitor_status()
         )
 
         if not scan_result.get(
@@ -3868,50 +3860,25 @@ async def scanretailer(
 
             return
 
-        unknown_before = int(
-            before_status.get(
+        # Step 6J-3B2:
+        # Use scan_store()'s per-store diagnostics directly.
+        # The automatic universal monitor can run concurrently with this
+        # controlled scan, so global before/after MONITOR_STATUS deltas can
+        # include products from other active stores and inflate these values.
+        unknown_stock = int(
+            scan_result.get(
                 "unknown_availability",
                 0,
             )
             or 0
         )
 
-        unknown_after = int(
-            after_status.get(
-                "unknown_availability",
-                0,
-            )
-            or 0
-        )
-
-        missing_before = int(
-            before_status.get(
+        missing_prices = int(
+            scan_result.get(
                 "missing_prices",
                 0,
             )
             or 0
-        )
-
-        missing_after = int(
-            after_status.get(
-                "missing_prices",
-                0,
-            )
-            or 0
-        )
-
-        unknown_stock = max(
-            0,
-            unknown_after
-            -
-            unknown_before,
-        )
-
-        missing_prices = max(
-            0,
-            missing_after
-            -
-            missing_before,
         )
 
         embed = discord.Embed(
