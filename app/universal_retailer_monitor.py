@@ -71,6 +71,7 @@ MONITOR_STATUS: dict[str, Any] = {
     "sold_out": 0,
     "unknown_availability": 0,
     "preorders": 0,
+    "backorders": 0,
     "availability_high_confidence": 0,
     "availability_medium_confidence": 0,
     "availability_low_confidence": 0,
@@ -247,7 +248,7 @@ def get_retailer_capability(item: dict[str, Any]) -> str:
     ).upper()
 
     if availability_known is True or availability_state in {
-        "IN_STOCK", "OUT_OF_STOCK", "PREORDER",
+        "IN_STOCK", "OUT_OF_STOCK", "PREORDER", "BACKORDER",
     }:
         return CAPABILITY_FULL_AVAILABILITY
 
@@ -305,6 +306,9 @@ def get_availability_info(item: dict[str, Any]) -> tuple[bool, bool, str]:
         return False, True, "OUT_OF_STOCK"
     if availability_state == "PREORDER":
         return True, True, "PREORDER"
+    if availability_state == "BACKORDER":
+        # Known lifecycle state, but not immediate on-hand inventory.
+        return False, True, "BACKORDER"
     if availability_state == "UNKNOWN":
         return False, False, "UNKNOWN"
 
@@ -526,6 +530,9 @@ async def create_store_product(
     elif availability_state == "PREORDER":
         product_state = "PREORDER"
         MONITOR_STATUS["preorders"] += 1
+    elif availability_state == "BACKORDER":
+        product_state = "BACKORDER"
+        MONITOR_STATUS["backorders"] += 1
     else:
         product_state = "PAGE_LIVE"
 
@@ -714,7 +721,7 @@ async def update_store_product(
     if parsed_price is not None:
         store_product.price = parsed_price
     store_product.currency = new_currency
-    if availability_state in {"IN_STOCK", "OUT_OF_STOCK"}:
+    if availability_state in {"IN_STOCK", "OUT_OF_STOCK", "BACKORDER"}:
         store_product.in_stock = new_stock
 
     if availability_state == "IN_STOCK":
@@ -723,6 +730,9 @@ async def update_store_product(
         store_product.status = "SOLD_OUT"
     elif availability_state == "PREORDER":
         store_product.status = "PREORDER"
+    elif availability_state == "BACKORDER":
+        store_product.status = "BACKORDER"
+        MONITOR_STATUS["backorders"] += 1
     elif not store_product.status:
         store_product.status = "PAGE_LIVE"
 
@@ -745,6 +755,7 @@ async def process_normalized_product(
         "suppressed": 0,
         "unknown_availability": 0,
         "missing_price": 0,
+        "backorder": 0,
         "reason": None,
     }
 
@@ -778,9 +789,10 @@ async def process_normalized_product(
     record_capability_diagnostic(capability)
     record_availability_diagnostics(item)
 
-    _, item_availability_known, _ = get_availability_info(item)
+    _, item_availability_known, item_availability_state = get_availability_info(item)
     result["unknown_availability"] = 0 if item_availability_known else 1
     result["missing_price"] = 1 if normalize_price(item.get("price")) is None else 0
+    result["backorder"] = 1 if item_availability_state == "BACKORDER" else 0
 
     effective_suppress = bool(baseline_mode) or bool(suppress_events)
     events_to_send: list[ProductEvent] = []
@@ -911,6 +923,7 @@ async def scan_store(
         "suppressed": 0,
         "unknown_availability": 0,
         "missing_prices": 0,
+        "backorders": 0,
         "diagnostics": {},
         "error": None,
     }
@@ -1035,6 +1048,9 @@ async def scan_store(
         result["missing_prices"] += int(
             product_result.get("missing_price", 0) or 0
         )
+        result["backorders"] += int(
+            product_result.get("backorder", 0) or 0
+        )
 
     if suppress_events and not baseline_mode:
         MONITOR_STATUS["events_suppressed_manual"] += result["suppressed"]
@@ -1042,7 +1058,7 @@ async def scan_store(
     logger.info(
         "UNIVERSAL STORE SCAN COMPLETE | Store=%s | Platform=%s | "
         "Products=%s | Created=%s | Updated=%s | Events=%s | Suppressed=%s | "
-        "UnknownAvailability=%s | MissingPrices=%s",
+        "UnknownAvailability=%s | MissingPrices=%s | Backorders=%s",
         store.name,
         platform,
         result["products"],
@@ -1052,6 +1068,7 @@ async def scan_store(
         result["suppressed"],
         result["unknown_availability"],
         result["missing_prices"],
+        result["backorders"],
     )
 
     result["success"] = True
@@ -1092,6 +1109,7 @@ def reset_cycle_status() -> None:
         "sold_out",
         "unknown_availability",
         "preorders",
+        "backorders",
         "availability_high_confidence",
         "availability_medium_confidence",
         "availability_low_confidence",
