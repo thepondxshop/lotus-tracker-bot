@@ -15,7 +15,7 @@ from app.product_family import (
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6G-B - Shopify Inventory Intelligence
+# Step 6G-C - Shopify Preorder Lifecycle + Priority Discovery
 #
 # Strict Structured TCG Classification
 # Product Family Detection
@@ -27,6 +27,8 @@ from app.product_family import (
 # Variant-Type Matching
 # Purchase Limit Detection
 # Public Inventory Quantity Detection
+# Priority Preorder / Coming-Soon Collection Discovery
+# Discovery Source Diagnostics
 # Smart Cart Quantity Guard Metadata
 #
 # IMPORTANT:
@@ -1555,6 +1557,62 @@ def default_family_for_store_region(
     return None
 
 
+# =========================================================
+# PUBLIC PRIORITY COLLECTION DISCOVERY
+#
+# Shopify storefronts can expose products in public collections
+# before they are easy to find in the general catalog feed.
+# Lotus uses only public GET endpoints and never accesses private
+# Admin/App APIs or authenticated sales-channel data.
+# =========================================================
+
+PRIORITY_COLLECTION_TERMS = (
+    "preorder",
+    "pre-order",
+    "pre order",
+    "coming soon",
+    "coming-soon",
+    "new arrivals",
+    "new-arrivals",
+    "new products",
+    "new-products",
+    "one piece",
+    "one-piece",
+    "pokemon",
+    "pokÃ©mon",
+    "gundam",
+    "riftbound",
+    "fusion world",
+    "fusion-world",
+)
+
+MAX_PRIORITY_COLLECTIONS = 20
+MAX_COLLECTION_PAGES = 4
+
+
+def _append_discovery_source(product, source):
+    if not isinstance(product, dict):
+        return
+    sources = product.get("_lotus_discovery_sources")
+    if not isinstance(sources, list):
+        sources = []
+    if source not in sources:
+        sources.append(source)
+    product["_lotus_discovery_sources"] = sources
+
+
+def _product_dedupe_key(product):
+    if not isinstance(product, dict):
+        return None
+    product_id = product.get("id")
+    if product_id not in (None, ""):
+        return f"id:{product_id}"
+    handle = str(product.get("handle") or "").strip().lower()
+    if handle:
+        return f"handle:{handle}"
+    return None
+
+
 class ShopifyAdapter:
 
     def __init__(
@@ -1669,7 +1727,8 @@ class ShopifyAdapter:
         max_pages=20,
     ):
 
-        products = []
+        products_by_key = {}
+        anonymous_products = []
 
         timeout = (
             aiohttp.ClientTimeout(
@@ -1686,6 +1745,46 @@ class ShopifyAdapter:
                 "PonDeX-Trackers/1.0.4",
         }
 
+        async def merge_products(page_products, source):
+            for product in page_products or []:
+                if not isinstance(product, dict):
+                    continue
+
+                key = _product_dedupe_key(product)
+
+                if key is None:
+                    product = dict(product)
+                    _append_discovery_source(product, source)
+                    anonymous_products.append(product)
+                    continue
+
+                existing = products_by_key.get(key)
+
+                if existing is None:
+                    product = dict(product)
+                    _append_discovery_source(product, source)
+                    products_by_key[key] = product
+                    continue
+
+                existing_sources = list(
+                    existing.get("_lotus_discovery_sources")
+                    or []
+                )
+
+                incoming_sources = list(
+                    product.get("_lotus_discovery_sources")
+                    or []
+                )
+
+                for discovery_source in incoming_sources + [source]:
+                    if discovery_source not in existing_sources:
+                        existing_sources.append(discovery_source)
+
+                # Prefer the newest public payload for ordinary Shopify
+                # fields while preserving every discovery source.
+                existing.update(product)
+                existing["_lotus_discovery_sources"] = existing_sources
+
         async with aiohttp.ClientSession(
 
             timeout=timeout,
@@ -1693,6 +1792,12 @@ class ShopifyAdapter:
             headers=headers,
 
         ) as session:
+
+            # =================================================
+            # 1. GENERAL PUBLIC PRODUCT FEED
+            # =================================================
+
+            general_pages = 0
 
             for page in range(
                 1,
@@ -1740,8 +1845,11 @@ class ShopifyAdapter:
 
                         break
 
-                    products.extend(
-                        page_products
+                    general_pages += 1
+
+                    await merge_products(
+                        page_products,
+                        "PRODUCTS_JSON",
                     )
 
                     if len(
@@ -1749,6 +1857,163 @@ class ShopifyAdapter:
                     ) < 250:
 
                         break
+
+            # =================================================
+            # 2. DISCOVER PUBLIC COLLECTIONS
+            # =================================================
+
+            priority_collections = []
+
+            collections_url = (
+                f"{self.base_url}/collections.json?limit=250"
+            )
+
+            try:
+                async with session.get(
+                    collections_url,
+                    allow_redirects=True,
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json(
+                            content_type=None
+                        )
+                        collections = data.get("collections", []) or []
+
+                        ranked = []
+
+                        for collection in collections:
+                            if not isinstance(collection, dict):
+                                continue
+
+                            handle = str(
+                                collection.get("handle")
+                                or ""
+                            ).strip()
+
+                            title = normalize_text(
+                                collection.get("title")
+                            )
+
+                            probe = normalize_text(
+                                f"{title} {handle}"
+                            )
+
+                            score = 0
+
+                            for term in PRIORITY_COLLECTION_TERMS:
+                                if normalize_text(term) in probe:
+                                    score += 10
+
+                            if "preorder" in probe or "pre-order" in probe:
+                                score += 50
+
+                            if "coming soon" in probe or "coming-soon" in probe:
+                                score += 40
+
+                            if score > 0 and handle:
+                                ranked.append((
+                                    -score,
+                                    handle,
+                                    title,
+                                ))
+
+                        ranked.sort()
+
+                        priority_collections = ranked[
+                            :MAX_PRIORITY_COLLECTIONS
+                        ]
+
+            except Exception as error:
+                print(
+                    (
+                        "SHOPIFY COLLECTION DISCOVERY ERROR | "
+                        f"Store={self.domain} | "
+                        f"{type(error).__name__}: {error}"
+                    )
+                )
+
+            collection_products_seen = 0
+
+            # =================================================
+            # 3. PRIORITY PUBLIC COLLECTION PRODUCT FEEDS
+            # =================================================
+
+            for _, handle, title in priority_collections:
+
+                for page in range(
+                    1,
+                    MAX_COLLECTION_PAGES + 1,
+                ):
+
+                    url = (
+                        f"{self.base_url}"
+                        f"/collections/{handle}/products.json"
+                        f"?limit=250&page={page}"
+                    )
+
+                    try:
+                        async with session.get(
+                            url,
+                            allow_redirects=True,
+                        ) as response:
+                            if response.status != 200:
+                                break
+
+                            data = await response.json(
+                                content_type=None
+                            )
+
+                            page_products = (
+                                data.get("products", [])
+                                or []
+                            )
+
+                            if not page_products:
+                                break
+
+                            source_label = (
+                                "COLLECTION:"
+                                + handle
+                            )
+
+                            await merge_products(
+                                page_products,
+                                source_label,
+                            )
+
+                            collection_products_seen += len(
+                                page_products
+                            )
+
+                            if len(page_products) < 250:
+                                break
+
+                    except Exception as error:
+                        print(
+                            (
+                                "SHOPIFY COLLECTION FETCH ERROR | "
+                                f"Store={self.domain} | "
+                                f"Collection={handle} | "
+                                f"{type(error).__name__}: {error}"
+                            )
+                        )
+                        break
+
+        products = (
+            list(products_by_key.values())
+            + anonymous_products
+        )
+
+        print(
+            (
+                "SHOPIFY DISCOVERY COMPLETE | "
+                f"Store={self.domain} | "
+                f"GeneralPages={general_pages} | "
+                f"PriorityCollections={len(priority_collections)} | "
+                f"CollectionProductsSeen={collection_products_seen} | "
+                f"UniqueProducts={len(products)}"
+            )
+        )
 
         return (
             products
@@ -2054,7 +2319,8 @@ class ShopifyAdapter:
                     f"InventoryKnown={selected_inventory_quantity_known} | "
                     f"InventoryQuantity={selected_inventory_quantity} | "
                     f"Price={selected_variant_price} | "
-                    f"ProductAvailable={available}"
+                    f"ProductAvailable={available} | "
+                    f"DiscoverySources={product.get('_lotus_discovery_sources', ['PRODUCTS_JSON'])}"
                 )
             )
 
@@ -2140,4 +2406,13 @@ class ShopifyAdapter:
 
             "cart_base_url":
                 self.base_url,
+
+            "discovery_sources":
+                list(
+                    product.get(
+                        "_lotus_discovery_sources",
+                        ["PRODUCTS_JSON"],
+                    )
+                    or ["PRODUCTS_JSON"]
+                ),
         }
