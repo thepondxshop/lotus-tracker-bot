@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     func,
@@ -86,6 +86,7 @@ from app.store_health import (
 # Preorder Lifecycle Persistence
 # PREORDER_PAGE -> PREORDER_LIVE Detection
 # Shopify Discovery Source Persistence
+# Step 6G-C1 - Collection Backfill Alert Guard
 # =========================================================
 
 
@@ -133,6 +134,12 @@ MONITOR_STATUS = {
         0,
 
     "inventory_quantity_unknown":
+        0,
+
+    "new_product_alerts_allowed":
+        0,
+
+    "new_product_backfills_suppressed":
         0,
 
     "preorder_activations":
@@ -1107,6 +1114,89 @@ def make_product_event(
     )
 
 
+SHOPIFY_COLLECTION_FRESHNESS_SECONDS = 24 * 60 * 60
+
+
+def parse_shopify_timestamp(value):
+
+    if not value:
+        return None
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+
+        parsed = datetime.fromisoformat(text)
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        return parsed.astimezone(timezone.utc)
+
+    except (TypeError, ValueError):
+        return None
+
+
+def is_recent_public_shopify_product(
+    item,
+    max_age_seconds=SHOPIFY_COLLECTION_FRESHNESS_SECONDS,
+):
+
+    observed = (
+        parse_shopify_timestamp(item.get("published_at"))
+        or parse_shopify_timestamp(item.get("created_at"))
+    )
+
+    if observed is None:
+        return False
+
+    age_seconds = (
+        datetime.now(timezone.utc)
+        - observed
+    ).total_seconds()
+
+    return (
+        -300
+        <= age_seconds
+        <= max_age_seconds
+    )
+
+
+def should_alert_new_shopify_product(item):
+
+    sources = item.get("discovery_sources") or []
+
+    if not isinstance(sources, (list, tuple, set)):
+        sources = [sources]
+
+    normalized_sources = {
+        str(source or "").strip().upper()
+        for source in sources
+        if str(source or "").strip()
+    }
+
+    if "PRODUCTS_JSON" in normalized_sources:
+        return True, "PRODUCTS_JSON"
+
+    collection_only = any(
+        source.startswith("COLLECTION:")
+        for source in normalized_sources
+    )
+
+    if collection_only:
+        if is_recent_public_shopify_product(item):
+            return True, "RECENT_COLLECTION_PUBLICATION"
+
+        return False, "COLLECTION_BACKFILL"
+
+    return False, "UNKNOWN_DISCOVERY_SOURCE"
+
+
 def add_new_product_events(
     events_to_send,
     item,
@@ -1591,6 +1681,12 @@ async def scan_shopify_store(
         "inventory_quantity_unknown":
             0,
 
+        "new_product_alerts_allowed":
+            0,
+
+        "new_product_backfills_suppressed":
+            0,
+
         "preorder_activations":
             0,
 
@@ -1939,18 +2035,57 @@ async def scan_shopify_store(
 
                 if not initial_seed:
 
-                    add_new_product_events(
-
-                        events_to_send,
-
-                        item,
-
-                        store,
-
-                        deal_data=(
-                            new_deal_data
-                        ),
+                    (
+                        allow_new_product_alerts,
+                        new_product_alert_reason,
+                    ) = should_alert_new_shopify_product(
+                        item
                     )
+
+                    if allow_new_product_alerts:
+
+                        add_new_product_events(
+
+                            events_to_send,
+
+                            item,
+
+                            store,
+
+                            deal_data=(
+                                new_deal_data
+                            ),
+                        )
+
+                        stats[
+                            "new_product_alerts_allowed"
+                        ] += 1
+
+                        MONITOR_STATUS[
+                            "new_product_alerts_allowed"
+                        ] += 1
+
+                    else:
+
+                        stats[
+                            "new_product_backfills_suppressed"
+                        ] += 1
+
+                        MONITOR_STATUS[
+                            "new_product_backfills_suppressed"
+                        ] += 1
+
+                        print(
+                            (
+                                "SHOPIFY NEW PRODUCT BACKFILL SUPPRESSED | "
+                                f"Store={store.name} | "
+                                f"Product={item['title']} | "
+                                f"Reason={new_product_alert_reason} | "
+                                f"PublishedAt={item.get('published_at')} | "
+                                f"CreatedAt={item.get('created_at')} | "
+                                f"DiscoverySources={item.get('discovery_sources')}"
+                            )
+                        )
 
                 continue
 
@@ -2757,6 +2892,14 @@ async def scan_all_shopify_stores():
 
     MONITOR_STATUS[
         "inventory_quantity_unknown"
+    ] = 0
+
+    MONITOR_STATUS[
+        "new_product_alerts_allowed"
+    ] = 0
+
+    MONITOR_STATUS[
+        "new_product_backfills_suppressed"
     ] = 0
 
     MONITOR_STATUS[
