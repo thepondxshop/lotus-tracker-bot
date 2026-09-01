@@ -3776,6 +3776,7 @@ async def scanretailer(
         if platform not in {
             "square_weebly",
             "woocommerce",
+            "bigcommerce",
         }:
 
             await interaction.followup.send(
