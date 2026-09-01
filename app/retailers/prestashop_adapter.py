@@ -621,6 +621,9 @@ def normalize_availability_token(raw):
         return False, True, "OUT_OF_STOCK"
     if "preorder" in compact or "presale" in compact:
         return True, True, "PREORDER"
+    if "backorder" in compact or "backordered" in compact:
+        # Backorder is a known lifecycle state, but not immediate on-hand stock.
+        return False, True, "BACKORDER"
     return False, False, "UNKNOWN"
 
 
@@ -708,7 +711,10 @@ def parse_availability(schema, offer, text):
             return True, True, "PREORDER", "EXPLICIT_PRODUCT_STATUS_FIELD", "MEDIUM"
         if status == "available":
             return True, True, "IN_STOCK", "EXPLICIT_PRODUCT_STATUS_FIELD", "MEDIUM"
-        # Backorder intentionally remains UNKNOWN.
+        if status == "backorder":
+            # Explicit retailer status: order is for a later replenishment wave.
+            # Keep it distinct from PREORDER and IN_STOCK.
+            return False, True, "BACKORDER", "EXPLICIT_PRODUCT_STATUS_FIELD", "MEDIUM"
 
     return False, False, "UNKNOWN", "UNKNOWN", "LOW"
 
@@ -808,6 +814,7 @@ class PrestaShopAdapter(RetailerAdapter):
             "rejected_products": 0,
             "adapter_unknown_availability": 0,
             "adapter_missing_prices": 0,
+            "backorder_products": 0,
             "sitemaps_seen": 0,
             "html_discovery_pages": 0,
             "xml_product_candidates": 0,
@@ -1049,6 +1056,8 @@ class PrestaShopAdapter(RetailerAdapter):
 
         if not availability_known:
             self.diagnostics["adapter_unknown_availability"] += 1
+        if availability_state == "BACKORDER":
+            self.diagnostics["backorder_products"] += 1
 
         category = product_category(title)
         ptype = product_type(title)
@@ -1060,6 +1069,7 @@ class PrestaShopAdapter(RetailerAdapter):
             "IN_STOCK": "STOCK_AVAILABLE",
             "OUT_OF_STOCK": "SOLD_OUT",
             "PREORDER": "PREORDER",
+            "BACKORDER": "BACKORDER",
         }.get(availability_state, "PAGE_LIVE")
 
         external_id = None
@@ -1076,7 +1086,7 @@ class PrestaShopAdapter(RetailerAdapter):
 
         platform_data = {
             "adapter": "prestashop",
-            "adapter_step": "6J-3B",
+            "adapter_step": "6J-3B1",
             "availability_known": availability_known,
             "availability_state": availability_state,
             "availability_source": availability_source,
