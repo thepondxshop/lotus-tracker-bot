@@ -4177,7 +4177,7 @@ async def addshopifystore(
 
 @bot.tree.command(
     name="stores",
-    description="List monitored Shopify stores.",
+    description="List all Lotus monitored stores.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -4190,57 +4190,92 @@ async def stores(
         ephemeral=True
     )
 
-    store_list = (
-        await list_shopify_stores()
-    )
-
-    if not store_list:
-
+    try:
+        async with SessionLocal() as session:
+            result = await session.execute(
+                select(Store).order_by(Store.id.asc())
+            )
+            store_list = list(result.scalars().all())
+    except Exception as error:
         await interaction.followup.send(
-            "No monitored Shopify stores.",
+            (
+                "❌ Could not load stores.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
             ephemeral=True,
         )
-
         return
+
+    if not store_list:
+        await interaction.followup.send(
+            "No monitored stores.",
+            ephemeral=True,
+        )
+        return
+
+    platform_labels = {
+        "shopify": "Shopify",
+        "square_weebly": "Square / Weebly",
+        "woocommerce": "WooCommerce",
+        "bigcommerce": "BigCommerce",
+        "prestashop": "PrestaShop",
+        "pokemon_center": "Pokémon Center",
+        "major_retailer": "Major Retailer",
+    }
 
     lines = []
 
     for store in store_list:
+        platform = normalize_platform(
+            getattr(store, "platform", None)
+        )
+        platform_label = platform_labels.get(
+            platform,
+            platform or "Unknown",
+        )
+        health = getattr(store, "health_status", None) or "UNKNOWN"
+        disabled_reason = getattr(store, "disabled_reason", None)
 
         lines.append(
-
             (
-                f"**ID {store.id} \u2014 "
-                f"{store.name}**\n"
-
+                f"**ID {store.id} — {store.name}**\n"
                 f"`{store.domain}`\n"
-
+                f"Platform: `{platform_label}`\n"
                 f"Region: `{store.region or 'Unknown'}`\n"
-
-                f"{'\U0001f7e2' if store.active else '\u26ab'} "
-                f"{store.health_status}"
-
+                f"{'🟢' if store.active else '⚫'} {health}"
                 + (
-
-                    f" \u2022 {store.disabled_reason}"
-
-                    if store.disabled_reason
-
+                    f" • {disabled_reason}"
+                    if disabled_reason
                     else ""
                 )
             )
         )
 
+    chunks = []
+    current = ""
+
+    for entry in lines:
+        candidate = entry if not current else current + "\n\n" + entry
+        if len(candidate) > 1900:
+            if current:
+                chunks.append(current)
+            current = entry
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+
     await interaction.followup.send(
-
-        (
-            "\n\n".join(
-                lines
-            )
-        )[:1900],
-
+        chunks[0],
         ephemeral=True,
     )
+
+    for chunk in chunks[1:]:
+        await interaction.followup.send(
+            chunk,
+            ephemeral=True,
+        )
 
 
 # =========================================================
