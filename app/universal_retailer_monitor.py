@@ -47,6 +47,7 @@ VERSION = "1.1.0"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
+STORE_SCAN_TIMEOUT_SECONDS = 180
 SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly", "woocommerce", "bigcommerce", "prestashop"}
 
 
@@ -57,6 +58,21 @@ MONITOR_STATUS: dict[str, Any] = {
     "last_scan_started_at": None,
     "last_scan_completed_at": None,
     "last_error": None,
+    # Step 6J-3C1: live-cycle diagnostics + stable completed-cycle snapshot.
+    "current_cycle_in_progress": False,
+    "current_cycle_total_stores": 0,
+    "current_store_id": None,
+    "current_store_name": None,
+    "store_timeouts": 0,
+    "last_timed_out_store": None,
+    "last_completed_stores_scanned": 0,
+    "last_completed_stores_failed": 0,
+    "last_completed_store_timeouts": 0,
+    "last_completed_products_seen": 0,
+    "last_completed_events_created": 0,
+    "last_completed_stock_events_blocked": 0,
+    "last_completed_price_events_blocked": 0,
+    "last_completed_cycle_at": None,
     "stores_scanned": 0,
     "stores_failed": 0,
     "stores_baselined": 0,
@@ -1097,6 +1113,7 @@ def reset_cycle_status() -> None:
     keys = (
         "stores_scanned",
         "stores_failed",
+        "store_timeouts",
         "stores_baselined",
         "products_seen",
         "products_created",
@@ -1139,6 +1156,11 @@ async def scan_all_universal_stores(
     started_at = utcnow()
     MONITOR_STATUS["last_scan_started_at"] = started_at.isoformat()
     MONITOR_STATUS["last_error"] = None
+    MONITOR_STATUS["current_cycle_in_progress"] = True
+    MONITOR_STATUS["current_cycle_total_stores"] = 0
+    MONITOR_STATUS["current_store_id"] = None
+    MONITOR_STATUS["current_store_name"] = None
+    MONITOR_STATUS["last_timed_out_store"] = None
 
     summary = {
         "success": True,
@@ -1150,34 +1172,104 @@ async def scan_all_universal_stores(
 
     try:
         stores = await get_active_universal_stores()
+        MONITOR_STATUS["current_cycle_total_stores"] = len(stores)
+
+        logger.info(
+            "UNIVERSAL ACTIVE STORE SET | Count=%s | StoreIDs=%s",
+            len(stores),
+            ",".join(str(store.id) for store in stores) or "none",
+        )
+
         for store in stores:
             MONITOR_STATUS["stores_scanned"] += 1
+            MONITOR_STATUS["current_store_id"] = store.id
+            MONITOR_STATUS["current_store_name"] = store.name
+
+            logger.info(
+                "UNIVERSAL STORE SCAN START | Store=%s | StoreID=%s | "
+                "Platform=%s | TimeoutSeconds=%s | Progress=%s/%s",
+                store.name,
+                store.id,
+                normalize_platform(store.platform),
+                STORE_SCAN_TIMEOUT_SECONDS,
+                MONITOR_STATUS["stores_scanned"],
+                len(stores),
+            )
+
             try:
-                store_result = await scan_store(
-                    store,
-                    suppress_events=suppress_events,
+                store_result = await asyncio.wait_for(
+                    scan_store(store, suppress_events=suppress_events),
+                    timeout=STORE_SCAN_TIMEOUT_SECONDS,
                 )
                 summary["stores"].append(store_result)
                 if not store_result.get("success"):
                     MONITOR_STATUS["stores_failed"] += 1
+
+            except asyncio.TimeoutError:
+                MONITOR_STATUS["stores_failed"] += 1
+                MONITOR_STATUS["store_timeouts"] += 1
+                MONITOR_STATUS["last_timed_out_store"] = {
+                    "store_id": store.id,
+                    "store_name": store.name,
+                }
+                summary["stores"].append({
+                    "store_id": store.id,
+                    "store_name": store.name,
+                    "success": False,
+                    "error": f"STORE_SCAN_TIMEOUT:{STORE_SCAN_TIMEOUT_SECONDS}s",
+                })
+                logger.error(
+                    "UNIVERSAL STORE SCAN TIMEOUT | Store=%s | StoreID=%s | "
+                    "Platform=%s | TimeoutSeconds=%s | Continue=True",
+                    store.name, store.id, normalize_platform(store.platform),
+                    STORE_SCAN_TIMEOUT_SECONDS,
+                )
+
+            except asyncio.CancelledError:
+                raise
+
             except Exception as error:
                 MONITOR_STATUS["stores_failed"] += 1
-                summary["stores"].append(
-                    {
-                        "store_id": store.id,
-                        "store_name": store.name,
-                        "success": False,
-                        "error": f"{type(error).__name__}:{error}",
-                    }
+                summary["stores"].append({
+                    "store_id": store.id,
+                    "store_name": store.name,
+                    "success": False,
+                    "error": f"{type(error).__name__}:{error}",
+                })
+                logger.exception(
+                    "UNIVERSAL STORE SCAN ERROR | Store=%s | StoreID=%s | Continue=True",
+                    store.name, store.id,
                 )
 
         completed_at = utcnow()
         MONITOR_STATUS["last_scan_completed_at"] = completed_at.isoformat()
+        MONITOR_STATUS["last_completed_cycle_at"] = completed_at.isoformat()
+        MONITOR_STATUS["last_completed_stores_scanned"] = MONITOR_STATUS.get("stores_scanned", 0)
+        MONITOR_STATUS["last_completed_stores_failed"] = MONITOR_STATUS.get("stores_failed", 0)
+        MONITOR_STATUS["last_completed_store_timeouts"] = MONITOR_STATUS.get("store_timeouts", 0)
+        MONITOR_STATUS["last_completed_products_seen"] = MONITOR_STATUS.get("products_seen", 0)
+        MONITOR_STATUS["last_completed_events_created"] = MONITOR_STATUS.get("events_created", 0)
+        MONITOR_STATUS["last_completed_stock_events_blocked"] = MONITOR_STATUS.get("capability_stock_events_blocked", 0)
+        MONITOR_STATUS["last_completed_price_events_blocked"] = MONITOR_STATUS.get("capability_price_events_blocked", 0)
+        MONITOR_STATUS["current_cycle_in_progress"] = False
+        MONITOR_STATUS["current_store_id"] = None
+        MONITOR_STATUS["current_store_name"] = None
+
         summary["completed_at"] = completed_at.isoformat()
+        summary["success"] = MONITOR_STATUS.get("stores_failed", 0) == 0
         return summary
+
+    except asyncio.CancelledError:
+        MONITOR_STATUS["current_cycle_in_progress"] = False
+        MONITOR_STATUS["current_store_id"] = None
+        MONITOR_STATUS["current_store_name"] = None
+        raise
 
     except Exception as error:
         MONITOR_STATUS["last_error"] = f"{type(error).__name__}: {error}"
+        MONITOR_STATUS["current_cycle_in_progress"] = False
+        MONITOR_STATUS["current_store_id"] = None
+        MONITOR_STATUS["current_store_name"] = None
         summary["success"] = False
         logger.exception("UNIVERSAL SCAN FATAL ERROR")
         return summary
@@ -1208,16 +1300,17 @@ async def run_universal_retailer_monitor(
 
                 logger.info(
                     "UNIVERSAL AUTOMATIC CYCLE COMPLETE | "
-                    "Success=%s | Stores=%s | Failed=%s | "
+                    "Success=%s | Stores=%s | Failed=%s | Timeouts=%s | "
                     "Products=%s | Events=%s | "
                     "StockEventsBlocked=%s | PriceEventsBlocked=%s",
                     cycle_result.get("success"),
-                    MONITOR_STATUS.get("stores_scanned", 0),
-                    MONITOR_STATUS.get("stores_failed", 0),
-                    MONITOR_STATUS.get("products_seen", 0),
-                    MONITOR_STATUS.get("events_created", 0),
-                    MONITOR_STATUS.get("capability_stock_events_blocked", 0),
-                    MONITOR_STATUS.get("capability_price_events_blocked", 0),
+                    MONITOR_STATUS.get("last_completed_stores_scanned", 0),
+                    MONITOR_STATUS.get("last_completed_stores_failed", 0),
+                    MONITOR_STATUS.get("last_completed_store_timeouts", 0),
+                    MONITOR_STATUS.get("last_completed_products_seen", 0),
+                    MONITOR_STATUS.get("last_completed_events_created", 0),
+                    MONITOR_STATUS.get("last_completed_stock_events_blocked", 0),
+                    MONITOR_STATUS.get("last_completed_price_events_blocked", 0),
                 )
             except asyncio.CancelledError:
                 raise
@@ -1232,6 +1325,9 @@ async def run_universal_retailer_monitor(
 
     finally:
         MONITOR_STATUS["running"] = False
+        MONITOR_STATUS["current_cycle_in_progress"] = False
+        MONITOR_STATUS["current_store_id"] = None
+        MONITOR_STATUS["current_store_name"] = None
 
 
 def get_universal_retailer_monitor_status() -> dict[str, Any]:
