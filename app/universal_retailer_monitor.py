@@ -5,7 +5,7 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.1.0
 
-Step 6J-3A — PrestaShop Universal Platform Registration
+Step 6J-3C3 — Sharded Fast Refresh + Discovery Budget
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -18,6 +18,14 @@ Safety:
 - No duplicate DISCOVERED + STOCK_AVAILABLE alert
 - No automatic checkout
 - No CAPTCHA / queue / anti-bot bypass
+
+Performance:
+- Automatic cycles refresh a bounded shard of known product URLs.
+- Priority lifecycle products are checked every cycle.
+- Remaining known products rotate through bounded shards.
+- Deep discovery runs on a separate cadence.
+- Deep discovery has its own short timeout budget and does not fail
+  the store if the known-product refresh already succeeded.
 """
 
 from __future__ import annotations
@@ -54,16 +62,73 @@ DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
 STORE_SCAN_TIMEOUT_SECONDS = 180
 
-AUTO_DISCOVERY_INTERVAL_SECONDS = 300
-AUTO_DISCOVERY_PRODUCT_LIMIT = 60
+# =========================================================
+# STEP 6J-3C3 PERFORMANCE LIMITS
+# =========================================================
 
-_LAST_DISCOVERY_AT: dict[int, float] = {}
+# Known products checked on each automatic cycle.
+FAST_REFRESH_TOTAL_LIMIT = 24
+
+# Products in lifecycle states that deserve repeated checks every cycle.
+FAST_REFRESH_PRIORITY_LIMIT = 8
+
+# Remaining slots rotate through the normal catalog.
+FAST_REFRESH_ROTATING_LIMIT = (
+    FAST_REFRESH_TOTAL_LIMIT
+    -
+    FAST_REFRESH_PRIORITY_LIMIT
+)
+
+# Discovery is intentionally less frequent than stock/price refresh.
+AUTO_DISCOVERY_INTERVAL_SECONDS = 900
+
+# Discovery work is separately bounded so it can never consume the
+# whole store watchdog.
+DISCOVERY_TIMEOUT_SECONDS = 45
+
+# Adapter discovery is also constrained to a small page candidate batch.
+AUTO_DISCOVERY_PRODUCT_LIMIT = 40
+
+# Do not perform a deep discovery immediately after process restart.
+# This gives the monitor time to perform several fast refresh cycles first.
+DISCOVERY_STARTUP_GRACE_SECONDS = 300
+
 
 SUPPORTED_UNIVERSAL_PLATFORMS = {
     "square_weebly",
     "woocommerce",
     "bigcommerce",
     "prestashop",
+}
+
+
+# =========================================================
+# PERFORMANCE STATE
+# =========================================================
+
+_MONITOR_STARTED_MONOTONIC = (
+    time.monotonic()
+)
+
+_LAST_DISCOVERY_AT: dict[
+    int,
+    float,
+] = {}
+
+_REFRESH_CURSOR: dict[
+    int,
+    int,
+] = {}
+
+
+PRIORITY_STATUSES = {
+    "PREORDER",
+    "PREORDER_PAGE",
+    "PREORDER_LIVE",
+    "BACKORDER",
+    "COMING_SOON",
+    "SOLD_OUT",
+    "OUT_OF_STOCK",
 }
 
 
@@ -133,6 +198,29 @@ MONITOR_STATUS: dict[str, Any] = {
 
     "last_completed_cycle_at":
         None,
+
+    # =====================================================
+    # STEP 6J-3C3
+    # PERFORMANCE DIAGNOSTICS
+    # =====================================================
+
+    "fast_refresh_products_selected":
+        0,
+
+    "fast_refresh_priority_selected":
+        0,
+
+    "fast_refresh_rotating_selected":
+        0,
+
+    "deep_discovery_attempts":
+        0,
+
+    "deep_discovery_completed":
+        0,
+
+    "deep_discovery_timeouts":
+        0,
 
     # =====================================================
     # CURRENT CYCLE COUNTERS
@@ -901,9 +989,6 @@ def get_availability_info(
         ==
         "BACKORDER"
     ):
-
-        # Backorder is known, but is not immediate
-        # physical on-hand inventory.
 
         return (
             False,
@@ -2889,13 +2974,15 @@ async def process_normalized_product(
 
 
 # =========================================================
-# STEP 6J-3C2
-# KNOWN-PRODUCT FAST REFRESH
+# STEP 6J-3C3
+# KNOWN PRODUCT RECORDS
 # =========================================================
 
-async def get_known_store_product_urls(
+async def get_known_store_products(
     store_id: int,
-) -> list[str]:
+) -> list[
+    dict[str, Any]
+]:
 
     async with SessionLocal() as session:
 
@@ -2903,7 +2990,7 @@ async def get_known_store_product_urls(
             await session.execute(
 
                 select(
-                    StoreProduct.url
+                    StoreProduct
                 )
                 .where(
                     StoreProduct.store_id
@@ -2921,36 +3008,287 @@ async def get_known_store_product_urls(
             )
         )
 
-        urls = []
-
-        seen = set()
-
-        for value in (
+        rows = list(
             result.scalars().all()
+        )
+
+    output = []
+
+    seen = set()
+
+    for row in rows:
+
+        url = (
+            str(
+                getattr(
+                    row,
+                    "url",
+                    None,
+                )
+                or ""
+            ).strip()
+        )
+
+        if (
+            not url
+            or
+            url in seen
         ):
 
-            url = (
-                str(
-                    value
-                    or ""
-                ).strip()
+            continue
+
+        seen.add(
+            url
+        )
+
+        output.append(
+            {
+                "id":
+                    getattr(
+                        row,
+                        "id",
+                        None,
+                    ),
+
+                "url":
+                    url,
+
+                "status":
+                    (
+                        str(
+                            getattr(
+                                row,
+                                "status",
+                                None,
+                            )
+                            or ""
+                        )
+                        .strip()
+                        .upper()
+                    ),
+
+                "last_seen_at":
+                    getattr(
+                        row,
+                        "last_seen_at",
+                        None,
+                    ),
+            }
+        )
+
+    return output
+
+
+def choose_refresh_urls(
+    *,
+    store_id: int,
+    known_products: list[
+        dict[str, Any]
+    ],
+) -> dict[str, Any]:
+
+    priority = []
+
+    rotating = []
+
+    for item in (
+        known_products
+        or []
+    ):
+
+        url = (
+            str(
+                item.get(
+                    "url"
+                )
+                or ""
+            ).strip()
+        )
+
+        if not url:
+            continue
+
+        status = (
+            str(
+                item.get(
+                    "status"
+                )
+                or ""
+            )
+            .strip()
+            .upper()
+        )
+
+        if status in PRIORITY_STATUSES:
+
+            priority.append(
+                url
+            )
+
+        else:
+
+            rotating.append(
+                url
+            )
+
+    priority_selected = (
+        priority[
+            :FAST_REFRESH_PRIORITY_LIMIT
+        ]
+    )
+
+    normal_slots = (
+        FAST_REFRESH_TOTAL_LIMIT
+        -
+        len(
+            priority_selected
+        )
+    )
+
+    normal_slots = max(
+        normal_slots,
+        0,
+    )
+
+    # If fewer priority products exist, unused priority slots
+    # automatically become normal rotating slots.
+    normal_slots = min(
+        normal_slots,
+        FAST_REFRESH_TOTAL_LIMIT,
+    )
+
+    selected_rotating = []
+
+    if (
+        rotating
+        and
+        normal_slots
+        >
+        0
+    ):
+
+        cursor = (
+            _REFRESH_CURSOR.get(
+                store_id,
+                0,
+            )
+        )
+
+        if cursor >= len(
+            rotating
+        ):
+
+            cursor = 0
+
+        for offset in range(
+            normal_slots
+        ):
+
+            if not rotating:
+                break
+
+            index = (
+                cursor
+                +
+                offset
+            ) % len(
+                rotating
+            )
+
+            selected_rotating.append(
+                rotating[
+                    index
+                ]
             )
 
             if (
-                url
-                and
-                url not in seen
+                len(
+                    selected_rotating
+                )
+                >=
+                len(
+                    rotating
+                )
             ):
 
-                seen.add(
-                    url
-                )
+                break
 
-                urls.append(
-                    url
-                )
+        _REFRESH_CURSOR[
+            store_id
+        ] = (
+            cursor
+            +
+            len(
+                selected_rotating
+            )
+        ) % max(
+            len(
+                rotating
+            ),
+            1,
+        )
 
-        return urls
+    selected = []
+
+    seen = set()
+
+    for url in (
+        priority_selected
+        +
+        selected_rotating
+    ):
+
+        if url in seen:
+            continue
+
+        seen.add(
+            url
+        )
+
+        selected.append(
+            url
+        )
+
+        if (
+            len(
+                selected
+            )
+            >=
+            FAST_REFRESH_TOTAL_LIMIT
+        ):
+
+            break
+
+    return {
+
+        "urls":
+            selected,
+
+        "priority_total":
+            len(
+                priority
+            ),
+
+        "priority_selected":
+            len(
+                priority_selected
+            ),
+
+        "rotating_total":
+            len(
+                rotating
+            ),
+
+        "rotating_selected":
+            len(
+                selected_rotating
+            ),
+
+        "known_total":
+            len(
+                known_products
+            ),
+    }
 
 
 def merge_products_by_url(
@@ -2966,12 +3304,15 @@ def merge_products_by_url(
             or []
         ):
 
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
             url = (
                 str(
-                    (
-                        item
-                        or {}
-                    ).get(
+                    item.get(
                         "url"
                     )
                     or ""
@@ -2979,7 +3320,6 @@ def merge_products_by_url(
             )
 
             if not url:
-
                 continue
 
             merged[
@@ -2990,6 +3330,43 @@ def merge_products_by_url(
 
     return list(
         merged.values()
+    )
+
+
+def discovery_allowed_now(
+    store_id: int,
+) -> bool:
+
+    uptime = (
+        time.monotonic()
+        -
+        _MONITOR_STARTED_MONOTONIC
+    )
+
+    if uptime < (
+        DISCOVERY_STARTUP_GRACE_SECONDS
+    ):
+
+        return False
+
+    last_discovery = (
+        _LAST_DISCOVERY_AT.get(
+            store_id
+        )
+    )
+
+    if last_discovery is None:
+
+        return True
+
+    return (
+        (
+            time.monotonic()
+            -
+            last_discovery
+        )
+        >=
+        AUTO_DISCOVERY_INTERVAL_SECONDS
     )
 
 
@@ -3028,6 +3405,24 @@ async def scan_store(
 
         "scan_mode":
             "FULL_DISCOVERY",
+
+        "known_products":
+            0,
+
+        "refresh_selected":
+            0,
+
+        "refresh_priority_selected":
+            0,
+
+        "refresh_rotating_selected":
+            0,
+
+        "discovery_attempted":
+            False,
+
+        "discovery_timed_out":
+            False,
 
         "success":
             False,
@@ -3143,21 +3538,21 @@ async def scan_store(
 
     # =====================================================
     # FETCH PRODUCTS
-    #
-    # 6J-3C2:
-    #
-    # Automatic cycles use already-known StoreProduct URLs
-    # when the adapter supports a fast-refresh method.
-    #
-    # A bounded deep discovery is still run periodically so
-    # new products continue to be discovered.
     # =====================================================
 
     try:
 
-        known_urls = (
-            await get_known_store_product_urls(
+        known_products = (
+            await get_known_store_products(
                 store.id
+            )
+        )
+
+        result[
+            "known_products"
+        ] = (
+            len(
+                known_products
             )
         )
 
@@ -3167,7 +3562,7 @@ async def scan_store(
 
             and
             bool(
-                known_urls
+                known_products
             )
 
             and
@@ -3182,6 +3577,73 @@ async def scan_store(
 
         if can_fast_refresh:
 
+            refresh_plan = (
+                choose_refresh_urls(
+
+                    store_id=(
+                        store.id
+                    ),
+
+                    known_products=(
+                        known_products
+                    ),
+                )
+            )
+
+            refresh_urls = (
+                refresh_plan[
+                    "urls"
+                ]
+            )
+
+            result[
+                "refresh_selected"
+            ] = (
+                len(
+                    refresh_urls
+                )
+            )
+
+            result[
+                "refresh_priority_selected"
+            ] = (
+                refresh_plan[
+                    "priority_selected"
+                ]
+            )
+
+            result[
+                "refresh_rotating_selected"
+            ] = (
+                refresh_plan[
+                    "rotating_selected"
+                ]
+            )
+
+            MONITOR_STATUS[
+                "fast_refresh_products_selected"
+            ] += (
+                len(
+                    refresh_urls
+                )
+            )
+
+            MONITOR_STATUS[
+                "fast_refresh_priority_selected"
+            ] += (
+                refresh_plan[
+                    "priority_selected"
+                ]
+            )
+
+            MONITOR_STATUS[
+                "fast_refresh_rotating_selected"
+            ] += (
+                refresh_plan[
+                    "rotating_selected"
+                ]
+            )
+
             if callable(
                 getattr(
                     adapter,
@@ -3191,81 +3653,198 @@ async def scan_store(
             ):
 
                 adapter.set_known_product_urls(
-                    known_urls
+                    [
+                        item[
+                            "url"
+                        ]
+                        for item
+                        in known_products
+                    ]
                 )
 
-            fast_products = (
-                await adapter.get_normalized_products_from_urls(
-                    known_urls
-                )
+            logger.info(
+                (
+                    "UNIVERSAL FAST REFRESH PLAN | "
+                    "Store=%s | StoreID=%s | "
+                    "Known=%s | "
+                    "PriorityTotal=%s | "
+                    "PrioritySelected=%s | "
+                    "RotatingTotal=%s | "
+                    "RotatingSelected=%s | "
+                    "TotalSelected=%s"
+                ),
+                store.name,
+                store.id,
+                refresh_plan[
+                    "known_total"
+                ],
+                refresh_plan[
+                    "priority_total"
+                ],
+                refresh_plan[
+                    "priority_selected"
+                ],
+                refresh_plan[
+                    "rotating_total"
+                ],
+                refresh_plan[
+                    "rotating_selected"
+                ],
+                len(
+                    refresh_urls
+                ),
             )
+
+            fast_products = []
+
+            if refresh_urls:
+
+                fast_products = (
+                    await adapter.get_normalized_products_from_urls(
+                        refresh_urls
+                    )
+                )
 
             result[
                 "scan_mode"
             ] = (
-                "FAST_REFRESH"
-            )
-
-            now = (
-                time.monotonic()
-            )
-
-            last_discovery = (
-                _LAST_DISCOVERY_AT.get(
-                    store.id,
-                    0.0,
-                )
-            )
-
-            discovery_due = (
-                (
-                    now
-                    -
-                    last_discovery
-                )
-                >=
-                AUTO_DISCOVERY_INTERVAL_SECONDS
+                "SHARDED_FAST_REFRESH"
             )
 
             discovery_products = []
 
-            if discovery_due:
+            if discovery_allowed_now(
+                store.id
+            ):
+
+                result[
+                    "discovery_attempted"
+                ] = (
+                    True
+                )
+
+                MONITOR_STATUS[
+                    "deep_discovery_attempts"
+                ] += 1
 
                 if hasattr(
                     adapter,
                     "max_product_pages",
                 ):
 
-                    adapter.max_product_pages = min(
+                    try:
 
-                        int(
-                            getattr(
-                                adapter,
-                                "max_product_pages",
-                                AUTO_DISCOVERY_PRODUCT_LIMIT,
-                            )
-                            or
-                            AUTO_DISCOVERY_PRODUCT_LIMIT
-                        ),
+                        adapter.max_product_pages = min(
 
-                        AUTO_DISCOVERY_PRODUCT_LIMIT,
+                            int(
+                                getattr(
+                                    adapter,
+                                    "max_product_pages",
+                                    AUTO_DISCOVERY_PRODUCT_LIMIT,
+                                )
+                                or
+                                AUTO_DISCOVERY_PRODUCT_LIMIT
+                            ),
+
+                            AUTO_DISCOVERY_PRODUCT_LIMIT,
+                        )
+
+                    except Exception:
+
+                        pass
+
+                logger.info(
+                    (
+                        "UNIVERSAL DISCOVERY START | "
+                        "Store=%s | StoreID=%s | "
+                        "BudgetSeconds=%s | "
+                        "ProductLimit=%s"
+                    ),
+                    store.name,
+                    store.id,
+                    DISCOVERY_TIMEOUT_SECONDS,
+                    AUTO_DISCOVERY_PRODUCT_LIMIT,
+                )
+
+                try:
+
+                    discovery_products = (
+                        await asyncio.wait_for(
+
+                            adapter.get_normalized_products(),
+
+                            timeout=(
+                                DISCOVERY_TIMEOUT_SECONDS
+                            ),
+                        )
                     )
 
-                discovery_products = (
-                    await adapter.get_normalized_products()
-                )
+                    _LAST_DISCOVERY_AT[
+                        store.id
+                    ] = (
+                        time.monotonic()
+                    )
 
-                _LAST_DISCOVERY_AT[
-                    store.id
-                ] = (
-                    time.monotonic()
-                )
+                    MONITOR_STATUS[
+                        "deep_discovery_completed"
+                    ] += 1
 
-                result[
-                    "scan_mode"
-                ] = (
-                    "FAST_REFRESH+DISCOVERY"
-                )
+                    result[
+                        "scan_mode"
+                    ] = (
+                        "SHARDED_FAST_REFRESH+DISCOVERY"
+                    )
+
+                    logger.info(
+                        (
+                            "UNIVERSAL DISCOVERY COMPLETE | "
+                            "Store=%s | StoreID=%s | "
+                            "Products=%s"
+                        ),
+                        store.name,
+                        store.id,
+                        len(
+                            discovery_products
+                            or []
+                        ),
+                    )
+
+                except asyncio.TimeoutError:
+
+                    result[
+                        "discovery_timed_out"
+                    ] = (
+                        True
+                    )
+
+                    MONITOR_STATUS[
+                        "deep_discovery_timeouts"
+                    ] += 1
+
+                    # Record an attempt timestamp even when the deep crawl
+                    # times out. Otherwise the same slow store would launch
+                    # another 45-second crawl on every cycle.
+                    _LAST_DISCOVERY_AT[
+                        store.id
+                    ] = (
+                        time.monotonic()
+                    )
+
+                    logger.warning(
+                        (
+                            "UNIVERSAL DISCOVERY BUDGET EXCEEDED | "
+                            "Store=%s | StoreID=%s | "
+                            "Platform=%s | "
+                            "BudgetSeconds=%s | "
+                            "ContinueWithFastRefresh=True"
+                        ),
+                        store.name,
+                        store.id,
+                        platform,
+                        DISCOVERY_TIMEOUT_SECONDS,
+                    )
+
+                    discovery_products = []
 
             products = (
                 merge_products_by_url(
@@ -3280,8 +3859,11 @@ async def scan_store(
                 (
                     "UNIVERSAL PERFORMANCE MODE | "
                     "Store=%s | StoreID=%s | "
-                    "Mode=%s | KnownURLs=%s | "
-                    "Products=%s | DiscoveryDue=%s"
+                    "Mode=%s | Known=%s | "
+                    "RefreshSelected=%s | "
+                    "DiscoveryAttempted=%s | "
+                    "DiscoveryTimedOut=%s | "
+                    "Products=%s"
                 ),
                 store.name,
                 store.id,
@@ -3289,12 +3871,20 @@ async def scan_store(
                     "scan_mode"
                 ],
                 len(
-                    known_urls
+                    known_products
                 ),
+                len(
+                    refresh_urls
+                ),
+                result[
+                    "discovery_attempted"
+                ],
+                result[
+                    "discovery_timed_out"
+                ],
                 len(
                     products
                 ),
-                discovery_due,
             )
 
         else:
@@ -3424,9 +4014,44 @@ async def scan_store(
 
     # =====================================================
     # EMPTY SCAN
+    #
+    # Important 6J-3C3 distinction:
+    # a sharded refresh that returns zero normalized products is
+    # not automatically treated as discovery failure if it was
+    # still a valid bounded automatic refresh.
     # =====================================================
 
     if not products:
+
+        if can_fast_refresh:
+
+            result[
+                "success"
+            ] = True
+
+            logger.info(
+                (
+                    "UNIVERSAL EMPTY FAST REFRESH | "
+                    "Store=%s | StoreID=%s | "
+                    "Selected=%s | "
+                    "DiscoveryAttempted=%s | "
+                    "DiscoveryTimedOut=%s | "
+                    "TreatAsStoreFailure=False"
+                ),
+                store.name,
+                store.id,
+                result[
+                    "refresh_selected"
+                ],
+                result[
+                    "discovery_attempted"
+                ],
+                result[
+                    "discovery_timed_out"
+                ],
+            )
+
+            return result
 
         product_urls = int(
             diagnostics.get(
@@ -3667,7 +4292,12 @@ async def scan_store(
             "Suppressed=%s | "
             "UnknownAvailability=%s | "
             "MissingPrices=%s | "
-            "Backorders=%s | Mode=%s"
+            "Backorders=%s | Mode=%s | "
+            "Known=%s | RefreshSelected=%s | "
+            "PrioritySelected=%s | "
+            "RotatingSelected=%s | "
+            "DiscoveryAttempted=%s | "
+            "DiscoveryTimedOut=%s"
         ),
         store.name,
         platform,
@@ -3697,6 +4327,24 @@ async def scan_store(
         ],
         result[
             "scan_mode"
+        ],
+        result[
+            "known_products"
+        ],
+        result[
+            "refresh_selected"
+        ],
+        result[
+            "refresh_priority_selected"
+        ],
+        result[
+            "refresh_rotating_selected"
+        ],
+        result[
+            "discovery_attempted"
+        ],
+        result[
+            "discovery_timed_out"
         ],
     )
 
@@ -3825,6 +4473,18 @@ def reset_cycle_status() -> None:
         "capability_stock_events_blocked",
 
         "capability_price_events_blocked",
+
+        "fast_refresh_products_selected",
+
+        "fast_refresh_priority_selected",
+
+        "fast_refresh_rotating_selected",
+
+        "deep_discovery_attempts",
+
+        "deep_discovery_completed",
+
+        "deep_discovery_timeouts",
     )
 
     for key in keys:
@@ -4350,6 +5010,7 @@ async def run_universal_retailer_monitor(
                     (
                         "UNIVERSAL AUTOMATIC CYCLE START | "
                         "CapabilityEnforcement=ENABLED | "
+                        "PerformanceMode=SHARDED_REFRESH | "
                         "IntervalSeconds=%s"
                     ),
                     scan_interval,
@@ -4369,7 +5030,10 @@ async def run_universal_retailer_monitor(
                         "Products=%s | "
                         "Events=%s | "
                         "StockEventsBlocked=%s | "
-                        "PriceEventsBlocked=%s"
+                        "PriceEventsBlocked=%s | "
+                        "RefreshProducts=%s | "
+                        "DiscoveryAttempts=%s | "
+                        "DiscoveryTimeouts=%s"
                     ),
                     cycle_result.get(
                         "success"
@@ -4400,6 +5064,18 @@ async def run_universal_retailer_monitor(
                     ),
                     MONITOR_STATUS.get(
                         "last_completed_price_events_blocked",
+                        0,
+                    ),
+                    MONITOR_STATUS.get(
+                        "fast_refresh_products_selected",
+                        0,
+                    ),
+                    MONITOR_STATUS.get(
+                        "deep_discovery_attempts",
+                        0,
+                    ),
+                    MONITOR_STATUS.get(
+                        "deep_discovery_timeouts",
                         0,
                     ),
                 )
