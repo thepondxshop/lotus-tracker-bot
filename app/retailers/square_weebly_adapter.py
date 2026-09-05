@@ -26,7 +26,7 @@ from app.retailer_registry import (
 # LOTUS SQUARE / WEEBLY RETAILER ADAPTER
 # PonDeX Trackers
 # Version 1.0.4
-# Step 6I-A - Discovery Recovery + Capability Alignment
+# Step 6H-D - Production-Safe Discovery Mode + Single Classification Cleanup
 #
 # SAFETY:
 # - public storefront pages only
@@ -741,14 +741,21 @@ SQUARE_PRICE_MINOR_PATTERN = re.compile(
 )
 
 SQUARE_PRICE_DECIMAL_PATTERNS = (
-    re.compile(r'data-price=["\']([0-9]+(?:\.[0-9]{1,2})?)["\']', re.IGNORECASE),
-    re.compile(r'\$\s*([0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
+    re.compile(
+        r'data-price=["\']([0-9]+(?:\.[0-9]{1,2})?)["\']',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'\$\s*([0-9]+(?:\.[0-9]{1,2})?)',
+        re.IGNORECASE,
+    ),
 )
 
 SQUARE_CURRENCY_PATTERN = re.compile(
     r'"currency"\s*:\s*"([A-Z]{3})"',
     re.IGNORECASE,
 )
+
 
 def parse_square_weebly_price(html):
     if not html:
@@ -765,17 +772,23 @@ def parse_square_weebly_price(html):
         match = pattern.search(html)
         if not match:
             continue
+
         try:
             amount = float(match.group(1))
         except (TypeError, ValueError):
             continue
+
         currency = None
+
         currency_match = SQUARE_CURRENCY_PATTERN.search(html)
+
         if currency_match:
             currency = currency_match.group(1).upper()
+
         return amount, currency
 
     return None, None
+
 
 # =========================================================
 # STEP 6H-A AVAILABILITY INTELLIGENCE
@@ -805,13 +818,22 @@ PURCHASE_CONTROL_PATTERN = re.compile(
 
 def normalize_availability_value(value):
     text = clean_text(value).lower().replace("_", "").replace("-", "")
+
     if not text:
         return None
 
-    if "outofstock" in text or "soldout" in text or "discontinued" in text:
+    if (
+        "outofstock" in text
+        or "soldout" in text
+        or "discontinued" in text
+    ):
         return False, True, "OUT_OF_STOCK"
 
-    if "instock" in text or "preorder" in text or "presale" in text:
+    if (
+        "instock" in text
+        or "preorder" in text
+        or "presale" in text
+    ):
         return True, True, "IN_STOCK"
 
     return None
@@ -820,6 +842,7 @@ def normalize_availability_value(value):
 def iter_offer_dicts(value):
     if isinstance(value, dict):
         yield value
+
     elif isinstance(value, list):
         for item in value:
             if isinstance(item, dict):
@@ -830,14 +853,29 @@ def parse_schema_availability(schema):
     if not isinstance(schema, dict):
         return None
 
-    candidates = list(iter_offer_dicts(schema.get("offers")))
+    candidates = list(
+        iter_offer_dicts(
+            schema.get("offers")
+        )
+    )
 
     for offer in list(candidates):
-        candidates.extend(iter_offer_dicts(offer.get("offers")))
+        candidates.extend(
+            iter_offer_dicts(
+                offer.get("offers")
+            )
+        )
 
     for offer in candidates:
-        for key in ("availability", "itemAvailability", "stockStatus"):
-            result = normalize_availability_value(offer.get(key))
+        for key in (
+            "availability",
+            "itemAvailability",
+            "stockStatus",
+        ):
+            result = normalize_availability_value(
+                offer.get(key)
+            )
+
             if result is not None:
                 return result
 
@@ -849,20 +887,29 @@ def parse_microdata_availability(html):
 
     for pattern in ITEM_AVAILABILITY_PATTERNS:
         match = pattern.search(html)
+
         if match:
-            result = normalize_availability_value(match.group(1))
+            result = normalize_availability_value(
+                match.group(1)
+            )
+
             if result is not None:
                 return result
 
     match = AVAILABILITY_URL_PATTERN.search(html)
+
     if match:
-        return normalize_availability_value(match.group(1))
+        return normalize_availability_value(
+            match.group(1)
+        )
 
     return None
 
 
 def parse_purchase_control_availability(html):
-    for match in PURCHASE_CONTROL_PATTERN.finditer(html or ""):
+    for match in PURCHASE_CONTROL_PATTERN.finditer(
+        html or ""
+    ):
         lowered = match.group(0).lower()
 
         if (
@@ -918,14 +965,17 @@ def parse_square_weebly_availability(html):
     html = html or ""
 
     result = parse_microdata_availability(html)
+
     if result is not None:
         return result
 
     result = parse_purchase_control_availability(html)
+
     if result is not None:
         return result
 
     result = parse_embedded_availability_flags(html)
+
     if result is not None:
         return result
 
@@ -948,12 +998,20 @@ def parse_square_weebly_availability(html):
 
 def parse_availability(schema, offer, html):
     result = parse_schema_availability(schema)
+
     if result is not None:
         return result
 
     if isinstance(offer, dict):
-        for key in ("availability", "itemAvailability", "stockStatus"):
-            result = normalize_availability_value(offer.get(key))
+        for key in (
+            "availability",
+            "itemAvailability",
+            "stockStatus",
+        ):
+            result = normalize_availability_value(
+                offer.get(key)
+            )
+
             if result is not None:
                 return result
 
@@ -1003,34 +1061,55 @@ BLOCKED_RESOURCE_PATH_TERMS = (
 )
 
 SQUARE_DIAGNOSTIC_PATTERNS = (
-    ("schema_availability", re.compile(
-        r"https?://schema\\.org/(?:InStock|OutOfStock|SoldOut|PreOrder|PreSale|Discontinued)",
-        re.IGNORECASE,
-    )),
-    ("availability_key", re.compile(
-        r'''["'](?:availability|itemAvailability|stockStatus|sold_out|soldout|out_of_stock|is_available|available_for_sale)["']\\s*[:=]\\s*[^,}\\]\\n<]{1,100}''',
-        re.IGNORECASE,
-    )),
-    ("square_item_id", re.compile(
-        r'''["'](?:item_id|itemId|catalog_object_id|catalogObjectId|square_item_id|squareItemId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
-        re.IGNORECASE,
-    )),
-    ("variation_id", re.compile(
-        r'''["'](?:variation_id|variationId|item_variation_id|itemVariationId|catalog_variation_id|catalogVariationId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
-        re.IGNORECASE,
-    )),
-    ("merchant_id", re.compile(
-        r'''["'](?:merchant_id|merchantId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
-        re.IGNORECASE,
-    )),
-    ("location_id", re.compile(
-        r'''["'](?:location_id|locationId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
-        re.IGNORECASE,
-    )),
-    ("purchase_control", re.compile(
-        r'''<(?:button|input)[^>]{0,700}(?:add[\\s_-]*to[\\s_-]*(?:cart|bag)|data-action=["'][^"']*(?:cart|bag)[^"']*["'])[^>]*>''',
-        re.IGNORECASE,
-    )),
+    (
+        "schema_availability",
+        re.compile(
+            r"https?://schema\\.org/(?:InStock|OutOfStock|SoldOut|PreOrder|PreSale|Discontinued)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "availability_key",
+        re.compile(
+            r'''["'](?:availability|itemAvailability|stockStatus|sold_out|soldout|out_of_stock|is_available|available_for_sale)["']\\s*[:=]\\s*[^,}\\]\\n<]{1,100}''',
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "square_item_id",
+        re.compile(
+            r'''["'](?:item_id|itemId|catalog_object_id|catalogObjectId|square_item_id|squareItemId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "variation_id",
+        re.compile(
+            r'''["'](?:variation_id|variationId|item_variation_id|itemVariationId|catalog_variation_id|catalogVariationId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "merchant_id",
+        re.compile(
+            r'''["'](?:merchant_id|merchantId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "location_id",
+        re.compile(
+            r'''["'](?:location_id|locationId)["']\\s*[:=]\\s*["']?([A-Za-z0-9_-]{4,})''',
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "purchase_control",
+        re.compile(
+            r'''<(?:button|input)[^>]{0,700}(?:add[\\s_-]*to[\\s_-]*(?:cart|bag)|data-action=["'][^"']*(?:cart|bag)[^"']*["'])[^>]*>''',
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 PUBLIC_ENDPOINT_PATTERN = re.compile(
@@ -1042,154 +1121,334 @@ PUBLIC_ENDPOINT_PATTERN = re.compile(
 def compact_diagnostic_text(value, limit=360):
     text = clean_text(value)
     text = re.sub(r"\\s+", " ", text).strip()
-    return text if len(text) <= limit else text[:limit] + "..."
+
+    return (
+        text
+        if len(text) <= limit
+        else text[:limit] + "..."
+    )
 
 
 def diagnostic_context(html, match):
-    start = max(0, match.start() - DIAGNOSTIC_CONTEXT_CHARS)
-    end = min(len(html), match.end() + DIAGNOSTIC_CONTEXT_CHARS)
-    return compact_diagnostic_text(html[start:end])
+    start = max(
+        0,
+        match.start() - DIAGNOSTIC_CONTEXT_CHARS,
+    )
+
+    end = min(
+        len(html),
+        match.end() + DIAGNOSTIC_CONTEXT_CHARS,
+    )
+
+    return compact_diagnostic_text(
+        html[start:end]
+    )
 
 
-def collect_square_storefront_diagnostics(html, external_product_id):
+def collect_square_storefront_diagnostics(
+    html,
+    external_product_id,
+):
     html = html or ""
+
     diagnostics = {
-        "url_product_id": external_product_id,
-        "signals": {},
-        "public_endpoint_hints": [],
+        "url_product_id":
+            external_product_id,
+
+        "signals":
+            {},
+
+        "public_endpoint_hints":
+            [],
     }
 
     for label, pattern in SQUARE_DIAGNOSTIC_PATTERNS:
         matches = []
+
         for match in pattern.finditer(html):
-            matches.append({
-                "match": compact_diagnostic_text(match.group(0)),
-                "context": diagnostic_context(html, match),
-            })
+            matches.append(
+                {
+                    "match":
+                        compact_diagnostic_text(
+                            match.group(0)
+                        ),
+
+                    "context":
+                        diagnostic_context(
+                            html,
+                            match,
+                        ),
+                }
+            )
+
             if len(matches) >= DIAGNOSTIC_MAX_MATCHES:
                 break
+
         if matches:
             diagnostics["signals"][label] = matches
 
-    hints, seen = [], set()
+    hints = []
+    seen = set()
+
     for match in PUBLIC_ENDPOINT_PATTERN.finditer(html):
-        raw = unescape(match.group(0)).replace(r"\\/", "/")
+        raw = (
+            unescape(
+                match.group(0)
+            )
+            .replace(
+                r"\\/",
+                "/",
+            )
+        )
+
         lowered = raw.lower()
-        if not any(token in lowered for token in (
-            "square", "weebly", "catalog", "inventory", "variation",
-            "/api", "/app", "/product", "/products", "/item", "/items", "/cart",
-        )):
+
+        if not any(
+            token in lowered
+            for token in (
+                "square",
+                "weebly",
+                "catalog",
+                "inventory",
+                "variation",
+                "/api",
+                "/app",
+                "/product",
+                "/products",
+                "/item",
+                "/items",
+                "/cart",
+            )
+        ):
             continue
-        if any(suffix in lowered for suffix in (
-            ".css", ".jpg", ".jpeg", ".png", ".gif", ".svg",
-            ".woff", ".woff2", ".ttf",
-        )):
+
+        if any(
+            suffix in lowered
+            for suffix in (
+                ".css",
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".gif",
+                ".svg",
+                ".woff",
+                ".woff2",
+                ".ttf",
+            )
+        ):
             continue
-        hint = compact_diagnostic_text(raw, 300)
-        if not hint or hint in seen:
+
+        hint = compact_diagnostic_text(
+            raw,
+            300,
+        )
+
+        if (
+            not hint
+            or hint in seen
+        ):
             continue
+
         seen.add(hint)
         hints.append(hint)
+
         if len(hints) >= 20:
             break
 
-    diagnostics["public_endpoint_hints"] = hints
+    diagnostics[
+        "public_endpoint_hints"
+    ] = hints
+
     return diagnostics
 
 
 def print_square_storefront_diagnostics(
-    *, store_name, title, product_url, external_product_id, diagnostics
+    *,
+    store_name,
+    title,
+    product_url,
+    external_product_id,
+    diagnostics,
 ):
-    signals = diagnostics.get("signals") or {}
-    hints = diagnostics.get("public_endpoint_hints") or []
-    counts = ",".join(
-        f"{key}:{len(value)}" for key, value in sorted(signals.items())
-    ) or "none"
+    signals = (
+        diagnostics.get("signals")
+        or {}
+    )
+
+    hints = (
+        diagnostics.get(
+            "public_endpoint_hints"
+        )
+        or []
+    )
+
+    counts = (
+        ",".join(
+            f"{key}:{len(value)}"
+            for key, value in sorted(
+                signals.items()
+            )
+        )
+        or "none"
+    )
 
     print(
         "SQUARE/WEEBLY AVAILABILITY DIAGNOSTIC | "
-        f"Store={store_name} | ProductID={external_product_id or 'UNKNOWN'} | "
-        f"Signals={counts} | EndpointHints={len(hints)} | "
-        f"Title={title} | URL={product_url}"
+        f"Store={store_name} | "
+        f"ProductID={external_product_id or 'UNKNOWN'} | "
+        f"Signals={counts} | "
+        f"EndpointHints={len(hints)} | "
+        f"Title={title} | "
+        f"URL={product_url}"
     )
 
-    for label, matches in sorted(signals.items()):
-        for index, entry in enumerate(matches[:3], start=1):
+    for (
+        label,
+        matches,
+    ) in sorted(
+        signals.items()
+    ):
+        for index, entry in enumerate(
+            matches[:3],
+            start=1,
+        ):
             print(
                 "SQUARE/WEEBLY DIAGNOSTIC SIGNAL | "
-                f"Store={store_name} | ProductID={external_product_id or 'UNKNOWN'} | "
-                f"Type={label} | Index={index} | "
+                f"Store={store_name} | "
+                f"ProductID={external_product_id or 'UNKNOWN'} | "
+                f"Type={label} | "
+                f"Index={index} | "
                 f"Match={entry.get('match') or ''} | "
                 f"Context={entry.get('context') or ''}"
             )
 
-    for index, hint in enumerate(hints[:10], start=1):
+    for index, hint in enumerate(
+        hints[:10],
+        start=1,
+    ):
         print(
             "SQUARE/WEEBLY DIAGNOSTIC ENDPOINT | "
-            f"Store={store_name} | ProductID={external_product_id or 'UNKNOWN'} | "
-            f"Index={index} | Hint={hint}"
+            f"Store={store_name} | "
+            f"ProductID={external_product_id or 'UNKNOWN'} | "
+            f"Index={index} | "
+            f"Hint={hint}"
         )
 
 
-
-def normalize_public_resource_hint(base_url, hint):
+def normalize_public_resource_hint(
+    base_url,
+    hint,
+):
     if not hint:
         return None
 
-    raw = unescape(str(hint).strip()).replace(r"\/", "/")
+    raw = (
+        unescape(
+            str(hint).strip()
+        )
+        .replace(
+            r"\/",
+            "/",
+        )
+    )
 
     if raw.startswith("//"):
         raw = "https:" + raw
 
-    url = urljoin(base_url, raw)
+    url = urljoin(
+        base_url,
+        raw,
+    )
+
     parsed = urlparse(url)
 
-    if parsed.scheme not in {"http", "https"}:
+    if parsed.scheme not in {
+        "http",
+        "https",
+    }:
         return None
 
-    if not is_same_domain(url, base_url):
+    if not is_same_domain(
+        url,
+        base_url,
+    ):
         return None
 
-    path = (parsed.path or "/").lower()
+    path = (
+        parsed.path
+        or "/"
+    ).lower()
 
-    if any(term in path for term in BLOCKED_RESOURCE_PATH_TERMS):
+    if any(
+        term in path
+        for term in BLOCKED_RESOURCE_PATH_TERMS
+    ):
         return None
 
-    if not any(term in path for term in SAFE_RESOURCE_PATH_TERMS):
+    if not any(
+        term in path
+        for term in SAFE_RESOURCE_PATH_TERMS
+    ):
         return None
 
     if path.rstrip("/") == "/app":
         return None
 
-    return urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        parsed.path,
-        parsed.params,
-        parsed.query,
-        "",
-    ))
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            "",
+        )
+    )
 
 
-def select_safe_public_resource_urls(base_url, diagnostics):
+def select_safe_public_resource_urls(
+    base_url,
+    diagnostics,
+):
     selected = []
     seen = set()
 
-    for hint in (diagnostics or {}).get("public_endpoint_hints", []):
-        candidate = normalize_public_resource_hint(base_url, hint)
+    for hint in (
+        diagnostics
+        or {}
+    ).get(
+        "public_endpoint_hints",
+        [],
+    ):
+        candidate = normalize_public_resource_hint(
+            base_url,
+            hint,
+        )
 
-        if not candidate or candidate in seen:
+        if (
+            not candidate
+            or candidate in seen
+        ):
             continue
 
-        # The product page itself is already fetched; resource discovery is
-        # intended to identify additional public storefront data resources.
-        if canonicalize_product_url(candidate) == canonicalize_product_url(base_url):
+        if (
+            canonicalize_product_url(
+                candidate
+            )
+            ==
+            canonicalize_product_url(
+                base_url
+            )
+        ):
             continue
 
         seen.add(candidate)
         selected.append(candidate)
 
-        if len(selected) >= SAFE_RESOURCE_MAX_PER_PRODUCT:
+        if (
+            len(selected)
+            >= SAFE_RESOURCE_MAX_PER_PRODUCT
+        ):
             break
 
     return selected
@@ -1209,7 +1468,10 @@ def summarize_resource_signals(text):
             if len(samples) < 2:
                 samples.append(
                     compact_diagnostic_text(
-                        diagnostic_context(text, match),
+                        diagnostic_context(
+                            text,
+                            match,
+                        ),
                         300,
                     )
                 )
@@ -1219,29 +1481,61 @@ def summarize_resource_signals(text):
 
         if count:
             signals[label] = {
-                "count": count,
-                "samples": samples,
+                "count":
+                    count,
+
+                "samples":
+                    samples,
             }
 
     return signals
 
 
-def resource_mentions_product(text, *, external_product_id, title):
-    lowered = (text or "").lower()
+def resource_mentions_product(
+    text,
+    *,
+    external_product_id,
+    title,
+):
+    lowered = (
+        text
+        or ""
+    ).lower()
 
-    if external_product_id and str(external_product_id).lower() in lowered:
+    if (
+        external_product_id
+        and
+        str(
+            external_product_id
+        ).lower()
+        in lowered
+    ):
         return True
 
-    normalized_title = clean_text(title).lower()
+    normalized_title = (
+        clean_text(
+            title
+        ).lower()
+    )
 
-    if normalized_title and len(normalized_title) >= 12:
-        return normalized_title in lowered
+    if (
+        normalized_title
+        and
+        len(
+            normalized_title
+        ) >= 12
+    ):
+        return (
+            normalized_title
+            in lowered
+        )
 
     return False
 
 
 def parse_product_id_from_url(url):
     parsed = urlparse(url)
+
     match = re.search(
         r"/product/[^/]+/(\d+)",
         parsed.path,
@@ -1261,7 +1555,10 @@ def product_url_priority_score(url):
     This is discovery prioritization only. It is NOT game classification.
     """
 
-    lowered = str(url or "").lower()
+    lowered = str(
+        url
+        or ""
+    ).lower()
 
     score = 0
 
@@ -1273,7 +1570,6 @@ def product_url_priority_score(url):
         if term.lower() in lowered:
             score -= 10
 
-    # Product slugs that look like sealed TCG inventory get a small boost.
     if any(
         term in lowered
         for term in (
@@ -1291,8 +1587,12 @@ def product_url_priority_score(url):
     return score
 
 
-@retailer_adapter("square_weebly")
-class SquareWeeblyAdapter(RetailerAdapter):
+@retailer_adapter(
+    "square_weebly"
+)
+class SquareWeeblyAdapter(
+    RetailerAdapter
+):
 
     platform = "square_weebly"
 
@@ -1306,146 +1606,366 @@ class SquareWeeblyAdapter(RetailerAdapter):
         max_product_pages=MAX_PRODUCT_PAGES,
     ):
         super().__init__(
+
             domain=domain,
+
             region=region,
+
             store_name=store_name,
         )
 
         domain = (
             self.domain
-            .replace("https://", "")
-            .replace("http://", "")
+            .replace(
+                "https://",
+                "",
+            )
+            .replace(
+                "http://",
+                "",
+            )
             .strip("/")
         )
 
-        self.base_url = f"https://{domain}"
-        self.request_delay = max(float(request_delay), 0.5)
-        self.max_product_pages = max(1, min(int(max_product_pages), 500))
+        self.base_url = (
+            f"https://{domain}"
+        )
+
+        self.request_delay = max(
+            float(
+                request_delay
+            ),
+            0.5,
+        )
+
+        self.max_product_pages = max(
+            1,
+            min(
+                int(
+                    max_product_pages
+                ),
+                500,
+            ),
+        )
+
         self.diagnostics = {}
+
+        self.known_product_urls = set()
+
         self._reset_diagnostics()
 
-    def _reset_diagnostics(self):
+
+    def _reset_diagnostics(
+        self,
+    ):
         self.diagnostics = {
-            "pages_attempted": 0,
-            "pages_successful": 0,
-            "pages_failed": 0,
-            "discovery_pages_visited": 0,
-            "product_urls_total_discovered": 0,
-            "product_urls_prioritized": 0,
-            "product_urls_selected": 0,
-            "product_urls_discovered": 0,
-            "product_pages_attempted": 0,
-            "product_pages_successful": 0,
-            "product_pages_failed": 0,
-            "products_accepted": 0,
-            "products_rejected": 0,
-            "unknown_availability": 0,
-            "missing_prices": 0,
-            "in_stock_products": 0,
-            "out_of_stock_products": 0,
-            "availability_diagnostics": 0,
-            "availability_diagnostic_signals": 0,
-            "availability_endpoint_hints": 0,
-            "safe_resources_attempted": 0,
-            "safe_resources_successful": 0,
-            "safe_resources_relevant": 0,
-            "safe_resources_blocked": 0,
-            "http_429": 0,
-            "http_blocked": 0,
-            "last_http_status": None,
-            "last_error": None,
-            "games": {},
-            "categories": {
-                "SEALED": 0,
-                "SINGLE": 0,
-                "ACCESSORY": 0,
-                "UNKNOWN": 0,
-            },
+
+            "pages_attempted":
+                0,
+
+            "pages_successful":
+                0,
+
+            "pages_failed":
+                0,
+
+            "discovery_pages_visited":
+                0,
+
+            "product_urls_total_discovered":
+                0,
+
+            "product_urls_prioritized":
+                0,
+
+            "product_urls_selected":
+                0,
+
+            "product_urls_discovered":
+                0,
+
+            "product_pages_attempted":
+                0,
+
+            "product_pages_successful":
+                0,
+
+            "product_pages_failed":
+                0,
+
+            "products_accepted":
+                0,
+
+            "products_rejected":
+                0,
+
+            "unknown_availability":
+                0,
+
+            "missing_prices":
+                0,
+
+            "in_stock_products":
+                0,
+
+            "out_of_stock_products":
+                0,
+
+            "availability_diagnostics":
+                0,
+
+            "availability_diagnostic_signals":
+                0,
+
+            "availability_endpoint_hints":
+                0,
+
+            "safe_resources_attempted":
+                0,
+
+            "safe_resources_successful":
+                0,
+
+            "safe_resources_relevant":
+                0,
+
+            "safe_resources_blocked":
+                0,
+
+            "http_429":
+                0,
+
+            "http_blocked":
+                0,
+
+            "last_http_status":
+                None,
+
+            "last_error":
+                None,
+
+            "games":
+                {},
+
+            "categories":
+                {
+                    "SEALED":
+                        0,
+
+                    "SINGLE":
+                        0,
+
+                    "ACCESSORY":
+                        0,
+
+                    "UNKNOWN":
+                        0,
+                },
         }
 
-    def get_diagnostics(self):
-        data = dict(self.diagnostics)
 
-        # Compatibility aliases for the current universal monitor.
-        # Earlier monitor revisions used these alternate key names.
-        data["pages_checked"] = int(
-            data.get("discovery_pages_visited", 0) or 0
+    def get_diagnostics(
+        self,
+    ):
+        data = dict(
+            self.diagnostics
         )
-        data["rejected_products"] = int(
-            data.get("products_rejected", 0) or 0
+
+        data[
+            "pages_checked"
+        ] = int(
+            data.get(
+                "discovery_pages_visited",
+                0,
+            )
+            or 0
         )
-        data["normalized_products"] = int(
-            data.get("products_accepted", 0) or 0
+
+        data[
+            "rejected_products"
+        ] = int(
+            data.get(
+                "products_rejected",
+                0,
+            )
+            or 0
+        )
+
+        data[
+            "normalized_products"
+        ] = int(
+            data.get(
+                "products_accepted",
+                0,
+            )
+            or 0
         )
 
         return data
 
-    async def _fetch_text(self, session, url):
-        self.diagnostics["pages_attempted"] += 1
-        timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
+
+    async def _fetch_text(
+        self,
+        session,
+        url,
+    ):
+        self.diagnostics[
+            "pages_attempted"
+        ] += 1
+
+        timeout = (
+            aiohttp.ClientTimeout(
+                total=DEFAULT_TIMEOUT
+            )
+        )
 
         try:
+
             async with session.get(
+
                 url,
+
                 timeout=timeout,
+
                 allow_redirects=True,
+
             ) as response:
-                self.diagnostics["last_http_status"] = response.status
+
+                self.diagnostics[
+                    "last_http_status"
+                ] = response.status
 
                 if response.status == 429:
-                    self.diagnostics["http_429"] += 1
-                    self.diagnostics["pages_failed"] += 1
+
+                    self.diagnostics[
+                        "http_429"
+                    ] += 1
+
+                    self.diagnostics[
+                        "pages_failed"
+                    ] += 1
+
                     print(
-                        "SQUARE/WEEBLY RATE LIMITED | "
-                        f"Store={self.store_name} | URL={url}"
+                        (
+                            "SQUARE/WEEBLY RATE LIMITED | "
+                            f"Store={self.store_name} | "
+                            f"URL={url}"
+                        )
                     )
+
                     return None
 
-                if response.status in {401, 403}:
-                    self.diagnostics["http_blocked"] += 1
-                    self.diagnostics["pages_failed"] += 1
+                if response.status in {
+                    401,
+                    403,
+                }:
+
+                    self.diagnostics[
+                        "http_blocked"
+                    ] += 1
+
+                    self.diagnostics[
+                        "pages_failed"
+                    ] += 1
+
                     print(
-                        "SQUARE/WEEBLY ACCESS BLOCKED | "
-                        f"Store={self.store_name} | "
-                        f"HTTP={response.status} | URL={url}"
+                        (
+                            "SQUARE/WEEBLY ACCESS BLOCKED | "
+                            f"Store={self.store_name} | "
+                            f"HTTP={response.status} | "
+                            f"URL={url}"
+                        )
                     )
+
                     return None
 
                 if response.status >= 400:
-                    self.diagnostics["pages_failed"] += 1
+
+                    self.diagnostics[
+                        "pages_failed"
+                    ] += 1
+
                     print(
-                        "SQUARE/WEEBLY HTTP ERROR | "
-                        f"Store={self.store_name} | "
-                        f"HTTP={response.status} | URL={url}"
+                        (
+                            "SQUARE/WEEBLY HTTP ERROR | "
+                            f"Store={self.store_name} | "
+                            f"HTTP={response.status} | "
+                            f"URL={url}"
+                        )
                     )
+
                     return None
 
-                content_type = response.headers.get("Content-Type", "").lower()
+                content_type = (
+                    response.headers.get(
+                        "Content-Type",
+                        "",
+                    ).lower()
+                )
 
                 if (
-                    "text/html" not in content_type
-                    and "application/xhtml" not in content_type
-                    and "text/xml" not in content_type
-                    and "application/xml" not in content_type
+                    "text/html"
+                    not in content_type
+
+                    and
+                    "application/xhtml"
+                    not in content_type
+
+                    and
+                    "text/xml"
+                    not in content_type
+
+                    and
+                    "application/xml"
+                    not in content_type
                 ):
-                    self.diagnostics["pages_failed"] += 1
+
+                    self.diagnostics[
+                        "pages_failed"
+                    ] += 1
+
                     return None
 
-                text = await response.text(errors="ignore")
-                self.diagnostics["pages_successful"] += 1
+                text = (
+                    await response.text(
+                        errors="ignore"
+                    )
+                )
+
+                self.diagnostics[
+                    "pages_successful"
+                ] += 1
+
                 return text
 
-        except (asyncio.TimeoutError, aiohttp.ClientError) as error:
-            self.diagnostics["pages_failed"] += 1
-            self.diagnostics["last_error"] = (
-                f"{type(error).__name__}: {error}"
+        except (
+            asyncio.TimeoutError,
+            aiohttp.ClientError,
+        ) as error:
+
+            self.diagnostics[
+                "pages_failed"
+            ] += 1
+
+            self.diagnostics[
+                "last_error"
+            ] = (
+                f"{type(error).__name__}: "
+                f"{error}"
             )
+
             print(
-                "SQUARE/WEEBLY REQUEST ERROR | "
-                f"Store={self.store_name} | URL={url} | "
-                f"{type(error).__name__}: {error}"
+                (
+                    "SQUARE/WEEBLY REQUEST ERROR | "
+                    f"Store={self.store_name} | "
+                    f"URL={url} | "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
             )
+
             return None
+
 
     async def _inspect_safe_public_resource(
         self,
@@ -1456,512 +1976,1234 @@ class SquareWeeblyAdapter(RetailerAdapter):
         external_product_id,
         title,
     ):
-        self.diagnostics["safe_resources_attempted"] += 1
+        self.diagnostics[
+            "safe_resources_attempted"
+        ] += 1
 
-        timeout = aiohttp.ClientTimeout(total=SAFE_RESOURCE_TIMEOUT)
+        timeout = (
+            aiohttp.ClientTimeout(
+                total=SAFE_RESOURCE_TIMEOUT
+            )
+        )
 
         try:
-            async with session.get(
-                resource_url,
-                timeout=timeout,
-                allow_redirects=True,
-            ) as response:
-                final_url = str(response.url)
 
-                if not is_same_domain(final_url, self.base_url):
-                    self.diagnostics["safe_resources_blocked"] += 1
+            async with session.get(
+
+                resource_url,
+
+                timeout=timeout,
+
+                allow_redirects=True,
+
+            ) as response:
+
+                final_url = str(
+                    response.url
+                )
+
+                if not is_same_domain(
+                    final_url,
+                    self.base_url,
+                ):
+
+                    self.diagnostics[
+                        "safe_resources_blocked"
+                    ] += 1
+
                     print(
-                        "SQUARE/WEEBLY RESOURCE SKIPPED | "
-                        f"Store={self.store_name} | Reason=CROSS_DOMAIN_REDIRECT | "
-                        f"URL={resource_url} | FinalURL={final_url}"
+                        (
+                            "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                            f"Store={self.store_name} | "
+                            "Reason=CROSS_DOMAIN_REDIRECT | "
+                            f"URL={resource_url} | "
+                            f"FinalURL={final_url}"
+                        )
                     )
+
                     return None
 
-                final_path = (urlparse(final_url).path or "/").lower()
+                final_path = (
+                    urlparse(
+                        final_url
+                    ).path
+                    or "/"
+                ).lower()
 
                 if any(
                     term in final_path
                     for term in BLOCKED_RESOURCE_PATH_TERMS
                 ):
-                    self.diagnostics["safe_resources_blocked"] += 1
+
+                    self.diagnostics[
+                        "safe_resources_blocked"
+                    ] += 1
+
                     print(
-                        "SQUARE/WEEBLY RESOURCE SKIPPED | "
-                        f"Store={self.store_name} | Reason=BLOCKED_PATH | "
-                        f"URL={final_url}"
+                        (
+                            "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                            f"Store={self.store_name} | "
+                            "Reason=BLOCKED_PATH | "
+                            f"URL={final_url}"
+                        )
                     )
+
                     return None
 
                 if response.status == 429:
+
                     print(
-                        "SQUARE/WEEBLY RESOURCE RATE LIMITED | "
-                        f"Store={self.store_name} | URL={final_url}"
+                        (
+                            "SQUARE/WEEBLY RESOURCE RATE LIMITED | "
+                            f"Store={self.store_name} | "
+                            f"URL={final_url}"
+                        )
                     )
+
                     return None
 
-                if response.status in {401, 403}:
+                if response.status in {
+                    401,
+                    403,
+                }:
+
                     print(
-                        "SQUARE/WEEBLY RESOURCE ACCESS DENIED | "
-                        f"Store={self.store_name} | HTTP={response.status} | "
-                        f"URL={final_url}"
+                        (
+                            "SQUARE/WEEBLY RESOURCE ACCESS DENIED | "
+                            f"Store={self.store_name} | "
+                            f"HTTP={response.status} | "
+                            f"URL={final_url}"
+                        )
                     )
+
                     return None
 
                 if response.status >= 400:
+
                     print(
-                        "SQUARE/WEEBLY RESOURCE HTTP ERROR | "
-                        f"Store={self.store_name} | HTTP={response.status} | "
-                        f"URL={final_url}"
+                        (
+                            "SQUARE/WEEBLY RESOURCE HTTP ERROR | "
+                            f"Store={self.store_name} | "
+                            f"HTTP={response.status} | "
+                            f"URL={final_url}"
+                        )
                     )
+
                     return None
 
-                content_length = response.headers.get("Content-Length")
+                content_length = (
+                    response.headers.get(
+                        "Content-Length"
+                    )
+                )
+
                 if content_length:
+
                     try:
-                        if int(content_length) > SAFE_RESOURCE_MAX_BYTES:
-                            print(
-                                "SQUARE/WEEBLY RESOURCE SKIPPED | "
-                                f"Store={self.store_name} | Reason=TOO_LARGE | "
-                                f"URL={final_url}"
+
+                        if (
+                            int(
+                                content_length
                             )
+                            >
+                            SAFE_RESOURCE_MAX_BYTES
+                        ):
+
+                            print(
+                                (
+                                    "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                                    f"Store={self.store_name} | "
+                                    "Reason=TOO_LARGE | "
+                                    f"URL={final_url}"
+                                )
+                            )
+
                             return None
-                    except (TypeError, ValueError):
+
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+
                         pass
 
-                body = await response.content.read(SAFE_RESOURCE_MAX_BYTES + 1)
-
-                if len(body) > SAFE_RESOURCE_MAX_BYTES:
-                    print(
-                        "SQUARE/WEEBLY RESOURCE SKIPPED | "
-                        f"Store={self.store_name} | Reason=TOO_LARGE | "
-                        f"URL={final_url}"
+                body = (
+                    await response.content.read(
+                        SAFE_RESOURCE_MAX_BYTES
+                        + 1
                     )
+                )
+
+                if (
+                    len(body)
+                    >
+                    SAFE_RESOURCE_MAX_BYTES
+                ):
+
+                    print(
+                        (
+                            "SQUARE/WEEBLY RESOURCE SKIPPED | "
+                            f"Store={self.store_name} | "
+                            "Reason=TOO_LARGE | "
+                            f"URL={final_url}"
+                        )
+                    )
+
                     return None
 
-                charset = response.charset or "utf-8"
-                try:
-                    text = body.decode(charset, errors="ignore")
-                except LookupError:
-                    text = body.decode("utf-8", errors="ignore")
-
-                self.diagnostics["safe_resources_successful"] += 1
-
-                relevant = resource_mentions_product(
-                    text,
-                    external_product_id=external_product_id,
-                    title=title,
+                charset = (
+                    response.charset
+                    or "utf-8"
                 )
 
-                signals = summarize_resource_signals(text)
+                try:
+
+                    text = body.decode(
+                        charset,
+                        errors="ignore",
+                    )
+
+                except LookupError:
+
+                    text = body.decode(
+                        "utf-8",
+                        errors="ignore",
+                    )
+
+                self.diagnostics[
+                    "safe_resources_successful"
+                ] += 1
+
+                relevant = (
+                    resource_mentions_product(
+
+                        text,
+
+                        external_product_id=(
+                            external_product_id
+                        ),
+
+                        title=title,
+                    )
+                )
+
+                signals = (
+                    summarize_resource_signals(
+                        text
+                    )
+                )
 
                 if relevant:
-                    self.diagnostics["safe_resources_relevant"] += 1
+
+                    self.diagnostics[
+                        "safe_resources_relevant"
+                    ] += 1
 
                 print(
-                    "SQUARE/WEEBLY RESOURCE DIAGNOSTIC | "
-                    f"Store={self.store_name} | "
-                    f"ProductID={external_product_id or 'UNKNOWN'} | "
-                    f"Relevant={relevant} | "
-                    f"Signals={','.join(sorted(signals.keys())) or 'none'} | "
-                    f"ContentType={response.headers.get('Content-Type', '')} | "
-                    f"URL={final_url}"
+                    (
+                        "SQUARE/WEEBLY RESOURCE DIAGNOSTIC | "
+                        f"Store={self.store_name} | "
+                        f"ProductID={external_product_id or 'UNKNOWN'} | "
+                        f"Relevant={relevant} | "
+                        f"Signals="
+                        f"{','.join(sorted(signals.keys())) or 'none'} | "
+                        f"ContentType="
+                        f"{response.headers.get('Content-Type', '')} | "
+                        f"URL={final_url}"
+                    )
                 )
 
-                for label, details in sorted(signals.items()):
-                    for index, sample in enumerate(
-                        details.get("samples", [])[:2],
+                for (
+                    label,
+                    details,
+                ) in sorted(
+                    signals.items()
+                ):
+
+                    for (
+                        index,
+                        sample,
+                    ) in enumerate(
+
+                        details.get(
+                            "samples",
+                            [],
+                        )[
+                            :2
+                        ],
+
                         start=1,
                     ):
+
                         print(
-                            "SQUARE/WEEBLY RESOURCE SIGNAL | "
-                            f"Store={self.store_name} | "
-                            f"ProductID={external_product_id or 'UNKNOWN'} | "
-                            f"Type={label} | Index={index} | "
-                            f"Context={sample}"
+                            (
+                                "SQUARE/WEEBLY RESOURCE SIGNAL | "
+                                f"Store={self.store_name} | "
+                                f"ProductID={external_product_id or 'UNKNOWN'} | "
+                                f"Type={label} | "
+                                f"Index={index} | "
+                                f"Context={sample}"
+                            )
                         )
 
                 return {
-                    "url": final_url,
-                    "relevant": relevant,
-                    "signal_types": sorted(signals.keys()),
-                    "content_type": response.headers.get("Content-Type", ""),
+
+                    "url":
+                        final_url,
+
+                    "relevant":
+                        relevant,
+
+                    "signal_types":
+                        sorted(
+                            signals.keys()
+                        ),
+
+                    "content_type":
+                        response.headers.get(
+                            "Content-Type",
+                            "",
+                        ),
                 }
 
-        except (asyncio.TimeoutError, aiohttp.ClientError) as error:
+        except (
+            asyncio.TimeoutError,
+            aiohttp.ClientError,
+        ) as error:
+
             print(
-                "SQUARE/WEEBLY RESOURCE REQUEST ERROR | "
-                f"Store={self.store_name} | URL={resource_url} | "
-                f"{type(error).__name__}: {error}"
+                (
+                    "SQUARE/WEEBLY RESOURCE REQUEST ERROR | "
+                    f"Store={self.store_name} | "
+                    f"URL={resource_url} | "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
             )
+
             return None
 
-    def _decoded_discovery_html(self, html):
-        """
-        Return a storefront-safe decoded copy for URL discovery only.
 
-        Some Weebly/Square pages serialize product links inside JSON or
-        JavaScript using escaped slashes / unicode slash escapes. This does
-        not affect product parsing; it only makes public product URLs visible
-        to the existing bounded discovery pass.
-        """
-        text = unescape(html or "")
-        text = text.replace(r"\/", "/")
-        text = text.replace(r"\u002F", "/")
-        text = text.replace(r"\u002f", "/")
-        text = text.replace(r"\x2F", "/")
-        text = text.replace(r"\x2f", "/")
-        return text
-
-    def _extract_product_urls(self, html, source_url):
+    def _extract_product_urls(
+        self,
+        html,
+        source_url,
+    ):
         urls = set()
 
         if not html:
             return urls
 
-        decoded_html = self._decoded_discovery_html(html)
+        for match in HREF_PATTERN.finditer(
+            html
+        ):
 
-        # Normal anchors.
-        for match in HREF_PATTERN.finditer(decoded_html):
-            candidate = normalize_url(source_url, match.group(1))
+            candidate = normalize_url(
+                source_url,
+                match.group(
+                    1
+                ),
+            )
 
             if not candidate:
                 continue
-            if not is_same_domain(candidate, self.base_url):
-                continue
-            if not is_product_url(candidate):
-                continue
 
-            urls.add(canonicalize_product_url(candidate))
-
-        # Product URLs embedded in HTML / JSON / JavaScript.
-        for match in PRODUCT_PATH_PATTERN.finditer(decoded_html):
-            candidate = normalize_url(source_url, match.group(0))
-
-            if (
-                candidate
-                and is_same_domain(candidate, self.base_url)
-                and is_product_url(candidate)
+            if not is_same_domain(
+                candidate,
+                self.base_url,
             ):
-                urls.add(canonicalize_product_url(candidate))
+                continue
 
-        # Keep the original escaped form as a compatibility fallback.
-        for match in ESCAPED_PRODUCT_PATH_PATTERN.finditer(html):
-            candidate = normalize_url(source_url, match.group(0))
-
-            if (
+            if not is_product_url(
                 candidate
-                and is_same_domain(candidate, self.base_url)
-                and is_product_url(candidate)
             ):
-                urls.add(canonicalize_product_url(candidate))
+                continue
 
-        # Sitemap <loc> product entries.
-        for match in XML_LOC_PATTERN.finditer(decoded_html):
+            urls.add(
+                canonicalize_product_url(
+                    candidate
+                )
+            )
+
+        for match in PRODUCT_PATH_PATTERN.finditer(
+            html
+        ):
+
             candidate = normalize_url(
                 source_url,
-                clean_text(match.group(1)),
+                match.group(
+                    0
+                ),
             )
 
             if (
                 candidate
-                and is_same_domain(candidate, self.base_url)
-                and is_product_url(candidate)
+                and
+                is_same_domain(
+                    candidate,
+                    self.base_url,
+                )
+                and
+                is_product_url(
+                    candidate
+                )
             ):
-                urls.add(canonicalize_product_url(candidate))
+
+                urls.add(
+                    canonicalize_product_url(
+                        candidate
+                    )
+                )
+
+        for match in ESCAPED_PRODUCT_PATH_PATTERN.finditer(
+            html
+        ):
+
+            candidate = normalize_url(
+                source_url,
+                match.group(
+                    0
+                ),
+            )
+
+            if (
+                candidate
+                and
+                is_same_domain(
+                    candidate,
+                    self.base_url,
+                )
+                and
+                is_product_url(
+                    candidate
+                )
+            ):
+
+                urls.add(
+                    canonicalize_product_url(
+                        candidate
+                    )
+                )
+
+        for match in XML_LOC_PATTERN.finditer(
+            html
+        ):
+
+            candidate = normalize_url(
+
+                source_url,
+
+                clean_text(
+                    match.group(
+                        1
+                    )
+                ),
+            )
+
+            if (
+                candidate
+                and
+                is_same_domain(
+                    candidate,
+                    self.base_url,
+                )
+                and
+                is_product_url(
+                    candidate
+                )
+            ):
+
+                urls.add(
+                    canonicalize_product_url(
+                        candidate
+                    )
+                )
 
         return urls
 
-    def _extract_discovery_links(self, html, source_url):
+
+    def _extract_discovery_links(
+        self,
+        html,
+        source_url,
+    ):
         links = set()
 
         if not html:
             return links
 
-        for match in HREF_PATTERN.finditer(html):
-            candidate = normalize_url(source_url, match.group(1))
+        for match in HREF_PATTERN.finditer(
+            html
+        ):
 
-            if not candidate:
-                continue
-
-            if not is_same_domain(candidate, self.base_url):
-                continue
-
-            if is_discovery_candidate(candidate):
-                parsed = urlparse(candidate)
-                links.add(parsed._replace(fragment="").geturl())
-
-        return links
-
-    def _extract_sitemap_discovery_links(self, html, source_url):
-        """
-        Follow only same-domain public sitemap/catalog links from <loc>.
-        This supports sitemap-index layouts without expanding outside the
-        existing MAX_DISCOVERY_PAGES bound.
-        """
-        links = set()
-
-        if not html:
-            return links
-
-        decoded_html = self._decoded_discovery_html(html)
-
-        for match in XML_LOC_PATTERN.finditer(decoded_html):
             candidate = normalize_url(
                 source_url,
-                clean_text(match.group(1)),
+                match.group(
+                    1
+                ),
             )
 
             if not candidate:
                 continue
-            if not is_same_domain(candidate, self.base_url):
-                continue
-            if is_product_url(candidate):
-                continue
 
-            path = (urlparse(candidate).path or "/").lower()
-
-            if (
-                "sitemap" in path
-                or is_discovery_candidate(candidate)
+            if not is_same_domain(
+                candidate,
+                self.base_url,
             ):
-                links.add(candidate)
+                continue
+
+            if is_discovery_candidate(
+                candidate
+            ):
+
+                parsed = urlparse(
+                    candidate
+                )
+
+                links.add(
+                    parsed
+                    ._replace(
+                        fragment=""
+                    )
+                    .geturl()
+                )
 
         return links
 
-    async def _discover_product_urls(self, session):
+
+    async def _discover_product_urls(
+        self,
+        session,
+    ):
         discovered = set()
 
         seed_urls = [
-            urljoin(self.base_url, path)
+
+            urljoin(
+                self.base_url,
+                path,
+            )
+
             for path in TCG_DISCOVERY_PATHS
         ]
 
-        queue = list(seed_urls)
-        queued = set(seed_urls)
+        queue = list(
+            seed_urls
+        )
+
+        queued = set(
+            seed_urls
+        )
+
         visited = set()
 
         while (
             queue
-            and len(visited) < MAX_DISCOVERY_PAGES
-            and len(discovered) < MAX_DISCOVERED_PRODUCT_URLS
+
+            and
+            len(
+                visited
+            )
+            <
+            MAX_DISCOVERY_PAGES
+
+            and
+            len(
+                discovered
+            )
+            <
+            MAX_DISCOVERED_PRODUCT_URLS
         ):
-            url = queue.pop(0)
+
+            url = queue.pop(
+                0
+            )
 
             if url in visited:
                 continue
 
-            visited.add(url)
-            html = await self._fetch_text(session, url)
+            visited.add(
+                url
+            )
+
+            html = (
+                await self._fetch_text(
+                    session,
+                    url,
+                )
+            )
 
             if not html:
                 continue
 
-            self.diagnostics["discovery_pages_visited"] += 1
+            self.diagnostics[
+                "discovery_pages_visited"
+            ] += 1
 
-            newly_found = self._extract_product_urls(
-                html,
-                url,
+            newly_found = (
+                self._extract_product_urls(
+                    html,
+                    url,
+                )
             )
 
-            discovered.update(newly_found)
-
-            decoded_html = self._decoded_discovery_html(html)
-            href_count = len(HREF_PATTERN.findall(decoded_html))
-            xml_loc_count = len(XML_LOC_PATTERN.findall(decoded_html))
-
-            print(
-                "SQUARE/WEEBLY DISCOVERY PAGE | "
-                f"Store={self.store_name} | "
-                f"URL={url} | "
-                f"Bytes={len(html)} | "
-                f"Hrefs={href_count} | "
-                f"XmlLocs={xml_loc_count} | "
-                f"ProductsFound={len(newly_found)}"
+            discovered.update(
+                newly_found
             )
 
-            if len(discovered) >= MAX_DISCOVERED_PRODUCT_URLS:
+            if (
+                len(
+                    discovered
+                )
+                >=
+                MAX_DISCOVERED_PRODUCT_URLS
+            ):
                 break
 
-            discovery_links = set(
+            for candidate in (
                 self._extract_discovery_links(
                     html,
                     url,
                 )
-            )
-            discovery_links.update(
-                self._extract_sitemap_discovery_links(
-                    html,
-                    url,
-                )
-            )
+            ):
 
-            for candidate in discovery_links:
-                if candidate in visited or candidate in queued:
+                if (
+                    candidate in visited
+                    or
+                    candidate in queued
+                ):
                     continue
 
-                if len(queue) + len(visited) >= MAX_DISCOVERY_PAGES:
+                if (
+                    len(queue)
+                    +
+                    len(visited)
+                    >=
+                    MAX_DISCOVERY_PAGES
+                ):
                     break
 
-                queued.add(candidate)
-                queue.append(candidate)
+                queued.add(
+                    candidate
+                )
+
+                queue.append(
+                    candidate
+                )
 
             if queue:
-                await asyncio.sleep(self.request_delay)
+
+                await asyncio.sleep(
+                    self.request_delay
+                )
 
         ranked = sorted(
+
             discovered,
+
             key=lambda url: (
-                -product_url_priority_score(url),
+                url in self.known_product_urls,
+                -product_url_priority_score(
+                    url
+                ),
                 url.lower(),
             ),
         )
 
         prioritized_count = sum(
+
             1
+
             for url in ranked
-            if product_url_priority_score(url) > 0
+
+            if product_url_priority_score(
+                url
+            ) > 0
         )
 
         priority_urls = [
-            url for url in ranked
-            if product_url_priority_score(url) > 0
-        ]
-        fallback_urls = [
-            url for url in ranked
-            if product_url_priority_score(url) <= 0
+
+            url
+
+            for url in ranked
+
+            if product_url_priority_score(
+                url
+            ) > 0
         ]
 
-        selected = list(priority_urls[: self.max_product_pages])
-        if len(selected) < self.max_product_pages:
+        fallback_urls = [
+
+            url
+
+            for url in ranked
+
+            if product_url_priority_score(
+                url
+            ) <= 0
+        ]
+
+        selected = list(
+            priority_urls[
+                :self.max_product_pages
+            ]
+        )
+
+        if (
+            len(selected)
+            <
+            self.max_product_pages
+        ):
+
             selected.extend(
-                fallback_urls[: self.max_product_pages - len(selected)]
+
+                fallback_urls[
+                    :
+                    self.max_product_pages
+                    -
+                    len(selected)
+                ]
             )
 
         self.diagnostics[
             "product_urls_total_discovered"
-        ] = len(discovered)
+        ] = len(
+            discovered
+        )
 
         self.diagnostics[
             "product_urls_prioritized"
-        ] = prioritized_count
+        ] = (
+            prioritized_count
+        )
 
         self.diagnostics[
             "product_urls_selected"
-        ] = len(selected)
+        ] = len(
+            selected
+        )
 
-        # Keep this legacy key so the universal monitor continues to work.
         self.diagnostics[
             "product_urls_discovered"
-        ] = len(discovered)
+        ] = len(
+            discovered
+        )
 
         print(
-            "SQUARE/WEEBLY TCG-AWARE DISCOVERY | "
-            f"Store={self.store_name} | "
-            f"DiscoveryPages={self.diagnostics['discovery_pages_visited']} | "
-            f"TotalProductURLs={len(discovered)} | "
-            f"PriorityCandidates={prioritized_count} | "
-            f"SelectedForFetch={len(selected)}"
+            (
+                "SQUARE/WEEBLY TCG-AWARE DISCOVERY | "
+                f"Store={self.store_name} | "
+                f"DiscoveryPages="
+                f"{self.diagnostics['discovery_pages_visited']} | "
+                f"TotalProductURLs="
+                f"{len(discovered)} | "
+                f"PriorityCandidates="
+                f"{prioritized_count} | "
+                f"SelectedForFetch="
+                f"{len(selected)}"
+            )
         )
 
         return selected
 
-    async def fetch_products(self):
+
+    async def fetch_products(
+        self,
+    ):
         self._reset_diagnostics()
 
         headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": (
-                "text/html,application/xhtml+xml,"
-                "application/xml;q=0.9,*/*;q=0.8"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
+
+            "User-Agent":
+                USER_AGENT,
+
+            "Accept":
+                (
+                    "text/html,"
+                    "application/xhtml+xml,"
+                    "application/xml;q=0.9,"
+                    "*/*;q=0.8"
+                ),
+
+            "Accept-Language":
+                "en-US,en;q=0.9",
         }
 
-        connector = aiohttp.TCPConnector(
-            limit=4,
-            limit_per_host=2,
+        connector = (
+            aiohttp.TCPConnector(
+                limit=4,
+                limit_per_host=2,
+            )
         )
 
         async with aiohttp.ClientSession(
+
             headers=headers,
+
             connector=connector,
+
         ) as session:
-            product_urls = await self._discover_product_urls(session)
+
+            product_urls = (
+                await self._discover_product_urls(
+                    session
+                )
+            )
 
             print(
-                "SQUARE/WEEBLY FETCH PLAN | "
-                f"Store={self.store_name} | "
-                f"SelectedProductURLs={len(product_urls)} | "
-                f"TotalDiscovered="
-                f"{self.diagnostics['product_urls_total_discovered']} | "
-                f"PriorityCandidates="
-                f"{self.diagnostics['product_urls_prioritized']}"
+                (
+                    "SQUARE/WEEBLY FETCH PLAN | "
+                    f"Store={self.store_name} | "
+                    f"SelectedProductURLs="
+                    f"{len(product_urls)} | "
+                    f"TotalDiscovered="
+                    f"{self.diagnostics['product_urls_total_discovered']} | "
+                    f"PriorityCandidates="
+                    f"{self.diagnostics['product_urls_prioritized']}"
+                )
             )
 
             raw_products = []
 
-            for index, url in enumerate(product_urls):
-                self.diagnostics["product_pages_attempted"] += 1
-                html = await self._fetch_text(session, url)
+            for (
+                index,
+                url,
+            ) in enumerate(
+                product_urls
+            ):
+
+                self.diagnostics[
+                    "product_pages_attempted"
+                ] += 1
+
+                html = (
+                    await self._fetch_text(
+                        session,
+                        url,
+                    )
+                )
 
                 if html:
-                    self.diagnostics["product_pages_successful"] += 1
-                    raw_products.append({"url": url, "html": html})
 
-                    # Step 6H-D: production-safe mode.
+                    self.diagnostics[
+                        "product_pages_successful"
+                    ] += 1
+
+                    raw_products.append(
+                        {
+                            "url":
+                                url,
+
+                            "html":
+                                html,
+                        }
+                    )
+
+                    # Step 6J-3C2: production-safe fast refresh + bounded discovery mode.
                     # Product HTML is still parsed normally, but speculative
                     # /app/* resource probing is disabled after 6H-C showed
                     # those hints were non-actionable for Hypno. Availability
                     # remains UNKNOWN unless a trustworthy public page signal exists.
-                else:
-                    self.diagnostics["product_pages_failed"] += 1
 
-                if index < len(product_urls) - 1:
-                    await asyncio.sleep(self.request_delay)
+                else:
+
+                    self.diagnostics[
+                        "product_pages_failed"
+                    ] += 1
+
+                if (
+                    index
+                    <
+                    len(product_urls)
+                    - 1
+                ):
+
+                    await asyncio.sleep(
+                        self.request_delay
+                    )
 
             print(
-                "SQUARE/WEEBLY PRODUCT FETCH COMPLETE | "
-                f"Store={self.store_name} | "
-                f"Attempted={self.diagnostics['product_pages_attempted']} | "
-                f"Successful={self.diagnostics['product_pages_successful']} | "
-                f"Failed={self.diagnostics['product_pages_failed']}"
+                (
+                    "SQUARE/WEEBLY PRODUCT FETCH COMPLETE | "
+                    f"Store={self.store_name} | "
+                    f"Attempted="
+                    f"{self.diagnostics['product_pages_attempted']} | "
+                    f"Successful="
+                    f"{self.diagnostics['product_pages_successful']} | "
+                    f"Failed="
+                    f"{self.diagnostics['product_pages_failed']}"
+                )
             )
 
             return raw_products
 
-    def normalize_product(self, product):
-        if not isinstance(product, dict):
-            self.diagnostics["products_rejected"] += 1
+
+    def set_known_product_urls(
+        self,
+        urls,
+    ):
+        self.known_product_urls = {
+
+            str(
+                url
+            ).strip()
+
+            for url in (
+                urls
+                or []
+            )
+
+            if str(
+                url
+                or ""
+            ).strip()
+        }
+
+
+    async def fetch_products_from_urls(
+        self,
+        urls,
+    ):
+        self._reset_diagnostics()
+
+        unique_urls = []
+        seen = set()
+
+        for url in (
+            urls
+            or []
+        ):
+
+            clean_url = str(
+                url
+                or ""
+            ).strip()
+
+            if (
+                not clean_url
+                or
+                clean_url in seen
+            ):
+                continue
+
+            if not is_same_domain(
+                clean_url,
+                self.base_url,
+            ):
+                continue
+
+            seen.add(
+                clean_url
+            )
+
+            unique_urls.append(
+                clean_url
+            )
+
+        headers = {
+
+            "User-Agent":
+                USER_AGENT,
+
+            "Accept":
+                (
+                    "text/html,"
+                    "application/xhtml+xml,"
+                    "application/xml;q=0.9,"
+                    "*/*;q=0.8"
+                ),
+
+            "Accept-Language":
+                "en-US,en;q=0.9",
+        }
+
+        raw_products = []
+
+        semaphore = (
+            asyncio.Semaphore(
+                3
+            )
+        )
+
+        async with aiohttp.ClientSession(
+
+            headers=headers,
+
+            connector=(
+                aiohttp.TCPConnector(
+                    limit=4,
+                    limit_per_host=3,
+                )
+            ),
+
+        ) as session:
+
+            async def fetch_one(
+                url,
+            ):
+
+                async with semaphore:
+
+                    self.diagnostics[
+                        "product_pages_attempted"
+                    ] += 1
+
+                    html = (
+                        await self._fetch_text(
+                            session,
+                            url,
+                        )
+                    )
+
+                    if html:
+
+                        self.diagnostics[
+                            "product_pages_successful"
+                        ] += 1
+
+                        raw_products.append(
+                            {
+                                "url":
+                                    url,
+
+                                "html":
+                                    html,
+                            }
+                        )
+
+                    else:
+
+                        self.diagnostics[
+                            "product_pages_failed"
+                        ] += 1
+
+                    await asyncio.sleep(
+                        self.request_delay
+                    )
+
+            await asyncio.gather(
+
+                *(
+                    fetch_one(
+                        url
+                    )
+
+                    for url in unique_urls
+                )
+            )
+
+        self.diagnostics[
+            "product_urls_discovered"
+        ] = len(
+            unique_urls
+        )
+
+        self.diagnostics[
+            "product_urls_selected"
+        ] = len(
+            unique_urls
+        )
+
+        print(
+            (
+                "SQUARE/WEEBLY FAST REFRESH COMPLETE | "
+                f"Store={self.store_name} | "
+                f"KnownURLs={len(unique_urls)} | "
+                f"Successful="
+                f"{self.diagnostics['product_pages_successful']} | "
+                f"Failed="
+                f"{self.diagnostics['product_pages_failed']}"
+            )
+        )
+
+        return raw_products
+
+
+    async def get_normalized_products_from_urls(
+        self,
+        urls,
+    ):
+        raw_products = (
+            await self.fetch_products_from_urls(
+                urls
+            )
+        )
+
+        normalized_products = []
+
+        seen_urls = set()
+
+        for raw_product in (
+            raw_products
+            or []
+        ):
+
+            try:
+
+                normalized = (
+                    self.normalize_product(
+                        raw_product
+                    )
+                )
+
+            except Exception as error:
+
+                print(
+                    (
+                        "RETAILER FAST NORMALIZE ERROR | "
+                        f"Store={self.store_name} | "
+                        f"Platform={self.platform} | "
+                        f"{type(error).__name__}: "
+                        f"{error}"
+                    )
+                )
+
+                continue
+
+            if normalized is None:
+                continue
+
+            if hasattr(
+                normalized,
+                "to_dict",
+            ):
+
+                item = (
+                    normalized.to_dict()
+                )
+
+            elif isinstance(
+                normalized,
+                dict,
+            ):
+
+                item = dict(
+                    normalized
+                )
+
+            else:
+
+                continue
+
+            url = str(
+                item.get(
+                    "url"
+                )
+                or ""
+            ).strip()
+
+            if (
+                not url
+                or
+                url in seen_urls
+            ):
+                continue
+
+            seen_urls.add(
+                url
+            )
+
+            normalized_products.append(
+                item
+            )
+
+        return normalized_products
+
+
+    def normalize_product(
+        self,
+        product,
+    ):
+        if not isinstance(
+            product,
+            dict,
+        ):
+
+            self.diagnostics[
+                "products_rejected"
+            ] += 1
+
             return None
 
-        url = product.get("url")
-        html = product.get("html") or ""
+        url = product.get(
+            "url"
+        )
 
-        if not url or not html:
-            self.diagnostics["products_rejected"] += 1
+        html = (
+            product.get(
+                "html"
+            )
+            or ""
+        )
+
+        if (
+            not url
+            or
+            not html
+        ):
+
+            self.diagnostics[
+                "products_rejected"
+            ] += 1
+
             return None
 
-        schema = find_product_schema(html)
-        offer = parse_offer(schema)
+        schema = (
+            find_product_schema(
+                html
+            )
+        )
+
+        offer = (
+            parse_offer(
+                schema
+            )
+        )
 
         title = None
 
-        if isinstance(schema, dict):
-            title = clean_text(schema.get("name"))
+        if isinstance(
+            schema,
+            dict,
+        ):
+
+            title = clean_text(
+                schema.get(
+                    "name"
+                )
+            )
 
         if not title:
+
             title = find_meta_value(
+
                 html,
+
                 OG_TITLE_PATTERN,
+
                 OG_TITLE_PATTERN_REVERSED,
             )
 
         if not title:
-            match = TITLE_PATTERN.search(html)
+
+            match = TITLE_PATTERN.search(
+                html
+            )
+
             if match:
-                title = clean_text(match.group(1))
+
+                title = clean_text(
+                    match.group(
+                        1
+                    )
+                )
 
         if not title:
-            self.diagnostics["products_rejected"] += 1
+
+            self.diagnostics[
+                "products_rejected"
+            ] += 1
+
             return None
 
         title = re.sub(
@@ -1973,39 +3215,79 @@ class SquareWeeblyAdapter(RetailerAdapter):
 
         description = ""
 
-        if isinstance(schema, dict):
-            description = clean_text(schema.get("description"))
+        if isinstance(
+            schema,
+            dict,
+        ):
+
+            description = clean_text(
+                schema.get(
+                    "description"
+                )
+            )
 
         if not description:
+
             description = (
                 find_meta_value(
+
                     html,
+
                     META_DESCRIPTION_PATTERN,
+
                     META_DESCRIPTION_PATTERN_REVERSED,
                 )
                 or ""
             )
 
-        game = classify_game(title)
+        game = classify_game(
+            title
+        )
 
         if not game:
-            self.diagnostics["products_rejected"] += 1
+
+            self.diagnostics[
+                "products_rejected"
+            ] += 1
+
             return None
 
         price = None
 
-        if isinstance(offer, dict):
-            price = normalize_price(offer.get("price"))
+        if isinstance(
+            offer,
+            dict,
+        ):
+
+            price = normalize_price(
+                offer.get(
+                    "price"
+                )
+            )
 
         if price is None:
+
             for pattern in PRICE_PATTERNS:
-                match = pattern.search(html)
+
+                match = pattern.search(
+                    html
+                )
 
                 if not match:
                     continue
 
-                raw_price = match.group(1).replace(",", "")
-                price = normalize_price(raw_price)
+                raw_price = (
+                    match.group(
+                        1
+                    ).replace(
+                        ",",
+                        "",
+                    )
+                )
+
+                price = normalize_price(
+                    raw_price
+                )
 
                 if price is not None:
                     break
@@ -2013,185 +3295,531 @@ class SquareWeeblyAdapter(RetailerAdapter):
         square_currency = None
 
         if price is None:
-            price, square_currency = parse_square_weebly_price(html)
+
+            (
+                price,
+                square_currency,
+            ) = (
+                parse_square_weebly_price(
+                    html
+                )
+            )
 
         currency = "USD"
 
-        if isinstance(offer, dict):
-            offer_currency = offer.get("priceCurrency")
-            if offer_currency:
-                currency = str(offer_currency).strip().upper()
+        if isinstance(
+            offer,
+            dict,
+        ):
 
-        if not isinstance(offer, dict) or not offer.get("priceCurrency"):
-            match = CURRENCY_PATTERN.search(html)
+            offer_currency = (
+                offer.get(
+                    "priceCurrency"
+                )
+            )
+
+            if offer_currency:
+
+                currency = (
+                    str(
+                        offer_currency
+                    )
+                    .strip()
+                    .upper()
+                )
+
+        if (
+            not isinstance(
+                offer,
+                dict,
+            )
+            or
+            not offer.get(
+                "priceCurrency"
+            )
+        ):
+
+            match = CURRENCY_PATTERN.search(
+                html
+            )
+
             if match:
-                currency = match.group(1).upper()
+
+                currency = (
+                    match.group(
+                        1
+                    ).upper()
+                )
+
             elif square_currency:
-                currency = square_currency
+
+                currency = (
+                    square_currency
+                )
 
         if price is None:
-            self.diagnostics["missing_prices"] += 1
 
-        available, availability_known, availability_state = parse_availability(
-            schema,
-            offer,
-            html,
+            self.diagnostics[
+                "missing_prices"
+            ] += 1
+
+        (
+            available,
+            availability_known,
+            availability_state,
+        ) = (
+            parse_availability(
+
+                schema,
+
+                offer,
+
+                html,
+            )
         )
 
-        availability_source = "UNKNOWN"
+        availability_source = (
+            "UNKNOWN"
+        )
 
-        if parse_schema_availability(schema) is not None:
-            availability_source = "SCHEMA"
-        elif parse_microdata_availability(html) is not None:
-            availability_source = "MICRODATA"
-        elif parse_purchase_control_availability(html) is not None:
-            availability_source = "PURCHASE_CONTROL"
-        elif parse_embedded_availability_flags(html) is not None:
-            availability_source = "EMBEDDED_FLAG"
+        if (
+            parse_schema_availability(
+                schema
+            )
+            is not None
+        ):
+
+            availability_source = (
+                "SCHEMA"
+            )
+
+        elif (
+            parse_microdata_availability(
+                html
+            )
+            is not None
+        ):
+
+            availability_source = (
+                "MICRODATA"
+            )
+
+        elif (
+            parse_purchase_control_availability(
+                html
+            )
+            is not None
+        ):
+
+            availability_source = (
+                "PURCHASE_CONTROL"
+            )
+
+        elif (
+            parse_embedded_availability_flags(
+                html
+            )
+            is not None
+        ):
+
+            availability_source = (
+                "EMBEDDED_FLAG"
+            )
+
         elif availability_known:
-            availability_source = "VISIBLE_TEXT"
 
-        if not availability_known:
-            self.diagnostics["unknown_availability"] += 1
-
-        external_product_id = parse_product_id_from_url(url)
-
-        storefront_diagnostics = None
-
-        if not availability_known:
-            storefront_diagnostics = collect_square_storefront_diagnostics(
-                html,
-                external_product_id,
+            availability_source = (
+                "VISIBLE_TEXT"
             )
 
-            self.diagnostics["availability_diagnostics"] += 1
-            self.diagnostics["availability_diagnostic_signals"] += sum(
-                len(items)
-                for items in storefront_diagnostics.get("signals", {}).values()
+        if not availability_known:
+
+            self.diagnostics[
+                "unknown_availability"
+            ] += 1
+
+        external_product_id = (
+            parse_product_id_from_url(
+                url
             )
-            self.diagnostics["availability_endpoint_hints"] += len(
-                storefront_diagnostics.get("public_endpoint_hints", [])
+        )
+
+        storefront_diagnostics = (
+            None
+        )
+
+        if not availability_known:
+
+            storefront_diagnostics = (
+                collect_square_storefront_diagnostics(
+
+                    html,
+
+                    external_product_id,
+                )
+            )
+
+            self.diagnostics[
+                "availability_diagnostics"
+            ] += 1
+
+            self.diagnostics[
+                "availability_diagnostic_signals"
+            ] += sum(
+
+                len(
+                    items
+                )
+
+                for items in (
+                    storefront_diagnostics
+                    .get(
+                        "signals",
+                        {},
+                    )
+                    .values()
+                )
+            )
+
+            self.diagnostics[
+                "availability_endpoint_hints"
+            ] += len(
+
+                storefront_diagnostics.get(
+                    "public_endpoint_hints",
+                    [],
+                )
             )
 
             print_square_storefront_diagnostics(
-                store_name=self.store_name,
+
+                store_name=(
+                    self.store_name
+                ),
+
                 title=title,
+
                 product_url=url,
-                external_product_id=external_product_id,
-                diagnostics=storefront_diagnostics,
+
+                external_product_id=(
+                    external_product_id
+                ),
+
+                diagnostics=(
+                    storefront_diagnostics
+                ),
             )
 
         sku = None
 
-        if isinstance(schema, dict):
-            schema_sku = schema.get("sku")
+        if isinstance(
+            schema,
+            dict,
+        ):
+
+            schema_sku = schema.get(
+                "sku"
+            )
+
             if schema_sku:
-                sku = clean_text(schema_sku)
+
+                sku = clean_text(
+                    schema_sku
+                )
 
         if not sku:
+
             for pattern in SKU_PATTERNS:
-                match = pattern.search(html)
+
+                match = pattern.search(
+                    html
+                )
+
                 if match:
-                    sku = clean_text(match.group(1))
+
+                    sku = clean_text(
+                        match.group(
+                            1
+                        )
+                    )
+
                     break
 
         image_url = None
 
-        if isinstance(schema, dict):
-            schema_image = schema.get("image")
+        if isinstance(
+            schema,
+            dict,
+        ):
 
-            if isinstance(schema_image, list):
+            schema_image = schema.get(
+                "image"
+            )
+
+            if isinstance(
+                schema_image,
+                list,
+            ):
+
                 if schema_image:
-                    image_url = str(schema_image[0])
+
+                    image_url = str(
+                        schema_image[
+                            0
+                        ]
+                    )
+
             elif schema_image:
-                image_url = str(schema_image)
+
+                image_url = str(
+                    schema_image
+                )
 
         if not image_url:
+
             image_url = find_meta_value(
+
                 html,
+
                 OG_IMAGE_PATTERN,
+
                 OG_IMAGE_PATTERN_REVERSED,
             )
 
-        product_category = classify_product_category(title)
-        product_type = infer_product_type(title)
-        product_family = classify_product_family(title)
-        language = family_language(product_family)
+        product_category = (
+            classify_product_category(
+                title
+            )
+        )
 
-        if availability_state == "IN_STOCK":
-            self.diagnostics["in_stock_products"] += 1
-            product_state = "STOCK_AVAILABLE"
-        elif availability_state == "OUT_OF_STOCK":
-            self.diagnostics["out_of_stock_products"] += 1
-            product_state = "SOLD_OUT"
+        product_type = (
+            infer_product_type(
+                title
+            )
+        )
+
+        product_family = (
+            classify_product_family(
+                title
+            )
+        )
+
+        language = (
+            family_language(
+                product_family
+            )
+        )
+
+        if (
+            availability_state
+            ==
+            "IN_STOCK"
+        ):
+
+            self.diagnostics[
+                "in_stock_products"
+            ] += 1
+
+            product_state = (
+                "STOCK_AVAILABLE"
+            )
+
+        elif (
+            availability_state
+            ==
+            "OUT_OF_STOCK"
+        ):
+
+            self.diagnostics[
+                "out_of_stock_products"
+            ] += 1
+
+            product_state = (
+                "SOLD_OUT"
+            )
+
         else:
-            product_state = "PAGE_LIVE"
+
+            product_state = (
+                "PAGE_LIVE"
+            )
 
         platform_data = {
-            "adapter": "square_weebly",
-            "external_product_id": external_product_id,
-            "language": language,
-            "availability_known": availability_known,
-            "availability_state": availability_state,
-            "availability_source": availability_source,
-            "availability_capability": (
-                "FULL_AVAILABILITY"
-                if availability_known
-                else "DISCOVERY_PRICE_ONLY"
-            ),
-            "availability_diagnostic_signal_types": sorted(
-                (storefront_diagnostics or {}).get("signals", {}).keys()
-            ),
-            "availability_endpoint_hint_count": len(
-                (storefront_diagnostics or {}).get("public_endpoint_hints", [])
-            ),
-            "description_present": bool(description),
+
+            "adapter":
+                "square_weebly",
+
+            "external_product_id":
+                external_product_id,
+
+            "language":
+                language,
+
+            "availability_known":
+                availability_known,
+
+            "availability_state":
+                availability_state,
+
+            "availability_source":
+                availability_source,
+
+            "availability_capability":
+                (
+                    "TRUSTED_PUBLIC_SIGNAL"
+
+                    if availability_known
+
+                    else "DISCOVERY_PRICE_ONLY"
+                ),
+
+            "availability_diagnostic_signal_types":
+                sorted(
+                    (
+                        storefront_diagnostics
+                        or {}
+                    )
+                    .get(
+                        "signals",
+                        {},
+                    )
+                    .keys()
+                ),
+
+            "availability_endpoint_hint_count":
+                len(
+                    (
+                        storefront_diagnostics
+                        or {}
+                    )
+                    .get(
+                        "public_endpoint_hints",
+                        [],
+                    )
+                ),
+
+            "description_present":
+                bool(
+                    description
+                ),
         }
 
-        self.diagnostics["products_accepted"] += 1
+        self.diagnostics[
+            "products_accepted"
+        ] += 1
 
-        games = self.diagnostics.setdefault("games", {})
-        games[game] = int(games.get(game, 0) or 0) + 1
+        games = (
+            self.diagnostics.setdefault(
+                "games",
+                {},
+            )
+        )
 
-        categories = self.diagnostics.setdefault("categories", {})
-        categories[product_category] = (
-            int(categories.get(product_category, 0) or 0)
+        games[
+            game
+        ] = int(
+            games.get(
+                game,
+                0,
+            )
+            or 0
+        ) + 1
+
+        categories = (
+            self.diagnostics.setdefault(
+                "categories",
+                {},
+            )
+        )
+
+        categories[
+            product_category
+        ] = (
+            int(
+                categories.get(
+                    product_category,
+                    0,
+                )
+                or 0
+            )
             + 1
         )
 
         print(
-            "SQUARE/WEEBLY TCG ACCEPTED | "
-            f"Store={self.store_name} | "
-            f"Game={game} | "
-            f"Category={product_category} | "
-            f"Family={product_family} | "
-            f"Price={price} {currency} | "
-            f"Availability={availability_state} | "
-            f"AvailabilitySource={availability_source} | "
-            f"AvailabilityCapability={'FULL_AVAILABILITY' if availability_known else 'DISCOVERY_PRICE_ONLY'} | "
-            f"Title={title}"
+            (
+                "SQUARE/WEEBLY TCG ACCEPTED | "
+                f"Store={self.store_name} | "
+                f"Game={game} | "
+                f"Category={product_category} | "
+                f"Family={product_family} | "
+                f"Price={price} {currency} | "
+                f"Availability={availability_state} | "
+                f"AvailabilitySource={availability_source} | "
+                f"AvailabilityCapability="
+                f"{'TRUSTED_PUBLIC_SIGNAL' if availability_known else 'DISCOVERY_PRICE_ONLY'} | "
+                f"Title={title}"
+            )
         )
 
         return RetailerProduct(
-            external_id=external_product_id,
+
+            external_id=(
+                external_product_id
+            ),
+
             title=title,
+
             game=game,
+
             url=url,
+
             price=price,
+
             currency=currency,
+
             available=available,
-            product_type=product_type,
-            product_category=product_category,
-            product_family=product_family,
-            product_state=product_state,
-            image_url=image_url,
-            vendor=self.store_name,
+
+            product_type=(
+                product_type
+            ),
+
+            product_category=(
+                product_category
+            ),
+
+            product_family=(
+                product_family
+            ),
+
+            product_state=(
+                product_state
+            ),
+
+            image_url=(
+                image_url
+            ),
+
+            vendor=(
+                self.store_name
+            ),
+
             tags=None,
+
             sku=sku,
-            external_product_id=external_product_id,
+
+            external_product_id=(
+                external_product_id
+            ),
+
             offer_id=None,
+
             variant_id=None,
+
             purchase_limit=None,
+
             cart_base_url=None,
-            platform_data=platform_data,
+
+            platform_data=(
+                platform_data
+            ),
         )
