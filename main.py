@@ -6061,10 +6061,24 @@ async def status(
 
             f"**Universal Retailer Monitor:** "
             f"{'\u2705 Automatic / Capability Safe' if universal_monitor_online else '\u274c Offline'}\n"
-            f"**Universal Stores Last Cycle:** "
-            f"`{universal_status.get('stores_scanned', 0)}`\n"
-            f"**Universal Stock Events Blocked:** "
-            f"`{universal_status.get('capability_stock_events_blocked', 0)}`\n\n"
+            f"**Universal Stores Current Cycle:** "
+            f"`{universal_status.get('stores_scanned', 0)}/"
+            f"{universal_status.get('current_cycle_total_stores', 0)}`"
+            + (
+                f" • `{universal_status.get('current_store_name')}`"
+                if universal_status.get('current_cycle_in_progress')
+                and universal_status.get('current_store_name')
+                else ""
+            )
+            + "\n"
+            f"**Universal Stores Last Completed Cycle:** "
+            f"`{universal_status.get('last_completed_stores_scanned', 0)}`\n"
+            f"**Universal Failures Last Cycle:** "
+            f"`{universal_status.get('last_completed_stores_failed', 0)}`\n"
+            f"**Universal Timeouts Last Cycle:** "
+            f"`{universal_status.get('last_completed_store_timeouts', 0)}`\n"
+            f"**Universal Stock Events Blocked Last Cycle:** "
+            f"`{universal_status.get('last_completed_stock_events_blocked', 0)}`\n\n"
 
             "**Strict TCG Classification:** \u2705\n"
 
