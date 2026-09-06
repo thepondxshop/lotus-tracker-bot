@@ -167,6 +167,16 @@ from app.universal_retailer_monitor import (
 
 
 # =========================================================
+# UNIVERSAL RETAILER ONBOARDING
+# Step 6J-3E1
+# =========================================================
+
+from app.retailer_onboarding import (
+    validate_staged_retailer,
+)
+
+
+# =========================================================
 # STORE HEALTH
 # =========================================================
 
@@ -3277,7 +3287,7 @@ def normalize_retailer_domain(
 
 @bot.tree.command(
     name="addretailer",
-    description="Stage a universal retailer for Lotus monitoring.",
+    description="Stage and immediately validate a universal retailer.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -3529,17 +3539,115 @@ async def addretailer(
                 store.region
             )
 
-        embed = discord.Embed(
+        # =================================================
+        # STEP 6J-3E1
+        # IMMEDIATE SILENT VALIDATION
+        # =================================================
+        #
+        # The new retailer remains inactive even if validation
+        # succeeds. Existing catalog items are baselined silently.
+        # No Discord product alerts are emitted by this scan.
 
-            title=(
-                "\U0001f310 Universal Retailer Staged"
-            ),
+        onboarding_result = None
+        onboarding_error = None
 
-            description=(
-                f"**{store_name}** has been added "
-                "to Lotus's Universal Retailer Foundation."
-            ),
+        try:
+
+            onboarding_result = (
+                await validate_staged_retailer(
+                    store_id
+                )
+            )
+
+        except asyncio.CancelledError:
+
+            raise
+
+        except Exception as error:
+
+            onboarding_error = (
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+
+            print(
+                (
+                    "UNIVERSAL ONBOARDING COMMAND ERROR | "
+                    f"Store={store_name} | "
+                    f"StoreID={store_id} | "
+                    f"Platform={clean_platform} | "
+                    f"Error={onboarding_error}"
+                )
+            )
+
+        platform_label = {
+            "square_weebly": "Square / Weebly",
+            "woocommerce": "WooCommerce",
+            "bigcommerce": "BigCommerce",
+            "prestashop": "PrestaShop",
+        }.get(
+            clean_platform,
+            clean_platform,
         )
+
+        if (
+            onboarding_result is not None
+            and onboarding_result.validated
+        ):
+
+            embed = discord.Embed(
+
+                title=(
+                    "\u2705 Universal Retailer Validated"
+                ),
+
+                description=(
+                    f"**{store_name}** was staged and immediately "
+                    "passed Lotus's silent validation scan."
+                ),
+            )
+
+            monitoring_value = (
+                "\U0001f7e1 Validated / Inactive"
+            )
+
+            validation_value = (
+                "\u2705 Passed"
+            )
+
+            next_step_value = (
+                f"Run `/enablestore store_id:{store_id}` when you "
+                "want this retailer added to automatic monitoring."
+            )
+
+        else:
+
+            embed = discord.Embed(
+
+                title=(
+                    "\u26a0\ufe0f Universal Retailer Needs Review"
+                ),
+
+                description=(
+                    f"**{store_name}** was staged, but Lotus could "
+                    "not fully validate it automatically. It remains "
+                    "inactive and cannot send alerts."
+                ),
+            )
+
+            monitoring_value = (
+                "\U0001f534 Staged / Inactive"
+            )
+
+            validation_value = (
+                "\u274c Failed / Review Required"
+            )
+
+            next_step_value = (
+                f"Review the validation result, then run "
+                f"`/scanretailer store_id:{store_id}` to retry a "
+                "controlled silent scan."
+            )
 
         embed.add_field(
             name="Store ID",
@@ -3549,16 +3657,11 @@ async def addretailer(
             inline=True,
         )
 
-        platform_label = {
-            "square_weebly": "Square / Weebly",
-            "woocommerce": "WooCommerce",
-            "bigcommerce": "BigCommerce",
-            "prestashop": "PrestaShop",
-        }.get(clean_platform, clean_platform)
-
         embed.add_field(
             name="Platform",
-            value=f"`{platform_label}`",
+            value=(
+                f"`{platform_label}`"
+            ),
             inline=True,
         )
 
@@ -3580,7 +3683,9 @@ async def addretailer(
 
         embed.add_field(
             name="Monitoring",
-            value="\u26ab Staged / Inactive",
+            value=(
+                monitoring_value
+            ),
             inline=True,
         )
 
@@ -3591,20 +3696,85 @@ async def addretailer(
         )
 
         embed.add_field(
-
-            name="Next Step",
-
+            name="Validation",
             value=(
-                f"Run `/scanretailer store_id:{store_id}` "
-                "to perform the controlled silent scan."
+                validation_value
             ),
+            inline=True,
+        )
 
+        if onboarding_result is not None:
+
+            embed.add_field(
+                name="Products Found",
+                value=(
+                    f"`{onboarding_result.products}`"
+                ),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Availability Coverage",
+                value=(
+                    f"`{onboarding_result.availability_coverage}`"
+                ),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Price Coverage",
+                value=(
+                    f"`{onboarding_result.price_coverage}`"
+                ),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Scan Mode",
+                value=(
+                    f"`{onboarding_result.scan_mode or 'UNKNOWN'}`"
+                ),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Historical Alerts Suppressed",
+                value=(
+                    f"`{onboarding_result.suppressed}`"
+                ),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Validation Reason",
+                value=(
+                    f"`{onboarding_result.validation_reason}`"
+                ),
+                inline=False,
+            )
+
+        elif onboarding_error:
+
+            embed.add_field(
+                name="Validation Error",
+                value=(
+                    f"`{onboarding_error[:900]}`"
+                ),
+                inline=False,
+            )
+
+        embed.add_field(
+            name="Next Step",
+            value=(
+                next_step_value
+            ),
             inline=False,
         )
 
         embed.set_footer(
             text=(
-                "Lotus Universal Retailer Foundation \u2022 v1.0.4"
+                "Lotus Universal Retailer Foundation \u2022 "
+                "6J-3E1 Immediate Silent Validation"
             )
         )
 
@@ -3626,6 +3796,7 @@ async def addretailer(
 
             ephemeral=True,
         )
+
 
 
 # =========================================================
