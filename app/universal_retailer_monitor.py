@@ -2,4296 +2,1643 @@
 Lotus Tracker Bot
 PonDeX Trackers
 
-Universal Retailer Monitor
-Version: 1.1.0
+Universal Retailer Lightweight Delta Discovery
+Version: 1.0.0
 
-Step 6J-3C4 — Universal Store Health Integration
+Step 6J-3D1 — Fast New-Product Discovery
 
-Safety:
-- Shopify remains isolated in shopify_monitor.py
-- Database commits before events are published
-- First successful retailer scan establishes silent baseline
-- Manual scans may explicitly suppress events
-- Unknown availability never becomes SOLD_OUT
-- Unknown availability never becomes RESTOCK
-- Missing price never erases last known price
-- No duplicate DISCOVERED + STOCK_AVAILABLE alert
-- No automatic checkout
-- No CAPTCHA / queue / anti-bot bypass
+Purpose:
+- Find NEW public product URLs quickly.
+- Never replace the normal known-product fast refresh.
+- Never run a full storefront crawl.
+- Never perform checkout/cart probing.
+- Never bypass CAPTCHA, queues, rate limits, or anti-bot systems.
 
-Performance:
-- Automatic cycles refresh a bounded shard of known product URLs.
-- Priority lifecycle products are checked every cycle.
-- Remaining known products rotate through bounded shards.
-- Deep discovery runs on a separate cadence.
-- Deep discovery has its own short timeout budget and does not fail
-  the store if the known-product refresh already succeeded.
+Supported platforms:
+- PrestaShop
+- BigCommerce
+- Square / Weebly
 
-Health:
-- Successful universal scans call record_store_success(..., allow_health_reenable=True)
-- Genuine store failures call record_store_failure(...)
-- Optional discovery-budget timeouts DO NOT count as store-health failures
+Design:
+- Small number of public discovery pages.
+- Small sitemap budget.
+- Known URLs removed before product-page fetching.
+- Candidate count is tightly bounded.
+- Returned URLs are validated later by the store's existing adapter.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import html
 import logging
-import time
+import re
 
-from datetime import datetime
-from typing import Any
-
-from sqlalchemy import func, select
-
-from app.database import SessionLocal
-from app.event_service import process_product_event
-from app.events import ProductEvent, ProductEventType
-from app.models import PriceHistory, Product, Store, StoreProduct
-from app.retailer_registry import (
-    build_retailer_adapter,
-    get_registered_retailer_platforms,
-    normalize_platform,
-)
-from app.retailers import load_retailer_adapters
-from app.store_health import (
-    record_store_failure,
-    record_store_success,
+from dataclasses import dataclass
+from typing import Iterable
+from urllib.parse import (
+    urljoin,
+    urlparse,
+    urlunparse,
 )
 
+import aiohttp
 
-VERSION = "1.1.0"
+
+VERSION = "1.0.0"
 
 logger = logging.getLogger(
-    "lotus.universal_retailer_monitor"
+    "lotus.delta_discovery"
 )
 
-DEFAULT_SCAN_INTERVAL = 60
-MAX_STORES_PER_CYCLE = 100
-STORE_SCAN_TIMEOUT_SECONDS = 180
 
 # =========================================================
-# STEP 6J-3C3 PERFORMANCE LIMITS
+# SAFETY / PERFORMANCE BOUNDS
 # =========================================================
 
-FAST_REFRESH_TOTAL_LIMIT = 24
-FAST_REFRESH_PRIORITY_LIMIT = 8
-FAST_REFRESH_ROTATING_LIMIT = (
-    FAST_REFRESH_TOTAL_LIMIT
-    -
-    FAST_REFRESH_PRIORITY_LIMIT
+REQUEST_TIMEOUT_SECONDS = 10
+
+MAX_SOURCE_PAGES = 6
+
+MAX_SITEMAP_DOCUMENTS = 4
+
+MAX_RAW_CANDIDATES = 120
+
+MAX_NEW_CANDIDATES = 12
+
+REQUEST_CONCURRENCY = 3
+
+
+USER_AGENT = (
+    "LotusTracker/1.0 "
+    "(PonDeX Trackers; public retailer discovery monitor)"
 )
 
-AUTO_DISCOVERY_INTERVAL_SECONDS = 900
-DISCOVERY_TIMEOUT_SECONDS = 45
-AUTO_DISCOVERY_PRODUCT_LIMIT = 40
-DISCOVERY_STARTUP_GRACE_SECONDS = 300
-
-
-SUPPORTED_UNIVERSAL_PLATFORMS = {
-    "square_weebly",
-    "woocommerce",
-    "bigcommerce",
-    "prestashop",
-}
-
 
 # =========================================================
-# PERFORMANCE STATE
+# REGEX
 # =========================================================
 
-_MONITOR_STARTED_MONOTONIC = (
-    time.monotonic()
+HREF_PATTERN = re.compile(
+    r'''href\s*=\s*["']([^"']+)["']''',
+    re.IGNORECASE,
 )
 
-_LAST_DISCOVERY_AT: dict[
-    int,
-    float,
-] = {}
+LOC_PATTERN = re.compile(
+    r"<loc>\s*(.*?)\s*</loc>",
+    re.IGNORECASE | re.DOTALL,
+)
 
-_REFRESH_CURSOR: dict[
-    int,
-    int,
-] = {}
+ROBOTS_SITEMAP_PATTERN = re.compile(
+    r"(?im)^\s*Sitemap\s*:\s*(\S+)"
+)
 
-
-PRIORITY_STATUSES = {
-    "PREORDER",
-    "PREORDER_PAGE",
-    "PREORDER_LIVE",
-    "BACKORDER",
-    "COMING_SOON",
-    "SOLD_OUT",
-    "OUT_OF_STOCK",
-}
-
-
-MONITOR_STATUS: dict[str, Any] = {
-
-    "version":
-        VERSION,
-
-    "running":
-        False,
-
-    "adapters_loaded":
-        False,
-
-    "last_scan_started_at":
-        None,
-
-    "last_scan_completed_at":
-        None,
-
-    "last_error":
-        None,
-
-    "current_cycle_in_progress":
-        False,
-
-    "current_cycle_total_stores":
-        0,
-
-    "current_store_id":
-        None,
-
-    "current_store_name":
-        None,
-
-    "store_timeouts":
-        0,
-
-    "last_timed_out_store":
-        None,
-
-    "last_completed_stores_scanned":
-        0,
-
-    "last_completed_stores_failed":
-        0,
-
-    "last_completed_store_timeouts":
-        0,
-
-    "last_completed_products_seen":
-        0,
-
-    "last_completed_events_created":
-        0,
-
-    "last_completed_stock_events_blocked":
-        0,
-
-    "last_completed_price_events_blocked":
-        0,
-
-    "last_completed_cycle_at":
-        None,
-
-    "fast_refresh_products_selected":
-        0,
-
-    "fast_refresh_priority_selected":
-        0,
-
-    "fast_refresh_rotating_selected":
-        0,
-
-    "deep_discovery_attempts":
-        0,
-
-    "deep_discovery_completed":
-        0,
-
-    "deep_discovery_timeouts":
-        0,
-
-    "stores_scanned":
-        0,
-
-    "stores_failed":
-        0,
-
-    "stores_baselined":
-        0,
-
-    "products_seen":
-        0,
-
-    "products_created":
-        0,
-
-    "products_updated":
-        0,
-
-    "events_created":
-        0,
-
-    "events_suppressed_baseline":
-        0,
-
-    "events_suppressed_manual":
-        0,
-
-    "price_changes":
-        0,
-
-    "restocks":
-        0,
-
-    "sold_out":
-        0,
-
-    "unknown_availability":
-        0,
-
-    "preorders":
-        0,
-
-    "backorders":
-        0,
-
-    "availability_high_confidence":
-        0,
-
-    "availability_medium_confidence":
-        0,
-
-    "availability_low_confidence":
-        0,
-
-    "missing_prices":
-        0,
-
-    "discovery_pages_checked":
-        0,
-
-    "discovery_pages_successful":
-        0,
-
-    "discovery_product_urls":
-        0,
-
-    "product_pages_successful":
-        0,
-
-    "adapter_rejected_products":
-        0,
-
-    "capability_full_availability":
-        0,
-
-    "capability_discovery_price_only":
-        0,
-
-    "capability_discovery_only":
-        0,
-
-    "capability_stock_events_blocked":
-        0,
-
-    "capability_price_events_blocked":
-        0,
-}
+SQUARE_PRODUCT_PATH_PATTERN = re.compile(
+    r"/product/[^/?#]+/\d+(?:[/?#]|$)",
+    re.IGNORECASE,
+)
 
 
 # =========================================================
-# BASIC HELPERS
+# PRIORITY TERMS
 # =========================================================
 
-def utcnow() -> datetime:
-    return datetime.utcnow()
+TCG_PRIORITY_TERMS = (
+    "pokemon",
+    "pokémon",
+    "one-piece",
+    "onepiece",
+    "one_piece",
+    "one piece",
+    "gundam",
+    "fusion-world",
+    "fusion_world",
+    "fusion world",
+    "riftbound",
+    "palworld",
+    "naruto",
+    "cyberpunk",
+    "azuki",
+    "hellbreak",
+    "booster",
+    "deck",
+    "starter",
+    "display",
+    "collection",
+    "tcg",
+    "trading-card",
+    "trading_card",
+    "trading card",
+    "card-game",
+    "card_game",
+    "card game",
+    "preorder",
+    "pre-order",
+    "preventa",
+    "new-product",
+    "new-products",
+)
 
 
-def normalize_text(
-    value: Any,
-    default: str = "",
+# =========================================================
+# PLATFORM SOURCE PATHS
+# =========================================================
+
+PRESTASHOP_HTML_PATHS = (
+    "/new-products",
+    "/",
+    "/preorder",
+    "/pre-order",
+    "/preventa",
+    "/pokemon",
+)
+
+PRESTASHOP_SITEMAP_PATHS = (
+    "/1_index_sitemap.xml",
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+    "/index_sitemap.xml",
+)
+
+
+BIGCOMMERCE_HTML_PATHS = (
+    "/",
+    "/new-products/",
+    "/new-products",
+    "/pre-order/",
+    "/preorder/",
+)
+
+BIGCOMMERCE_SITEMAP_PATHS = (
+    "/xmlsitemap.php",
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+)
+
+
+SQUARE_HTML_PATHS = (
+    "/",
+    "/shop",
+    "/store",
+    "/s/shop",
+    "/new",
+    "/new-products",
+)
+
+SQUARE_SITEMAP_PATHS = (
+    "/sitemap.xml",
+)
+
+
+# =========================================================
+# RESULT
+# =========================================================
+
+@dataclass
+class DeltaDiscoveryResult:
+
+    platform: str
+
+    domain: str
+
+    source_pages_checked: int
+
+    source_pages_successful: int
+
+    sitemap_documents_checked: int
+
+    raw_candidates: int
+
+    new_candidates: list[str]
+
+    timed_out_requests: int
+
+    failed_requests: int
+
+    last_error: str | None = None
+
+    def to_dict(
+        self,
+    ) -> dict:
+
+        return {
+            "platform":
+                self.platform,
+
+            "domain":
+                self.domain,
+
+            "source_pages_checked":
+                self.source_pages_checked,
+
+            "source_pages_successful":
+                self.source_pages_successful,
+
+            "sitemap_documents_checked":
+                self.sitemap_documents_checked,
+
+            "raw_candidates":
+                self.raw_candidates,
+
+            "new_candidates":
+                list(
+                    self.new_candidates
+                ),
+
+            "new_candidate_count":
+                len(
+                    self.new_candidates
+                ),
+
+            "timed_out_requests":
+                self.timed_out_requests,
+
+            "failed_requests":
+                self.failed_requests,
+
+            "last_error":
+                self.last_error,
+        }
+
+
+# =========================================================
+# URL HELPERS
+# =========================================================
+
+def normalize_domain(
+    value,
 ) -> str:
 
-    if value is None:
-        return default
+    value = str(
+        value
+        or ""
+    ).strip()
 
-    value = str(value).strip()
-    return value or default
-
-
-def normalize_optional_text(
-    value: Any,
-) -> str | None:
-
-    if value is None:
-        return None
-
-    value = str(value).strip()
-    return value or None
-
-
-def normalize_price(
-    value: Any,
-) -> float | None:
-
-    if value is None:
-        return None
-
-    try:
-        return float(value)
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return None
-
-
-def normalize_bool(
-    value: Any,
-) -> bool:
-
-    if isinstance(
+    value = re.sub(
+        r"^https?://",
+        "",
         value,
-        bool,
-    ):
-        return value
+        flags=re.IGNORECASE,
+    )
 
-    if value is None:
-        return False
-
-    if isinstance(
-        value,
-        str,
-    ):
-
-        lowered = value.strip().lower()
-
-        if lowered in {
-            "true",
-            "1",
-            "yes",
-            "y",
-            "available",
-            "in_stock",
-            "instock",
-        }:
-            return True
-
-        if lowered in {
-            "false",
-            "0",
-            "no",
-            "n",
-            "unavailable",
-            "out_of_stock",
-            "outofstock",
-            "sold_out",
-            "soldout",
-        }:
-            return False
-
-    return bool(value)
+    return value.strip(
+        "/"
+    )
 
 
-def normalize_currency(
-    value: Any,
-) -> str:
-
-    return normalize_text(
-        value,
-        "USD",
-    ).upper()
-
-
-def normalize_region(
-    value: Any,
-) -> str:
-
-    return normalize_text(
-        value,
-        "US",
-    ).upper()
-
-
-def normalize_product_category(
-    value: Any,
-) -> str:
-
-    value = normalize_text(
-        value,
-        "UNKNOWN",
-    ).upper()
-
-    if value not in {
-        "SEALED",
-        "SINGLE",
-        "ACCESSORY",
-        "UNKNOWN",
-    }:
-        return "UNKNOWN"
-
-    return value
-
-
-def normalize_product_family(
-    value: Any,
+def normalize_platform(
+    value,
 ) -> str:
 
     value = (
-        normalize_text(
-            value,
-            "UNKNOWN",
+        str(
+            value
+            or ""
         )
-        .upper()
-        .replace(
-            "-",
-            "_",
-        )
-        .replace(
-            " ",
-            "_",
-        )
+        .strip()
+        .lower()
     )
 
     aliases = {
-        "GLOBAL":
-            "GLOBAL_STANDARD",
+        "presta":
+            "prestashop",
 
-        "STANDARD":
-            "GLOBAL_STANDARD",
+        "presta-shop":
+            "prestashop",
 
-        "ENGLISH":
-            "GLOBAL_STANDARD",
+        "presta_shop":
+            "prestashop",
 
-        "JAPAN":
-            "JP",
+        "big-commerce":
+            "bigcommerce",
 
-        "JAPANESE":
-            "JP",
+        "big_commerce":
+            "bigcommerce",
 
-        "KOREA":
-            "KR",
+        "square":
+            "square_weebly",
 
-        "KOREAN":
-            "KR",
+        "weebly":
+            "square_weebly",
 
-        "CHINA":
-            "CN",
-
-        "CHINESE":
-            "CN",
-
-        "SIMPLIFIED_CHINESE":
-            "CN",
+        "square-weebly":
+            "square_weebly",
     }
 
-    value = aliases.get(
+    return aliases.get(
         value,
         value,
     )
 
-    if value not in {
-        "GLOBAL_STANDARD",
-        "JP",
-        "KR",
-        "CN",
-        "UNKNOWN",
-    }:
-        return "UNKNOWN"
 
-    return value
-
-
-def family_language(
-    product_family: str,
+def canonicalize_url(
+    value,
 ) -> str:
 
-    return {
-        "GLOBAL_STANDARD":
-            "English",
-
-        "JP":
-            "Japanese",
-
-        "KR":
-            "Korean",
-
-        "CN":
-            "Simplified Chinese",
-
-        "UNKNOWN":
-            "Unknown",
-
-    }.get(
-        product_family,
-        "Unknown",
+    value = html.unescape(
+        str(
+            value
+            or ""
+        ).strip()
     )
-
-
-# =========================================================
-# PLATFORM DATA
-# =========================================================
-
-def serialize_platform_data(
-    value: Any,
-) -> str | None:
-
-    if value is None:
-        return None
-
-    if isinstance(
-        value,
-        str,
-    ):
-
-        value = value.strip()
-        return value or None
-
-    try:
-        return json.dumps(
-            value,
-            separators=(
-                ",",
-                ":",
-            ),
-            sort_keys=True,
-            default=str,
-        )
-    except Exception:
-
-        try:
-            return str(value)
-        except Exception:
-            return None
-
-
-def deserialize_platform_data(
-    value: Any,
-) -> dict[str, Any]:
-
-    if isinstance(
-        value,
-        dict,
-    ):
-        return dict(value)
 
     if not value:
-        return {}
+        return ""
 
-    if isinstance(
-        value,
-        str,
-    ):
+    try:
 
-        try:
-            parsed = json.loads(value)
-
-            if isinstance(
-                parsed,
-                dict,
-            ):
-                return parsed
-        except Exception:
-            pass
-
-    return {}
-
-
-# =========================================================
-# CAPABILITIES
-# =========================================================
-
-CAPABILITY_FULL_AVAILABILITY = (
-    "FULL_AVAILABILITY"
-)
-
-CAPABILITY_DISCOVERY_PRICE_ONLY = (
-    "DISCOVERY_PRICE_ONLY"
-)
-
-CAPABILITY_DISCOVERY_ONLY = (
-    "DISCOVERY_ONLY"
-)
-
-
-VALID_RETAILER_CAPABILITIES = {
-    CAPABILITY_FULL_AVAILABILITY,
-    CAPABILITY_DISCOVERY_PRICE_ONLY,
-    CAPABILITY_DISCOVERY_ONLY,
-}
-
-
-STOCK_EVENT_TYPES = {
-    ProductEventType.STOCK_AVAILABLE,
-    ProductEventType.RESTOCK,
-    ProductEventType.SOLD_OUT,
-}
-
-
-PRICE_EVENT_TYPES = {
-    ProductEventType.PRICE_DROP,
-    ProductEventType.PRICE_INCREASE,
-}
-
-
-def get_retailer_capability(
-    item: dict[str, Any],
-) -> str:
-
-    platform_data = deserialize_platform_data(
-        item.get(
-            "platform_data"
+        parsed = urlparse(
+            value
         )
+
+    except Exception:
+
+        return ""
+
+    if parsed.scheme not in {
+        "http",
+        "https",
+    }:
+
+        return ""
+
+    host = (
+        parsed.netloc
+        .lower()
+        .split(
+            ":"
+        )[0]
     )
 
-    raw = (
-        normalize_text(
-            platform_data.get(
-                "availability_capability"
-            ),
+    if not host:
+        return ""
+
+    path = (
+        parsed.path
+        or "/"
+    )
+
+    # Discovery URLs should not be duplicated because of
+    # tracking, sorting, faceting, or session parameters.
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            host,
+            path,
+            "",
+            "",
             "",
         )
-        .upper()
     )
 
-    if raw in (
-        VALID_RETAILER_CAPABILITIES
-    ):
-        return raw
 
-    availability_known = (
-        platform_data.get(
-            "availability_known"
+def same_domain(
+    url,
+    domain,
+) -> bool:
+
+    try:
+
+        host = (
+            urlparse(
+                url
+            )
+            .netloc
+            .lower()
+            .split(
+                ":"
+            )[0]
         )
-    )
 
-    availability_state = (
-        normalize_text(
-            platform_data.get(
-                "availability_state"
-            ),
-            "",
+        domain = (
+            normalize_domain(
+                domain
+            )
+            .lower()
+            .split(
+                ":"
+            )[0]
         )
-        .upper()
-    )
 
-    if (
-        availability_known
-        is True
-
-        or
-        availability_state
-        in {
-            "IN_STOCK",
-            "OUT_OF_STOCK",
-            "PREORDER",
-            "BACKORDER",
-        }
-    ):
-        return CAPABILITY_FULL_AVAILABILITY
-
-    if (
-        normalize_price(
-            item.get(
-                "price"
+        return (
+            host == domain
+            or
+            host.endswith(
+                "." + domain
+            )
+            or
+            domain.endswith(
+                "." + host
             )
         )
-        is not None
+
+    except Exception:
+
+        return False
+
+
+def absolute_url(
+    base_url,
+    candidate,
+) -> str:
+
+    candidate = html.unescape(
+        str(
+            candidate
+            or ""
+        ).strip()
+    )
+
+    if not candidate:
+        return ""
+
+    try:
+
+        combined = urljoin(
+            base_url,
+            candidate,
+        )
+
+    except Exception:
+
+        return ""
+
+    return canonicalize_url(
+        combined
+    )
+
+
+def path_lower(
+    url,
+) -> str:
+
+    try:
+
+        return (
+            urlparse(
+                url
+            )
+            .path
+            .lower()
+        )
+
+    except Exception:
+
+        return ""
+
+
+# =========================================================
+# FILTERS
+# =========================================================
+
+def is_asset_url(
+    url,
+) -> bool:
+
+    path = path_lower(
+        url
+    )
+
+    asset_extensions = (
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".ico",
+        ".css",
+        ".js",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".pdf",
+        ".zip",
+        ".mp4",
+        ".webm",
+    )
+
+    return path.endswith(
+        asset_extensions
+    )
+
+
+def is_account_or_checkout_url(
+    url,
+) -> bool:
+
+    path = path_lower(
+        url
+    )
+
+    blocked = (
+        "/login",
+        "/signin",
+        "/sign-in",
+        "/account",
+        "/my-account",
+        "/cart",
+        "/basket",
+        "/checkout",
+        "/order",
+        "/orders",
+        "/wishlist",
+        "/password",
+        "/register",
+        "/authentication",
+    )
+
+    return any(
+        item in path
+        for item in blocked
+    )
+
+
+def is_safe_candidate_url(
+    url,
+    domain,
+) -> bool:
+
+    if not url:
+        return False
+
+    if not same_domain(
+        url,
+        domain,
     ):
-        return CAPABILITY_DISCOVERY_PRICE_ONLY
+        return False
 
-    return CAPABILITY_DISCOVERY_ONLY
+    if is_asset_url(
+        url
+    ):
+        return False
 
-
-def capability_allows_stock_events(
-    capability: str,
-) -> bool:
-
-    return (
-        capability
-        ==
-        CAPABILITY_FULL_AVAILABILITY
-    )
-
-
-def capability_allows_price_events(
-    capability: str,
-) -> bool:
-
-    return (
-        capability
-        in {
-            CAPABILITY_FULL_AVAILABILITY,
-            CAPABILITY_DISCOVERY_PRICE_ONLY,
-        }
-    )
-
-
-def capability_allows_event(
-    capability: str,
-    event_type: ProductEventType,
-) -> bool:
-
-    if event_type in STOCK_EVENT_TYPES:
-        return capability_allows_stock_events(
-            capability
-        )
-
-    if event_type in PRICE_EVENT_TYPES:
-        return capability_allows_price_events(
-            capability
-        )
+    if is_account_or_checkout_url(
+        url
+    ):
+        return False
 
     return True
 
 
-def record_capability_diagnostic(
-    capability: str,
-) -> None:
-
-    key = {
-        CAPABILITY_FULL_AVAILABILITY:
-            "capability_full_availability",
-
-        CAPABILITY_DISCOVERY_PRICE_ONLY:
-            "capability_discovery_price_only",
-
-        CAPABILITY_DISCOVERY_ONLY:
-            "capability_discovery_only",
-
-    }.get(
-        capability
-    )
-
-    if key:
-        MONITOR_STATUS[
-            key
-        ] += 1
-
-
 # =========================================================
-# AVAILABILITY
+# PRODUCT URL HEURISTICS
 # =========================================================
 
-def get_availability_info(
-    item: dict[str, Any],
-) -> tuple[
-    bool,
-    bool,
-    str,
-]:
-
-    capability = get_retailer_capability(
-        item
-    )
-
-    platform_data = deserialize_platform_data(
-        item.get(
-            "platform_data"
-        )
-    )
-
-    if not capability_allows_stock_events(
-        capability
-    ):
-        return (
-            False,
-            False,
-            "UNKNOWN",
-        )
-
-    availability_known = (
-        platform_data.get(
-            "availability_known"
-        )
-    )
-
-    availability_state = (
-        normalize_text(
-            platform_data.get(
-                "availability_state"
-            ),
-            "",
-        )
-        .upper()
-    )
-
-    if availability_state == "IN_STOCK":
-        return (
-            True,
-            True,
-            "IN_STOCK",
-        )
-
-    if availability_state == "OUT_OF_STOCK":
-        return (
-            False,
-            True,
-            "OUT_OF_STOCK",
-        )
-
-    if availability_state == "PREORDER":
-        return (
-            True,
-            True,
-            "PREORDER",
-        )
-
-    if availability_state == "BACKORDER":
-        return (
-            False,
-            True,
-            "BACKORDER",
-        )
-
-    if availability_state == "UNKNOWN":
-        return (
-            False,
-            False,
-            "UNKNOWN",
-        )
-
-    if availability_known is True:
-
-        available = normalize_bool(
-            item.get(
-                "available"
-            )
-        )
-
-        return (
-            available,
-            True,
-            (
-                "IN_STOCK"
-                if available
-                else "OUT_OF_STOCK"
-            ),
-        )
-
-    if availability_known is False:
-        return (
-            False,
-            False,
-            "UNKNOWN",
-        )
-
-    available = normalize_bool(
-        item.get(
-            "available"
-        )
-    )
-
-    return (
-        available,
-        True,
-        (
-            "IN_STOCK"
-            if available
-            else "OUT_OF_STOCK"
-        ),
-    )
-
-
-def record_availability_diagnostics(
-    item: dict[str, Any],
-) -> None:
-
-    platform_data = deserialize_platform_data(
-        item.get(
-            "platform_data"
-        )
-    )
-
-    confidence = (
-        normalize_text(
-            platform_data.get(
-                "availability_confidence"
-            ),
-            "LOW",
-        )
-        .upper()
-    )
-
-    key = {
-        "HIGH":
-            "availability_high_confidence",
-
-        "MEDIUM":
-            "availability_medium_confidence",
-
-        "LOW":
-            "availability_low_confidence",
-
-    }.get(
-        confidence,
-        "availability_low_confidence",
-    )
-
-    MONITOR_STATUS[
-        key
-    ] += 1
-
-
-# =========================================================
-# LOAD ADAPTERS
-# =========================================================
-
-def ensure_retailer_adapters_loaded() -> None:
-
-    load_retailer_adapters()
-
-    MONITOR_STATUS[
-        "adapters_loaded"
-    ] = True
-
-
-# =========================================================
-# EVENT BUILDER
-# =========================================================
-
-def make_product_event(
-    *,
-    event_type: str | ProductEventType,
-    item: dict[str, Any],
-    store: Store,
-    in_stock: bool,
-    old_price: float | None = None,
-    effective_price: float | None = None,
-) -> ProductEvent:
-
-    product_family = normalize_product_family(
-        item.get(
-            "product_family"
-        )
-    )
-
-    product_category = normalize_product_category(
-        item.get(
-            "product_category"
-        )
-    )
-
-    platform = normalize_platform(
-        getattr(
-            store,
-            "platform",
-            None,
-        )
-    )
-
-    normalized_event_type = (
-        event_type
-
-        if isinstance(
-            event_type,
-            ProductEventType,
-        )
-
-        else ProductEventType(
-            str(
-                event_type
-            )
-        )
-    )
-
-    event_price = (
-        normalize_price(
-            effective_price
-        )
-        if effective_price
-        is not None
-        else normalize_price(
-            item.get(
-                "price"
-            )
-        )
-    )
-
-    return ProductEvent(
-        event_type=(
-            normalized_event_type
-        ),
-
-        game=normalize_text(
-            item.get(
-                "game"
-            ),
-            "Unknown",
-        ),
-
-        product_name=normalize_text(
-            item.get(
-                "title"
-            ),
-            "Unknown Product",
-        ),
-
-        store_name=normalize_text(
-            getattr(
-                store,
-                "name",
-                None,
-            ),
-            "Unknown Store",
-        ),
-
-        product_url=normalize_text(
-            item.get(
-                "url"
-            )
-        ),
-
-        price=event_price,
-
-        old_price=normalize_price(
-            old_price
-        ),
-
-        currency=normalize_currency(
-            item.get(
-                "currency"
-            )
-        ),
-
-        in_stock=bool(
-            in_stock
-        ),
-
-        region=normalize_region(
-            getattr(
-                store,
-                "region",
-                None,
-            )
-        ),
-
-        language=family_language(
-            product_family
-        ),
-
-        product_type=normalize_text(
-            item.get(
-                "product_type"
-            ),
-            "TCG Product",
-        ),
-
-        product_category=(
-            product_category
-        ),
-
-        product_family=(
-            product_family
-        ),
-
-        source_type=(
-            platform
-        ),
-
-        retailer_key=normalize_text(
-            getattr(
-                store,
-                "domain",
-                None,
-            )
-        ),
-
-        image_url=normalize_optional_text(
-            item.get(
-                "image_url"
-            )
-        ),
-
-        variant_id=normalize_optional_text(
-            item.get(
-                "variant_id"
-            )
-        ),
-
-        purchase_limit=item.get(
-            "purchase_limit"
-        ),
-
-        cart_base_url=normalize_optional_text(
-            item.get(
-                "cart_base_url"
-            )
-        ),
-    )
-
-
-# =========================================================
-# BASELINE
-# =========================================================
-
-async def store_has_baseline(
-    store_id: int,
+def looks_like_prestashop_product(
+    url,
 ) -> bool:
 
-    async with SessionLocal() as session:
-
-        statement = (
-            select(
-                func.count(
-                    StoreProduct.id
-                )
-            )
-            .where(
-                StoreProduct.store_id
-                == store_id
-            )
-        )
-
-        result = await session.execute(
-            statement
-        )
-
-        return (
-            (
-                result.scalar_one()
-                or 0
-            )
-            > 0
-        )
-
-
-# =========================================================
-# PRODUCT LOOKUP
-# =========================================================
-
-async def find_product(
-    session,
-    *,
-    game: str,
-    title: str,
-    product_family: str,
-) -> Product | None:
-
-    statement = (
-        select(
-            Product
-        )
-        .where(
-            Product.game
-            == game,
-
-            Product.name
-            == title,
-
-            Product.product_family
-            == product_family,
-        )
-        .limit(
-            1
-        )
+    path = path_lower(
+        url
     )
 
-    result = await session.execute(
-        statement
+    if not path:
+        return False
+
+    # Common classic PrestaShop pattern:
+    # /123-product-name.html
+    if re.search(
+        r"/\d+[-_][^/]+(?:\.html)?/?$",
+        path,
+        re.IGNORECASE,
+    ):
+        return True
+
+    if re.search(
+        r"/\d+/[^/]+/?$",
+        path,
+        re.IGNORECASE,
+    ):
+        return True
+
+    product_markers = (
+        "/product/",
+        "/produit/",
+        "/producto/",
+        "/produkt/",
     )
 
-    return result.scalar_one_or_none()
-
-
-async def find_store_product(
-    session,
-    *,
-    store_id: int,
-    url: str,
-) -> StoreProduct | None:
-
-    statement = (
-        select(
-            StoreProduct
-        )
-        .where(
-            StoreProduct.store_id
-            == store_id,
-
-            StoreProduct.url
-            == url,
-        )
-        .limit(
-            1
-        )
-    )
-
-    result = await session.execute(
-        statement
-    )
-
-    return result.scalar_one_or_none()
-
-
-async def get_or_create_product(
-    session,
-    *,
-    item: dict[str, Any],
-    store: Store,
-) -> tuple[
-    Product,
-    bool,
-]:
-
-    game = normalize_text(
-        item.get(
-            "game"
-        )
-    )
-
-    title = normalize_text(
-        item.get(
-            "title"
-        )
-    )
-
-    product_family = normalize_product_family(
-        item.get(
-            "product_family"
-        )
-    )
-
-    product_category = normalize_product_category(
-        item.get(
-            "product_category"
-        )
-    )
-
-    product_type = normalize_text(
-        item.get(
-            "product_type"
-        ),
-        "TCG Product",
-    )
-
-    region = normalize_region(
-        getattr(
-            store,
-            "region",
-            None,
-        )
-    )
-
-    language = family_language(
-        product_family
-    )
-
-    existing = await find_product(
-        session,
-        game=game,
-        title=title,
-        product_family=(
-            product_family
-        ),
-    )
-
-    if existing is not None:
-
-        existing.product_type = (
-            product_type
-        )
-
-        existing.product_category = (
-            product_category
-        )
-
-        existing.product_family = (
-            product_family
-        )
-
-        existing.region = (
-            region
-        )
-
-        existing.language = (
-            language
-        )
-
-        return (
-            existing,
-            False,
-        )
-
-    product = Product(
-        game=game,
-        name=title,
-        canonical_name=title,
-        product_type=product_type,
-        product_category=product_category,
-        product_family=product_family,
-        region=region,
-        language=language,
-    )
-
-    session.add(
-        product
-    )
-
-    await session.flush()
-
-    return (
-        product,
-        True,
+    return any(
+        marker in path
+        for marker in product_markers
     )
 
 
-# =========================================================
-# PRICE HISTORY
-# =========================================================
+def looks_like_bigcommerce_product(
+    url,
+) -> bool:
 
-def add_price_history(
-    session,
-    *,
-    store_product: StoreProduct,
-    price: float | None,
-    currency: str,
-) -> None:
-
-    if price is None:
-        return
-
-    session.add(
-        PriceHistory(
-            store_product_id=(
-                store_product.id
-            ),
-            price=price,
-            currency=currency,
-            recorded_at=utcnow(),
-        )
+    path = path_lower(
+        url
     )
 
+    if not path:
+        return False
 
-# =========================================================
-# CREATE STORE PRODUCT
-# =========================================================
-
-async def create_store_product(
-    session,
-    *,
-    store: Store,
-    product: Product,
-    item: dict[str, Any],
-    suppress_events: bool,
-) -> tuple[
-    StoreProduct,
-    list[ProductEvent],
-    int,
-]:
-
-    url = normalize_text(
-        item.get(
-            "url"
-        )
+    blocked = (
+        "/categories/",
+        "/category/",
+        "/pages/",
+        "/blog/",
+        "/brands/",
+        "/search",
+        "/contact",
     )
 
-    price = normalize_price(
-        item.get(
-            "price"
-        )
-    )
-
-    currency = normalize_currency(
-        item.get(
-            "currency"
-        )
-    )
-
-    (
-        available,
-        availability_known,
-        availability_state,
-    ) = get_availability_info(
-        item
-    )
-
-    if not availability_known:
-        MONITOR_STATUS[
-            "unknown_availability"
-        ] += 1
-
-    if price is None:
-        MONITOR_STATUS[
-            "missing_prices"
-        ] += 1
-
-    external_product_id = normalize_optional_text(
-        item.get(
-            "external_product_id"
-        )
-        or
-        item.get(
-            "external_id"
-        )
-    )
-
-    offer_id = normalize_optional_text(
-        item.get(
-            "offer_id"
-        )
-    )
-
-    sku = normalize_optional_text(
-        item.get(
-            "sku"
-        )
-    )
-
-    variant_id = normalize_optional_text(
-        item.get(
-            "variant_id"
-        )
-    )
-
-    platform_data = serialize_platform_data(
-        item.get(
-            "platform_data"
-        )
-    )
-
-    if availability_state == "IN_STOCK":
-        product_state = "STOCK_AVAILABLE"
-
-    elif availability_state == "OUT_OF_STOCK":
-        product_state = "SOLD_OUT"
-
-    elif availability_state == "PREORDER":
-        product_state = "PREORDER"
-
-        MONITOR_STATUS[
-            "preorders"
-        ] += 1
-
-    elif availability_state == "BACKORDER":
-        product_state = "BACKORDER"
-
-        MONITOR_STATUS[
-            "backorders"
-        ] += 1
-
-    else:
-        product_state = "PAGE_LIVE"
-
-    explicit_product_state = normalize_optional_text(
-        item.get(
-            "product_state"
-        )
-    )
-
-    if explicit_product_state:
-        product_state = explicit_product_state
-
-    store_product = StoreProduct(
-        store_id=store.id,
-        product_id=product.id,
-        url=url,
-        sku=sku,
-        variant_id=variant_id,
-        external_product_id=external_product_id,
-        offer_id=offer_id,
-        platform_data=platform_data,
-        purchase_limit=item.get(
-            "purchase_limit"
-        ),
-        status=product_state,
-        price=price,
-        currency=currency,
-        in_stock=(
-            available
-            if availability_known
-            else False
-        ),
-        last_seen_at=utcnow(),
-    )
-
-    session.add(
-        store_product
-    )
-
-    await session.flush()
-
-    add_price_history(
-        session,
-        store_product=store_product,
-        price=price,
-        currency=currency,
-    )
-
-    events: list[
-        ProductEvent
-    ] = []
-
-    if suppress_events:
-
-        MONITOR_STATUS[
-            "events_suppressed_baseline"
-        ] += 1
-
-        return (
-            store_product,
-            events,
-            1,
-        )
-
-    event_type = (
-        ProductEventType.STOCK_AVAILABLE
-
-        if availability_state == "IN_STOCK"
-
-        else ProductEventType.DISCOVERED
-    )
-
-    events.append(
-        make_product_event(
-            event_type=event_type,
-            item=item,
-            store=store,
-            in_stock=(
-                available
-                if availability_known
-                else False
-            ),
-            effective_price=price,
-        )
-    )
-
-    return (
-        store_product,
-        events,
-        0,
-    )
-
-
-# =========================================================
-# UPDATE STORE PRODUCT
-# =========================================================
-
-async def update_store_product(
-    session,
-    *,
-    store: Store,
-    store_product: StoreProduct,
-    item: dict[str, Any],
-    suppress_events: bool,
-) -> tuple[
-    list[ProductEvent],
-    int,
-]:
-
-    events: list[
-        ProductEvent
-    ] = []
-
-    suppressed = 0
-
-    old_stock = bool(
-        store_product.in_stock
-    )
-
-    old_price = normalize_price(
-        store_product.price
-    )
-
-    old_currency = normalize_currency(
-        store_product.currency
-    )
-
-    (
-        parsed_stock,
-        availability_known,
-        availability_state,
-    ) = get_availability_info(
-        item
-    )
-
-    if availability_known:
-        new_stock = parsed_stock
-
-    else:
-        new_stock = old_stock
-
-        MONITOR_STATUS[
-            "unknown_availability"
-        ] += 1
-
-    parsed_price = normalize_price(
-        item.get(
-            "price"
-        )
-    )
-
-    if parsed_price is None:
-
-        new_price = old_price
-
-        MONITOR_STATUS[
-            "missing_prices"
-        ] += 1
-
-    else:
-        new_price = parsed_price
-
-    new_currency = normalize_currency(
-        item.get(
-            "currency"
-        )
-        or
-        old_currency
-    )
-
-    new_external_product_id = normalize_optional_text(
-        item.get(
-            "external_product_id"
-        )
-        or
-        item.get(
-            "external_id"
-        )
-    )
-
-    new_offer_id = normalize_optional_text(
-        item.get(
-            "offer_id"
-        )
-    )
-
-    new_sku = normalize_optional_text(
-        item.get(
-            "sku"
-        )
-    )
-
-    new_variant_id = normalize_optional_text(
-        item.get(
-            "variant_id"
-        )
-    )
-
-    new_platform_data = serialize_platform_data(
-        item.get(
-            "platform_data"
-        )
-    )
-
-    if new_external_product_id is not None:
-        store_product.external_product_id = (
-            new_external_product_id
-        )
-
-    if new_offer_id is not None:
-        store_product.offer_id = (
-            new_offer_id
-        )
-
-    if new_sku is not None:
-        store_product.sku = (
-            new_sku
-        )
-
-    if new_variant_id is not None:
-        store_product.variant_id = (
-            new_variant_id
-        )
-
-    if new_platform_data is not None:
-        store_product.platform_data = (
-            new_platform_data
-        )
-
-    if item.get(
-        "purchase_limit"
-    ) is not None:
-        store_product.purchase_limit = (
-            item.get(
-                "purchase_limit"
-            )
-        )
-
-    # =====================================================
-    # STOCK CHANGES
-    # =====================================================
-
-    if availability_state in {
-        "IN_STOCK",
-        "OUT_OF_STOCK",
-    }:
-
-        if (
-            not old_stock
-            and
-            new_stock
-        ):
-
-            if suppress_events:
-                suppressed += 1
-
-            else:
-                events.append(
-                    make_product_event(
-                        event_type=(
-                            ProductEventType.RESTOCK
-                        ),
-                        item=item,
-                        store=store,
-                        in_stock=True,
-                        old_price=old_price,
-                        effective_price=new_price,
-                    )
-                )
-
-                MONITOR_STATUS[
-                    "restocks"
-                ] += 1
-
-        elif (
-            old_stock
-            and
-            not new_stock
-        ):
-
-            if suppress_events:
-                suppressed += 1
-
-            else:
-                events.append(
-                    make_product_event(
-                        event_type=(
-                            ProductEventType.SOLD_OUT
-                        ),
-                        item=item,
-                        store=store,
-                        in_stock=False,
-                        old_price=old_price,
-                        effective_price=new_price,
-                    )
-                )
-
-                MONITOR_STATUS[
-                    "sold_out"
-                ] += 1
-
-    capability = get_retailer_capability(
-        item
-    )
-
-    # =====================================================
-    # PRICE CHANGES
-    # =====================================================
-
-    price_changed = False
-
-    if (
-        capability_allows_price_events(
-            capability
-        )
-        and
-        old_price is not None
-        and
-        parsed_price is not None
-        and
-        old_currency == new_currency
-        and
-        old_price != parsed_price
+    if any(
+        marker in path
+        for marker in blocked
     ):
 
-        price_changed = True
+        return False
 
-        if suppress_events:
-            suppressed += 1
+    if path.endswith(
+        ".xml"
+    ):
+        return False
 
-        else:
-            event_type = (
-                ProductEventType.PRICE_DROP
-                if parsed_price < old_price
-                else ProductEventType.PRICE_INCREASE
-            )
-
-            events.append(
-                make_product_event(
-                    event_type=event_type,
-                    item=item,
-                    store=store,
-                    in_stock=new_stock,
-                    old_price=old_price,
-                    effective_price=parsed_price,
-                )
-            )
-
-            MONITOR_STATUS[
-                "price_changes"
-            ] += 1
-
-    if (
-        parsed_price is not None
-        and
-        (
-            old_price is None
-            or
-            price_changed
-            or
-            old_currency != new_currency
+    # BigCommerce product pages are frequently clean
+    # one- or two-segment SEO URLs.
+    segments = [
+        segment
+        for segment in path.split(
+            "/"
         )
+        if segment
+    ]
+
+    if not segments:
+        return False
+
+    if any(
+        term in path
+        for term in TCG_PRIORITY_TERMS
     ):
 
-        add_price_history(
-            session,
-            store_product=store_product,
-            price=parsed_price,
-            currency=new_currency,
-        )
-
-    # =====================================================
-    # STORE SNAPSHOT
-    # =====================================================
-
-    if parsed_price is not None:
-        store_product.price = parsed_price
-
-    store_product.currency = new_currency
-
-    if availability_state in {
-        "IN_STOCK",
-        "OUT_OF_STOCK",
-        "BACKORDER",
-    }:
-        store_product.in_stock = new_stock
-
-    if availability_state == "IN_STOCK":
-        store_product.status = "STOCK_AVAILABLE"
-
-    elif availability_state == "OUT_OF_STOCK":
-        store_product.status = "SOLD_OUT"
-
-    elif availability_state == "PREORDER":
-        store_product.status = "PREORDER"
-
-    elif availability_state == "BACKORDER":
-        store_product.status = "BACKORDER"
-
-        MONITOR_STATUS[
-            "backorders"
-        ] += 1
-
-    elif not store_product.status:
-        store_product.status = "PAGE_LIVE"
-
-    store_product.last_seen_at = utcnow()
+        return True
 
     return (
-        events,
-        suppressed,
+        len(
+            segments
+        )
+        <= 3
+        and
+        "-" in segments[-1]
     )
 
 
-# =========================================================
-# PROCESS NORMALIZED PRODUCT
-# =========================================================
+def looks_like_square_product(
+    url,
+) -> bool:
 
-async def process_normalized_product(
-    *,
-    store: Store,
-    item: dict[str, Any],
-    baseline_mode: bool = False,
-    suppress_events: bool = False,
-) -> dict[str, Any]:
+    path = path_lower(
+        url
+    )
 
-    result = {
-        "processed": False,
-        "created": False,
-        "updated": False,
-        "events": 0,
-        "suppressed": 0,
-        "unknown_availability": 0,
-        "missing_price": 0,
-        "backorder": 0,
-        "reason": None,
-    }
+    if not path:
+        return False
 
-    if not isinstance(
-        item,
-        dict,
+    if SQUARE_PRODUCT_PATH_PATTERN.search(
+        path
     ):
-        result[
-            "reason"
-        ] = "INVALID_ITEM"
 
-        return result
+        return True
 
-    game = normalize_text(
-        item.get(
-            "game"
-        )
+    return (
+        "/product/"
+        in path
     )
 
-    title = normalize_text(
-        item.get(
-            "title"
-        )
+
+def looks_like_product_url(
+    platform,
+    url,
+) -> bool:
+
+    platform = normalize_platform(
+        platform
     )
 
-    url = normalize_text(
-        item.get(
-            "url"
-        )
-    )
+    if platform == "prestashop":
 
-    if not game:
-        result[
-            "reason"
-        ] = "NO_SUPPORTED_GAME"
-
-        return result
-
-    if not title:
-        result[
-            "reason"
-        ] = "NO_TITLE"
-
-        return result
-
-    if not url:
-        result[
-            "reason"
-        ] = "NO_URL"
-
-        return result
-
-    item = dict(
-        item
-    )
-
-    item[
-        "game"
-    ] = game
-
-    item[
-        "title"
-    ] = title
-
-    item[
-        "url"
-    ] = url
-
-    item[
-        "product_family"
-    ] = normalize_product_family(
-        item.get(
-            "product_family"
-        )
-    )
-
-    item[
-        "product_category"
-    ] = normalize_product_category(
-        item.get(
-            "product_category"
-        )
-    )
-
-    item[
-        "currency"
-    ] = normalize_currency(
-        item.get(
-            "currency"
-        )
-    )
-
-    capability = get_retailer_capability(
-        item
-    )
-
-    record_capability_diagnostic(
-        capability
-    )
-
-    record_availability_diagnostics(
-        item
-    )
-
-    (
-        _,
-        item_availability_known,
-        item_availability_state,
-    ) = get_availability_info(
-        item
-    )
-
-    result[
-        "unknown_availability"
-    ] = (
-        0
-        if item_availability_known
-        else 1
-    )
-
-    result[
-        "missing_price"
-    ] = (
-        1
-        if normalize_price(
-            item.get(
-                "price"
-            )
-        )
-        is None
-        else 0
-    )
-
-    result[
-        "backorder"
-    ] = (
-        1
-        if item_availability_state == "BACKORDER"
-        else 0
-    )
-
-    effective_suppress = (
-        bool(
-            baseline_mode
-        )
-        or
-        bool(
-            suppress_events
-        )
-    )
-
-    events_to_send: list[
-        ProductEvent
-    ] = []
-
-    try:
-
-        async with SessionLocal() as session:
-
-            store_product = await find_store_product(
-                session,
-                store_id=store.id,
-                url=url,
-            )
-
-            if store_product is None:
-
-                (
-                    product,
-                    _,
-                ) = await get_or_create_product(
-                    session,
-                    item=item,
-                    store=store,
-                )
-
-                (
-                    store_product,
-                    new_events,
-                    suppressed_count,
-                ) = await create_store_product(
-                    session,
-                    store=store,
-                    product=product,
-                    item=item,
-                    suppress_events=(
-                        effective_suppress
-                    ),
-                )
-
-                events_to_send.extend(
-                    new_events
-                )
-
-                result[
-                    "created"
-                ] = True
-
-                result[
-                    "suppressed"
-                ] += suppressed_count
-
-                MONITOR_STATUS[
-                    "products_created"
-                ] += 1
-
-            else:
-
-                product_result = await session.execute(
-                    select(
-                        Product
-                    )
-                    .where(
-                        Product.id
-                        ==
-                        store_product.product_id
-                    )
-                    .limit(
-                        1
-                    )
-                )
-
-                product = (
-                    product_result
-                    .scalar_one_or_none()
-                )
-
-                if product is not None:
-
-                    product.game = game
-                    product.name = title
-
-                    product.canonical_name = (
-                        product.canonical_name
-                        or
-                        title
-                    )
-
-                    product.product_type = normalize_text(
-                        item.get(
-                            "product_type"
-                        ),
-                        product.product_type
-                        or
-                        "TCG Product",
-                    )
-
-                    product.product_category = (
-                        item[
-                            "product_category"
-                        ]
-                    )
-
-                    product.product_family = (
-                        item[
-                            "product_family"
-                        ]
-                    )
-
-                    product.region = normalize_region(
-                        store.region
-                    )
-
-                    product.language = family_language(
-                        item[
-                            "product_family"
-                        ]
-                    )
-
-                (
-                    update_events,
-                    suppressed_count,
-                ) = await update_store_product(
-                    session,
-                    store=store,
-                    store_product=store_product,
-                    item=item,
-                    suppress_events=(
-                        effective_suppress
-                    ),
-                )
-
-                events_to_send.extend(
-                    update_events
-                )
-
-                result[
-                    "suppressed"
-                ] += suppressed_count
-
-                result[
-                    "updated"
-                ] = True
-
-                MONITOR_STATUS[
-                    "products_updated"
-                ] += 1
-
-            await session.commit()
-
-    except Exception as error:
-
-        result[
-            "reason"
-        ] = (
-            "DATABASE_ERROR:"
-            f"{type(error).__name__}"
-        )
-
-        logger.exception(
-            (
-                "UNIVERSAL PRODUCT DATABASE ERROR | "
-                "Store=%s | Title=%s | URL=%s"
-            ),
-            store.name,
-            title,
-            url,
-        )
-
-        return result
-
-    published_events = 0
-
-    for event in events_to_send:
-
-        if not capability_allows_event(
-            capability,
-            event.event_type,
-        ):
-
-            if event.event_type in STOCK_EVENT_TYPES:
-                MONITOR_STATUS[
-                    "capability_stock_events_blocked"
-                ] += 1
-
-            elif event.event_type in PRICE_EVENT_TYPES:
-                MONITOR_STATUS[
-                    "capability_price_events_blocked"
-                ] += 1
-
-            logger.info(
-                (
-                    "UNIVERSAL CAPABILITY EVENT BLOCKED | "
-                    "Store=%s | Capability=%s | "
-                    "Event=%s | Title=%s"
-                ),
-                store.name,
-                capability,
-                event.event_type.value,
-                title,
-            )
-
-            continue
-
-        try:
-
-            await process_product_event(
-                event
-            )
-
-            published_events += 1
-
-            MONITOR_STATUS[
-                "events_created"
-            ] += 1
-
-        except Exception:
-
-            logger.exception(
-                (
-                    "UNIVERSAL EVENT PUBLISH ERROR | "
-                    "Store=%s | Game=%s | Title=%s"
-                ),
-                store.name,
-                game,
-                title,
-            )
-
-    result[
-        "processed"
-    ] = True
-
-    result[
-        "events"
-    ] = published_events
-
-    return result
-
-
-# =========================================================
-# STEP 6J-3C3
-# KNOWN PRODUCT RECORDS
-# =========================================================
-
-async def get_known_store_products(
-    store_id: int,
-) -> list[
-    dict[str, Any]
-]:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(
-                StoreProduct
-            )
-            .where(
-                StoreProduct.store_id
-                ==
-                store_id
-            )
-            .where(
-                StoreProduct.url.is_not(
-                    None
-                )
-            )
-            .order_by(
-                StoreProduct.id.asc()
-            )
-        )
-
-        rows = list(
-            result.scalars().all()
-        )
-
-    output = []
-    seen = set()
-
-    for row in rows:
-
-        url = str(
-            getattr(
-                row,
-                "url",
-                None,
-            )
-            or ""
-        ).strip()
-
-        if (
-            not url
-            or
-            url in seen
-        ):
-            continue
-
-        seen.add(
+        return looks_like_prestashop_product(
             url
         )
 
-        output.append(
-            {
-                "id":
-                    getattr(
-                        row,
-                        "id",
-                        None,
-                    ),
+    if platform == "bigcommerce":
 
-                "url":
-                    url,
+        return looks_like_bigcommerce_product(
+            url
+        )
 
-                "status":
+    if platform == "square_weebly":
+
+        return looks_like_square_product(
+            url
+        )
+
+    return False
+
+
+# =========================================================
+# PRIORITY
+# =========================================================
+
+def candidate_priority(
+    url,
+) -> int:
+
+    lowered = (
+        str(
+            url
+            or ""
+        )
+        .lower()
+    )
+
+    score = 0
+
+    for term in TCG_PRIORITY_TERMS:
+
+        if term in lowered:
+
+            score += 10
+
+    if any(
+        term in lowered
+        for term in (
+            "new-product",
+            "new-products",
+            "preorder",
+            "pre-order",
+            "preventa",
+        )
+    ):
+
+        score += 30
+
+    return score
+
+
+# =========================================================
+# SOURCE CONFIG
+# =========================================================
+
+def get_platform_sources(
+    platform,
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+
+    platform = normalize_platform(
+        platform
+    )
+
+    if platform == "prestashop":
+
+        return (
+            PRESTASHOP_HTML_PATHS,
+            PRESTASHOP_SITEMAP_PATHS,
+        )
+
+    if platform == "bigcommerce":
+
+        return (
+            BIGCOMMERCE_HTML_PATHS,
+            BIGCOMMERCE_SITEMAP_PATHS,
+        )
+
+    if platform == "square_weebly":
+
+        return (
+            SQUARE_HTML_PATHS,
+            SQUARE_SITEMAP_PATHS,
+        )
+
+    return (
+        (),
+        (),
+    )
+
+
+# =========================================================
+# FETCH STATE
+# =========================================================
+
+class FetchStats:
+
+    def __init__(
+        self,
+    ):
+
+        self.checked = 0
+
+        self.successful = 0
+
+        self.timeouts = 0
+
+        self.failed = 0
+
+        self.last_error = None
+
+
+# =========================================================
+# PUBLIC FETCH
+# =========================================================
+
+async def fetch_text(
+    session,
+    url,
+    stats: FetchStats,
+) -> tuple[
+    str | None,
+    str | None,
+]:
+
+    stats.checked += 1
+
+    try:
+
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(
+                total=(
+                    REQUEST_TIMEOUT_SECONDS
+                )
+            ),
+            allow_redirects=True,
+        ) as response:
+
+            if response.status >= 400:
+
+                stats.failed += 1
+
+                stats.last_error = (
+                    f"HTTP_{response.status}"
+                )
+
+                return (
+                    None,
+                    None,
+                )
+
+            text = (
+                await response.text(
+                    errors="ignore"
+                )
+            )
+
+            final_url = (
+                canonicalize_url(
                     str(
-                        getattr(
-                            row,
-                            "status",
-                            None,
-                        )
-                        or ""
+                        response.url
                     )
-                    .strip()
-                    .upper(),
+                )
+                or
+                canonicalize_url(
+                    url
+                )
+            )
 
-                "last_seen_at":
-                    getattr(
-                        row,
-                        "last_seen_at",
-                        None,
-                    ),
-            }
+            stats.successful += 1
+
+            return (
+                text,
+                final_url,
+            )
+
+    except asyncio.TimeoutError:
+
+        stats.timeouts += 1
+
+        stats.last_error = (
+            "REQUEST_TIMEOUT"
+        )
+
+        return (
+            None,
+            None,
+        )
+
+    except aiohttp.ClientError as error:
+
+        stats.failed += 1
+
+        stats.last_error = (
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        return (
+            None,
+            None,
+        )
+
+    except Exception as error:
+
+        stats.failed += 1
+
+        stats.last_error = (
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        return (
+            None,
+            None,
+        )
+
+
+# =========================================================
+# LINK EXTRACTION
+# =========================================================
+
+def extract_html_candidates(
+    *,
+    platform,
+    domain,
+    source_url,
+    text,
+) -> set[str]:
+
+    candidates = set()
+
+    if not text:
+        return candidates
+
+    decoded = html.unescape(
+        text
+    )
+
+    decoded = decoded.replace(
+        r"\/",
+        "/",
+    )
+
+    decoded = decoded.replace(
+        r"\u002F",
+        "/",
+    )
+
+    decoded = decoded.replace(
+        r"\u002f",
+        "/",
+    )
+
+    for match in HREF_PATTERN.finditer(
+        decoded
+    ):
+
+        candidate = absolute_url(
+            source_url,
+            match.group(
+                1
+            ),
+        )
+
+        if not is_safe_candidate_url(
+            candidate,
+            domain,
+        ):
+
+            continue
+
+        if looks_like_product_url(
+            platform,
+            candidate,
+        ):
+
+            candidates.add(
+                candidate
+            )
+
+            if (
+                len(
+                    candidates
+                )
+                >=
+                MAX_RAW_CANDIDATES
+            ):
+
+                break
+
+    # Square frequently serializes product URLs inside
+    # HTML/JavaScript rather than normal anchor tags.
+    if platform == "square_weebly":
+
+        for match in (
+            SQUARE_PRODUCT_PATH_PATTERN
+            .finditer(
+                decoded
+            )
+        ):
+
+            candidate = absolute_url(
+                source_url,
+                match.group(
+                    0
+                ),
+            )
+
+            if not is_safe_candidate_url(
+                candidate,
+                domain,
+            ):
+
+                continue
+
+            candidates.add(
+                candidate
+            )
+
+            if (
+                len(
+                    candidates
+                )
+                >=
+                MAX_RAW_CANDIDATES
+            ):
+
+                break
+
+    return candidates
+
+
+def extract_sitemap_locations(
+    *,
+    domain,
+    text,
+) -> list[str]:
+
+    output = []
+
+    seen = set()
+
+    for raw in LOC_PATTERN.findall(
+        text
+        or ""
+    ):
+
+        candidate = canonicalize_url(
+            html.unescape(
+                raw
+            )
+        )
+
+        if not candidate:
+
+            continue
+
+        if not same_domain(
+            candidate,
+            domain,
+        ):
+
+            continue
+
+        if candidate in seen:
+
+            continue
+
+        seen.add(
+            candidate
+        )
+
+        output.append(
+            candidate
         )
 
     return output
 
 
-def choose_refresh_urls(
+# =========================================================
+# DELTA DISCOVERY
+# =========================================================
+
+async def discover_new_product_urls(
     *,
-    store_id: int,
-    known_products: list[
-        dict[str, Any]
-    ],
-) -> dict[str, Any]:
+    platform,
+    domain,
+    known_urls: Iterable[str] | None = None,
+    limit: int = MAX_NEW_CANDIDATES,
+) -> DeltaDiscoveryResult:
 
-    priority = []
-    rotating = []
+    platform = normalize_platform(
+        platform
+    )
 
-    for item in (
-        known_products
+    domain = normalize_domain(
+        domain
+    )
+
+    limit = max(
+        1,
+        min(
+            int(
+                limit
+            ),
+            MAX_NEW_CANDIDATES,
+        ),
+    )
+
+    if platform not in {
+        "prestashop",
+        "bigcommerce",
+        "square_weebly",
+    }:
+
+        return DeltaDiscoveryResult(
+            platform=platform,
+            domain=domain,
+            source_pages_checked=0,
+            source_pages_successful=0,
+            sitemap_documents_checked=0,
+            raw_candidates=0,
+            new_candidates=[],
+            timed_out_requests=0,
+            failed_requests=0,
+            last_error=(
+                "UNSUPPORTED_PLATFORM"
+            ),
+        )
+
+    if not domain:
+
+        return DeltaDiscoveryResult(
+            platform=platform,
+            domain=domain,
+            source_pages_checked=0,
+            source_pages_successful=0,
+            sitemap_documents_checked=0,
+            raw_candidates=0,
+            new_candidates=[],
+            timed_out_requests=0,
+            failed_requests=0,
+            last_error=(
+                "NO_DOMAIN"
+            ),
+        )
+
+    base_url = (
+        f"https://{domain}"
+    )
+
+    known = set()
+
+    for value in (
+        known_urls
         or []
     ):
 
-        url = str(
-            item.get(
-                "url"
-            )
-            or ""
-        ).strip()
-
-        if not url:
-            continue
-
-        status = (
-            str(
-                item.get(
-                    "status"
-                )
-                or ""
-            )
-            .strip()
-            .upper()
+        normalized = canonicalize_url(
+            value
         )
 
-        if status in PRIORITY_STATUSES:
-            priority.append(
-                url
-            )
-        else:
-            rotating.append(
-                url
+        if normalized:
+
+            known.add(
+                normalized
             )
 
-    priority_selected = (
-        priority[
-            :FAST_REFRESH_PRIORITY_LIMIT
-        ]
+    (
+        html_paths,
+        sitemap_paths,
+    ) = get_platform_sources(
+        platform
     )
 
-    normal_slots = (
-        FAST_REFRESH_TOTAL_LIMIT
-        -
-        len(
-            priority_selected
-        )
+    stats = FetchStats()
+
+    candidates = set()
+
+    sitemap_documents_checked = 0
+
+    headers = {
+        "User-Agent":
+            USER_AGENT,
+
+        "Accept":
+            (
+                "text/html,"
+                "application/xhtml+xml,"
+                "application/xml;q=0.9,"
+                "*/*;q=0.8"
+            ),
+
+        "Accept-Language":
+            "en-US,en;q=0.8",
+    }
+
+    connector = aiohttp.TCPConnector(
+        limit=(
+            REQUEST_CONCURRENCY
+            +
+            1
+        ),
+        limit_per_host=(
+            REQUEST_CONCURRENCY
+        ),
     )
 
-    normal_slots = max(
-        normal_slots,
-        0,
-    )
+    async with aiohttp.ClientSession(
+        headers=headers,
+        connector=connector,
+    ) as session:
 
-    normal_slots = min(
-        normal_slots,
-        FAST_REFRESH_TOTAL_LIMIT,
-    )
+        # =================================================
+        # 1. HIGH-YIELD HTML SOURCES
+        # =================================================
 
-    selected_rotating = []
+        source_urls = []
 
-    if (
-        rotating
-        and
-        normal_slots > 0
-    ):
+        seen_sources = set()
 
-        cursor = _REFRESH_CURSOR.get(
-            store_id,
-            0,
-        )
-
-        if cursor >= len(
-            rotating
-        ):
-            cursor = 0
-
-        for offset in range(
-            normal_slots
+        for path in (
+            html_paths[
+                :MAX_SOURCE_PAGES
+            ]
         ):
 
-            if not rotating:
-                break
-
-            index = (
-                cursor
-                +
-                offset
-            ) % len(
-                rotating
-            )
-
-            selected_rotating.append(
-                rotating[
-                    index
-                ]
+            source_url = absolute_url(
+                base_url + "/",
+                path,
             )
 
             if (
-                len(
-                    selected_rotating
-                )
-                >=
-                len(
-                    rotating
-                )
+                source_url
+                and
+                source_url
+                not in seen_sources
             ):
-                break
 
-        _REFRESH_CURSOR[
-            store_id
-        ] = (
-            cursor
-            +
-            len(
-                selected_rotating
-            )
-        ) % max(
-            len(
-                rotating
-            ),
-            1,
+                source_urls.append(
+                    source_url
+                )
+
+                seen_sources.add(
+                    source_url
+                )
+
+        semaphore = asyncio.Semaphore(
+            REQUEST_CONCURRENCY
         )
 
-    selected = []
-    seen = set()
-
-    for url in (
-        priority_selected
-        +
-        selected_rotating
-    ):
-
-        if url in seen:
-            continue
-
-        seen.add(
-            url
-        )
-
-        selected.append(
-            url
-        )
-
-        if (
-            len(
-                selected
-            )
-            >=
-            FAST_REFRESH_TOTAL_LIMIT
-        ):
-            break
-
-    return {
-        "urls":
-            selected,
-
-        "priority_total":
-            len(
-                priority
-            ),
-
-        "priority_selected":
-            len(
-                priority_selected
-            ),
-
-        "rotating_total":
-            len(
-                rotating
-            ),
-
-        "rotating_selected":
-            len(
-                selected_rotating
-            ),
-
-        "known_total":
-            len(
-                known_products
-            ),
-    }
-
-
-def merge_products_by_url(
-    *batches,
-):
-
-    merged = {}
-
-    for batch in batches:
-
-        for item in (
-            batch
-            or []
+        async def inspect_html_source(
+            source_url,
         ):
 
-            if not isinstance(
-                item,
-                dict,
-            ):
-                continue
+            async with semaphore:
 
-            url = str(
-                item.get(
-                    "url"
-                )
-                or ""
-            ).strip()
-
-            if not url:
-                continue
-
-            merged[
-                url
-            ] = item
-
-    return list(
-        merged.values()
-    )
-
-
-def discovery_allowed_now(
-    store_id: int,
-) -> bool:
-
-    uptime = (
-        time.monotonic()
-        -
-        _MONITOR_STARTED_MONOTONIC
-    )
-
-    if uptime < (
-        DISCOVERY_STARTUP_GRACE_SECONDS
-    ):
-        return False
-
-    last_discovery = (
-        _LAST_DISCOVERY_AT.get(
-            store_id
-        )
-    )
-
-    if last_discovery is None:
-        return True
-
-    return (
-        (
-            time.monotonic()
-            -
-            last_discovery
-        )
-        >=
-        AUTO_DISCOVERY_INTERVAL_SECONDS
-    )
-
-
-# =========================================================
-# SCAN SINGLE STORE
-# =========================================================
-
-async def scan_store(
-    store: Store,
-    *,
-    suppress_events: bool = False,
-    automatic_mode: bool = False,
-) -> dict[str, Any]:
-
-    result = {
-        "store_id": store.id,
-        "store_name": store.name,
-        "domain": store.domain,
-        "platform": store.platform,
-        "baseline_mode": False,
-        "manual_suppression": bool(
-            suppress_events
-        ),
-        "scan_mode": "FULL_DISCOVERY",
-        "known_products": 0,
-        "refresh_selected": 0,
-        "refresh_priority_selected": 0,
-        "refresh_rotating_selected": 0,
-        "discovery_attempted": False,
-        "discovery_timed_out": False,
-        "success": False,
-        "products": 0,
-        "created": 0,
-        "updated": 0,
-        "events": 0,
-        "suppressed": 0,
-        "unknown_availability": 0,
-        "missing_prices": 0,
-        "backorders": 0,
-        "diagnostics": {},
-        "error": None,
-    }
-
-    platform = normalize_platform(
-        store.platform
-    )
-
-    if platform == "shopify":
-
-        result[
-            "error"
-        ] = (
-            "SHOPIFY_USES_SHOPIFY_MONITOR"
-        )
-
-        return result
-
-    if (
-        platform
-        not in
-        SUPPORTED_UNIVERSAL_PLATFORMS
-    ):
-
-        result[
-            "error"
-        ] = (
-            f"UNSUPPORTED_PLATFORM:"
-            f"{platform}"
-        )
-
-        return result
-
-    if not store.domain:
-
-        result[
-            "error"
-        ] = "NO_DOMAIN"
-
-        return result
-
-    ensure_retailer_adapters_loaded()
-
-    registered = set(
-        get_registered_retailer_platforms()
-    )
-
-    if platform not in registered:
-
-        result[
-            "error"
-        ] = (
-            "ADAPTER_NOT_REGISTERED:"
-            f"{platform}"
-        )
-
-        return result
-
-    try:
-
-        adapter = build_retailer_adapter(
-            store
-        )
-
-    except Exception as error:
-
-        result[
-            "error"
-        ] = (
-            "ADAPTER_ERROR:"
-            f"{type(error).__name__}:"
-            f"{error}"
-        )
-
-        return result
-
-    can_fast_refresh = False
-
-    try:
-
-        known_products = await get_known_store_products(
-            store.id
-        )
-
-        result[
-            "known_products"
-        ] = len(
-            known_products
-        )
-
-        can_fast_refresh = (
-            automatic_mode
-            and
-            bool(
-                known_products
-            )
-            and
-            callable(
-                getattr(
-                    adapter,
-                    "get_normalized_products_from_urls",
-                    None,
-                )
-            )
-        )
-
-        if can_fast_refresh:
-
-            refresh_plan = choose_refresh_urls(
-                store_id=store.id,
-                known_products=known_products,
-            )
-
-            refresh_urls = (
-                refresh_plan[
-                    "urls"
-                ]
-            )
-
-            result[
-                "refresh_selected"
-            ] = len(
-                refresh_urls
-            )
-
-            result[
-                "refresh_priority_selected"
-            ] = (
-                refresh_plan[
-                    "priority_selected"
-                ]
-            )
-
-            result[
-                "refresh_rotating_selected"
-            ] = (
-                refresh_plan[
-                    "rotating_selected"
-                ]
-            )
-
-            MONITOR_STATUS[
-                "fast_refresh_products_selected"
-            ] += len(
-                refresh_urls
-            )
-
-            MONITOR_STATUS[
-                "fast_refresh_priority_selected"
-            ] += (
-                refresh_plan[
-                    "priority_selected"
-                ]
-            )
-
-            MONITOR_STATUS[
-                "fast_refresh_rotating_selected"
-            ] += (
-                refresh_plan[
-                    "rotating_selected"
-                ]
-            )
-
-            if callable(
-                getattr(
-                    adapter,
-                    "set_known_product_urls",
-                    None,
-                )
-            ):
-
-                adapter.set_known_product_urls(
-                    [
-                        item[
-                            "url"
-                        ]
-                        for item
-                        in known_products
-                    ]
-                )
-
-            logger.info(
-                (
-                    "UNIVERSAL FAST REFRESH PLAN | "
-                    "Store=%s | StoreID=%s | "
-                    "Known=%s | "
-                    "PriorityTotal=%s | "
-                    "PrioritySelected=%s | "
-                    "RotatingTotal=%s | "
-                    "RotatingSelected=%s | "
-                    "TotalSelected=%s"
-                ),
-                store.name,
-                store.id,
-                refresh_plan[
-                    "known_total"
-                ],
-                refresh_plan[
-                    "priority_total"
-                ],
-                refresh_plan[
-                    "priority_selected"
-                ],
-                refresh_plan[
-                    "rotating_total"
-                ],
-                refresh_plan[
-                    "rotating_selected"
-                ],
-                len(
-                    refresh_urls
-                ),
-            )
-
-            fast_products = []
-
-            if refresh_urls:
-
-                fast_products = (
-                    await adapter.get_normalized_products_from_urls(
-                        refresh_urls
+                text, final_url = (
+                    await fetch_text(
+                        session,
+                        source_url,
+                        stats,
                     )
                 )
 
-            result[
-                "scan_mode"
-            ] = (
-                "SHARDED_FAST_REFRESH"
+                if not text:
+
+                    return
+
+                effective_url = (
+                    final_url
+                    or
+                    source_url
+                )
+
+                found = (
+                    extract_html_candidates(
+                        platform=platform,
+                        domain=domain,
+                        source_url=effective_url,
+                        text=text,
+                    )
+                )
+
+                candidates.update(
+                    found
+                )
+
+        await asyncio.gather(
+            *(
+                inspect_html_source(
+                    source_url
+                )
+                for source_url
+                in source_urls
+            )
+        )
+
+        # =================================================
+        # 2. ROBOTS.TXT SITEMAP DECLARATIONS
+        # =================================================
+
+        sitemap_queue = []
+
+        sitemap_seen = set()
+
+        for path in sitemap_paths:
+
+            sitemap_url = absolute_url(
+                base_url + "/",
+                path,
             )
 
-            discovery_products = []
-
-            if discovery_allowed_now(
-                store.id
+            if (
+                sitemap_url
+                and
+                sitemap_url
+                not in sitemap_queue
             ):
 
-                result[
-                    "discovery_attempted"
-                ] = True
+                sitemap_queue.append(
+                    sitemap_url
+                )
 
-                MONITOR_STATUS[
-                    "deep_discovery_attempts"
-                ] += 1
+        robots_url = absolute_url(
+            base_url + "/",
+            "/robots.txt",
+        )
 
-                if hasattr(
-                    adapter,
-                    "max_product_pages",
+        robots_text, _ = (
+            await fetch_text(
+                session,
+                robots_url,
+                stats,
+            )
+        )
+
+        if robots_text:
+
+            for raw in (
+                ROBOTS_SITEMAP_PATTERN
+                .findall(
+                    robots_text
+                )
+            ):
+
+                sitemap_url = (
+                    canonicalize_url(
+                        raw
+                    )
+                )
+
+                if not sitemap_url:
+
+                    continue
+
+                if not same_domain(
+                    sitemap_url,
+                    domain,
                 ):
 
-                    try:
+                    continue
 
-                        adapter.max_product_pages = min(
-                            int(
-                                getattr(
-                                    adapter,
-                                    "max_product_pages",
-                                    AUTO_DISCOVERY_PRODUCT_LIMIT,
-                                )
-                                or
-                                AUTO_DISCOVERY_PRODUCT_LIMIT
-                            ),
-                            AUTO_DISCOVERY_PRODUCT_LIMIT,
-                        )
+                if (
+                    sitemap_url
+                    not in sitemap_queue
+                ):
 
-                    except Exception:
-                        pass
+                    sitemap_queue.append(
+                        sitemap_url
+                    )
 
-                logger.info(
-                    (
-                        "UNIVERSAL DISCOVERY START | "
-                        "Store=%s | StoreID=%s | "
-                        "BudgetSeconds=%s | "
-                        "ProductLimit=%s"
-                    ),
-                    store.name,
-                    store.id,
-                    DISCOVERY_TIMEOUT_SECONDS,
-                    AUTO_DISCOVERY_PRODUCT_LIMIT,
+        # =================================================
+        # 3. SHALLOW SITEMAP DISCOVERY
+        # =================================================
+
+        while (
+            sitemap_queue
+            and
+            len(
+                sitemap_seen
+            )
+            <
+            MAX_SITEMAP_DOCUMENTS
+        ):
+
+            sitemap_url = (
+                sitemap_queue.pop(
+                    0
+                )
+            )
+
+            if sitemap_url in sitemap_seen:
+
+                continue
+
+            sitemap_seen.add(
+                sitemap_url
+            )
+
+            sitemap_documents_checked += 1
+
+            text, _ = (
+                await fetch_text(
+                    session,
+                    sitemap_url,
+                    stats,
+                )
+            )
+
+            if not text:
+
+                continue
+
+            locations = (
+                extract_sitemap_locations(
+                    domain=domain,
+                    text=text,
+                )
+            )
+
+            for location in locations:
+
+                lowered = (
+                    location.lower()
                 )
 
-                try:
-
-                    discovery_products = (
-                        await asyncio.wait_for(
-                            adapter.get_normalized_products(),
-                            timeout=(
-                                DISCOVERY_TIMEOUT_SECONDS
-                            ),
-                        )
+                if (
+                    lowered.endswith(
+                        ".xml"
                     )
+                    or
+                    "sitemap"
+                    in lowered
+                ):
 
-                    _LAST_DISCOVERY_AT[
-                        store.id
-                    ] = (
-                        time.monotonic()
+                    if (
+                        location
+                        not in sitemap_seen
+                        and
+                        location
+                        not in sitemap_queue
+                    ):
+
+                        # Product/new sitemap documents are
+                        # checked before generic sitemap files.
+                        if any(
+                            term in lowered
+                            for term in (
+                                "product",
+                                "products",
+                                "produit",
+                                "producto",
+                                "produkt",
+                                "new",
+                                "shop",
+                            )
+                        ):
+
+                            sitemap_queue.insert(
+                                0,
+                                location,
+                            )
+
+                        else:
+
+                            sitemap_queue.append(
+                                location
+                            )
+
+                    continue
+
+                if not is_safe_candidate_url(
+                    location,
+                    domain,
+                ):
+
+                    continue
+
+                if not looks_like_product_url(
+                    platform,
+                    location,
+                ):
+
+                    continue
+
+                candidates.add(
+                    location
+                )
+
+                if (
+                    len(
+                        candidates
                     )
+                    >=
+                    MAX_RAW_CANDIDATES
+                ):
 
-                    MONITOR_STATUS[
-                        "deep_discovery_completed"
-                    ] += 1
+                    break
 
-                    result[
-                        "scan_mode"
-                    ] = (
-                        "SHARDED_FAST_REFRESH+DISCOVERY"
-                    )
-
-                    logger.info(
-                        (
-                            "UNIVERSAL DISCOVERY COMPLETE | "
-                            "Store=%s | StoreID=%s | "
-                            "Products=%s"
-                        ),
-                        store.name,
-                        store.id,
-                        len(
-                            discovery_products
-                            or []
-                        ),
-                    )
-
-                except asyncio.TimeoutError:
-
-                    result[
-                        "discovery_timed_out"
-                    ] = True
-
-                    MONITOR_STATUS[
-                        "deep_discovery_timeouts"
-                    ] += 1
-
-                    _LAST_DISCOVERY_AT[
-                        store.id
-                    ] = (
-                        time.monotonic()
-                    )
-
-                    logger.warning(
-                        (
-                            "UNIVERSAL DISCOVERY BUDGET EXCEEDED | "
-                            "Store=%s | StoreID=%s | "
-                            "Platform=%s | "
-                            "BudgetSeconds=%s | "
-                            "ContinueWithFastRefresh=True"
-                        ),
-                        store.name,
-                        store.id,
-                        platform,
-                        DISCOVERY_TIMEOUT_SECONDS,
-                    )
-
-                    discovery_products = []
-
-            products = merge_products_by_url(
-                fast_products,
-                discovery_products,
-            )
-
-            logger.info(
-                (
-                    "UNIVERSAL PERFORMANCE MODE | "
-                    "Store=%s | StoreID=%s | "
-                    "Mode=%s | Known=%s | "
-                    "RefreshSelected=%s | "
-                    "DiscoveryAttempted=%s | "
-                    "DiscoveryTimedOut=%s | "
-                    "Products=%s"
-                ),
-                store.name,
-                store.id,
-                result[
-                    "scan_mode"
-                ],
+            if (
                 len(
-                    known_products
-                ),
-                len(
-                    refresh_urls
-                ),
-                result[
-                    "discovery_attempted"
-                ],
-                result[
-                    "discovery_timed_out"
-                ],
-                len(
-                    products
-                ),
-            )
+                    candidates
+                )
+                >=
+                MAX_RAW_CANDIDATES
+            ):
 
-        else:
+                break
 
-            products = (
-                await adapter.get_normalized_products()
-            )
+    # =====================================================
+    # REMOVE EVERYTHING LOTUS ALREADY KNOWS
+    # =====================================================
 
-            result[
-                "scan_mode"
-            ] = (
-                "FULL_DISCOVERY"
-            )
+    new_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate not in known
+    ]
 
-    except Exception as error:
+    # =====================================================
+    # TCG / NEW PRODUCT PRIORITY
+    # =====================================================
 
-        result[
-            "error"
-        ] = (
-            "FETCH_ERROR:"
-            f"{type(error).__name__}:"
-            f"{error}"
-        )
-
-        try:
-            result[
-                "diagnostics"
-            ] = adapter.get_diagnostics()
-        except Exception:
-            pass
-
-        return result
-
-    products = (
-        products
-        or []
-    )
-
-    try:
-        diagnostics = adapter.get_diagnostics()
-    except Exception:
-        diagnostics = {}
-
-    result[
-        "diagnostics"
-    ] = diagnostics
-
-    MONITOR_STATUS[
-        "discovery_pages_checked"
-    ] += int(
-        diagnostics.get(
-            "pages_checked",
-            0,
-        )
-        or 0
-    )
-
-    MONITOR_STATUS[
-        "discovery_pages_successful"
-    ] += int(
-        diagnostics.get(
-            "pages_successful",
-            0,
-        )
-        or 0
-    )
-
-    MONITOR_STATUS[
-        "discovery_product_urls"
-    ] += int(
-        diagnostics.get(
-            "product_urls_discovered",
-            0,
-        )
-        or 0
-    )
-
-    MONITOR_STATUS[
-        "product_pages_successful"
-    ] += int(
-        diagnostics.get(
-            "product_pages_successful",
-            0,
-        )
-        or 0
-    )
-
-    MONITOR_STATUS[
-        "adapter_rejected_products"
-    ] += int(
-        diagnostics.get(
-            "rejected_products",
-            0,
-        )
-        or 0
-    )
-
-    result[
-        "products"
-    ] = len(
-        products
-    )
-
-    MONITOR_STATUS[
-        "products_seen"
-    ] += len(
-        products
-    )
-
-    if not products:
-
-        if can_fast_refresh:
-
-            result[
-                "success"
-            ] = True
-
-            logger.info(
-                (
-                    "UNIVERSAL EMPTY FAST REFRESH | "
-                    "Store=%s | StoreID=%s | "
-                    "Selected=%s | "
-                    "DiscoveryAttempted=%s | "
-                    "DiscoveryTimedOut=%s | "
-                    "TreatAsStoreFailure=False"
-                ),
-                store.name,
-                store.id,
-                result[
-                    "refresh_selected"
-                ],
-                result[
-                    "discovery_attempted"
-                ],
-                result[
-                    "discovery_timed_out"
-                ],
-            )
-
-            return result
-
-        product_urls = int(
-            diagnostics.get(
-                "product_urls_discovered",
-                0,
-            )
-            or 0
-        )
-
-        product_pages = int(
-            diagnostics.get(
-                "product_pages_successful",
-                0,
-            )
-            or 0
-        )
-
-        rejected = int(
-            diagnostics.get(
-                "rejected_products",
-                0,
-            )
-            or 0
-        )
-
-        if product_urls == 0:
-            result[
-                "error"
-            ] = (
-                "NO_PRODUCT_URLS_DISCOVERED"
-            )
-
-        elif product_pages == 0:
-            result[
-                "error"
-            ] = (
-                "PRODUCT_PAGES_NOT_FETCHED"
-            )
-
-        elif (
-            rejected
-            >=
-            product_pages
-        ):
-            result[
-                "error"
-            ] = (
-                "ALL_PRODUCT_PAGES_REJECTED"
-            )
-
-        else:
-            result[
-                "error"
-            ] = (
-                "NO_PRODUCTS_RETURNED"
-            )
-
-        logger.warning(
-            (
-                "UNIVERSAL EMPTY SCAN | "
-                "Store=%s | Reason=%s | "
-                "PagesChecked=%s | PagesOK=%s | "
-                "ProductURLs=%s | ProductPagesOK=%s | "
-                "Rejected=%s"
+    new_candidates.sort(
+        key=lambda candidate: (
+            -candidate_priority(
+                candidate
             ),
-            store.name,
-            result[
-                "error"
-            ],
-            diagnostics.get(
-                "pages_checked",
-                0,
-            ),
-            diagnostics.get(
-                "pages_successful",
-                0,
-            ),
-            product_urls,
-            product_pages,
-            rejected,
+            candidate.lower(),
         )
-
-        return result
-
-    has_baseline = await store_has_baseline(
-        store.id
     )
 
-    baseline_mode = (
-        not has_baseline
+    new_candidates = (
+        new_candidates[
+            :limit
+        ]
     )
 
-    result[
-        "baseline_mode"
-    ] = baseline_mode
+    result = DeltaDiscoveryResult(
+        platform=platform,
+        domain=domain,
 
-    if baseline_mode:
-        MONITOR_STATUS[
-            "stores_baselined"
-        ] += 1
+        source_pages_checked=(
+            stats.checked
+        ),
 
-    for item in products:
+        source_pages_successful=(
+            stats.successful
+        ),
 
-        try:
+        sitemap_documents_checked=(
+            sitemap_documents_checked
+        ),
 
-            product_result = await process_normalized_product(
-                store=store,
-                item=item,
-                baseline_mode=baseline_mode,
-                suppress_events=suppress_events,
+        raw_candidates=(
+            len(
+                candidates
             )
+        ),
 
-        except Exception:
+        new_candidates=(
+            new_candidates
+        ),
 
-            logger.exception(
-                (
-                    "UNIVERSAL PRODUCT ERROR | "
-                    "Store=%s"
-                ),
-                store.name,
-            )
+        timed_out_requests=(
+            stats.timeouts
+        ),
 
-            continue
+        failed_requests=(
+            stats.failed
+        ),
 
-        if product_result.get(
-            "created"
-        ):
-            result[
-                "created"
-            ] += 1
-
-        if product_result.get(
-            "updated"
-        ):
-            result[
-                "updated"
-            ] += 1
-
-        result[
-            "events"
-        ] += int(
-            product_result.get(
-                "events",
-                0,
-            )
-            or 0
-        )
-
-        result[
-            "suppressed"
-        ] += int(
-            product_result.get(
-                "suppressed",
-                0,
-            )
-            or 0
-        )
-
-        result[
-            "unknown_availability"
-        ] += int(
-            product_result.get(
-                "unknown_availability",
-                0,
-            )
-            or 0
-        )
-
-        result[
-            "missing_prices"
-        ] += int(
-            product_result.get(
-                "missing_price",
-                0,
-            )
-            or 0
-        )
-
-        result[
-            "backorders"
-        ] += int(
-            product_result.get(
-                "backorder",
-                0,
-            )
-            or 0
-        )
-
-    if (
-        suppress_events
-        and
-        not baseline_mode
-    ):
-        MONITOR_STATUS[
-            "events_suppressed_manual"
-        ] += (
-            result[
-                "suppressed"
-            ]
-        )
+        last_error=(
+            stats.last_error
+        ),
+    )
 
     logger.info(
         (
-            "UNIVERSAL STORE SCAN COMPLETE | "
-            "Store=%s | Platform=%s | "
-            "Products=%s | Created=%s | "
-            "Updated=%s | Events=%s | "
-            "Suppressed=%s | "
-            "UnknownAvailability=%s | "
-            "MissingPrices=%s | "
-            "Backorders=%s | Mode=%s | "
-            "Known=%s | RefreshSelected=%s | "
-            "PrioritySelected=%s | "
-            "RotatingSelected=%s | "
-            "DiscoveryAttempted=%s | "
-            "DiscoveryTimedOut=%s"
+            "UNIVERSAL DELTA DISCOVERY COMPLETE | "
+            "Platform=%s | Domain=%s | "
+            "KnownURLs=%s | "
+            "SourcePagesChecked=%s | "
+            "SourcePagesSuccessful=%s | "
+            "SitemapDocuments=%s | "
+            "RawCandidates=%s | "
+            "NewCandidates=%s | "
+            "RequestTimeouts=%s | "
+            "RequestFailures=%s"
         ),
-        store.name,
         platform,
-        result[
-            "products"
-        ],
-        result[
-            "created"
-        ],
-        result[
-            "updated"
-        ],
-        result[
-            "events"
-        ],
-        result[
-            "suppressed"
-        ],
-        result[
-            "unknown_availability"
-        ],
-        result[
-            "missing_prices"
-        ],
-        result[
-            "backorders"
-        ],
-        result[
-            "scan_mode"
-        ],
-        result[
-            "known_products"
-        ],
-        result[
-            "refresh_selected"
-        ],
-        result[
-            "refresh_priority_selected"
-        ],
-        result[
-            "refresh_rotating_selected"
-        ],
-        result[
-            "discovery_attempted"
-        ],
-        result[
-            "discovery_timed_out"
-        ],
+        domain,
+        len(
+            known
+        ),
+        result.source_pages_checked,
+        result.source_pages_successful,
+        result.sitemap_documents_checked,
+        result.raw_candidates,
+        len(
+            result.new_candidates
+        ),
+        result.timed_out_requests,
+        result.failed_requests,
     )
-
-    result[
-        "success"
-    ] = True
 
     return result
-
-
-# =========================================================
-# ACTIVE UNIVERSAL STORES
-# =========================================================
-
-async def get_active_universal_stores() -> list[
-    Store
-]:
-
-    async with SessionLocal() as session:
-
-        statement = (
-            select(
-                Store
-            )
-            .where(
-                Store.active.is_(
-                    True
-                )
-            )
-            .order_by(
-                Store.id.asc()
-            )
-            .limit(
-                MAX_STORES_PER_CYCLE
-            )
-        )
-
-        result = await session.execute(
-            statement
-        )
-
-        stores = list(
-            result.scalars().all()
-        )
-
-    return [
-        store
-        for store in stores
-        if normalize_platform(
-            store.platform
-        )
-        in
-        SUPPORTED_UNIVERSAL_PLATFORMS
-    ]
-
-
-# =========================================================
-# STEP 6J-3C4
-# UNIVERSAL STORE HEALTH INTEGRATION
-# =========================================================
-
-async def record_universal_store_success(
-    store: Store,
-) -> None:
-
-    try:
-
-        await record_store_success(
-            store.id,
-            allow_health_reenable=True,
-        )
-
-        logger.info(
-            (
-                "UNIVERSAL STORE HEALTH SUCCESS | "
-                "Store=%s | StoreID=%s | "
-                "Platform=%s"
-            ),
-            store.name,
-            store.id,
-            normalize_platform(
-                store.platform
-            ),
-        )
-
-    except Exception as error:
-
-        logger.exception(
-            (
-                "UNIVERSAL STORE HEALTH SUCCESS RECORD ERROR | "
-                "Store=%s | StoreID=%s | "
-                "Error=%s:%s"
-            ),
-            store.name,
-            store.id,
-            type(error).__name__,
-            error,
-        )
-
-
-async def record_universal_store_failure(
-    store: Store,
-    reason: str,
-) -> None:
-
-    clean_reason = str(
-        reason
-        or
-        "UNIVERSAL_SCAN_FAILED"
-    ).strip()
-
-    try:
-
-        await record_store_failure(
-            store.id,
-            clean_reason,
-        )
-
-        logger.warning(
-            (
-                "UNIVERSAL STORE HEALTH FAILURE | "
-                "Store=%s | StoreID=%s | "
-                "Platform=%s | Reason=%s"
-            ),
-            store.name,
-            store.id,
-            normalize_platform(
-                store.platform
-            ),
-            clean_reason,
-        )
-
-    except Exception as error:
-
-        logger.exception(
-            (
-                "UNIVERSAL STORE HEALTH FAILURE RECORD ERROR | "
-                "Store=%s | StoreID=%s | "
-                "OriginalReason=%s | "
-                "Error=%s:%s"
-            ),
-            store.name,
-            store.id,
-            clean_reason,
-            type(error).__name__,
-            error,
-        )
-
-
-# =========================================================
-# RESET CURRENT CYCLE
-# =========================================================
-
-def reset_cycle_status() -> None:
-
-    keys = (
-        "stores_scanned",
-        "stores_failed",
-        "store_timeouts",
-        "stores_baselined",
-        "products_seen",
-        "products_created",
-        "products_updated",
-        "events_created",
-        "events_suppressed_baseline",
-        "events_suppressed_manual",
-        "price_changes",
-        "restocks",
-        "sold_out",
-        "unknown_availability",
-        "preorders",
-        "backorders",
-        "availability_high_confidence",
-        "availability_medium_confidence",
-        "availability_low_confidence",
-        "missing_prices",
-        "discovery_pages_checked",
-        "discovery_pages_successful",
-        "discovery_product_urls",
-        "product_pages_successful",
-        "adapter_rejected_products",
-        "capability_full_availability",
-        "capability_discovery_price_only",
-        "capability_discovery_only",
-        "capability_stock_events_blocked",
-        "capability_price_events_blocked",
-        "fast_refresh_products_selected",
-        "fast_refresh_priority_selected",
-        "fast_refresh_rotating_selected",
-        "deep_discovery_attempts",
-        "deep_discovery_completed",
-        "deep_discovery_timeouts",
-    )
-
-    for key in keys:
-        MONITOR_STATUS[
-            key
-        ] = 0
-
-
-# =========================================================
-# SCAN ALL UNIVERSAL STORES
-# =========================================================
-
-async def scan_all_universal_stores(
-    *,
-    suppress_events: bool = False,
-) -> dict[str, Any]:
-
-    ensure_retailer_adapters_loaded()
-
-    reset_cycle_status()
-
-    started_at = utcnow()
-
-    MONITOR_STATUS[
-        "last_scan_started_at"
-    ] = started_at.isoformat()
-
-    MONITOR_STATUS[
-        "last_error"
-    ] = None
-
-    MONITOR_STATUS[
-        "current_cycle_in_progress"
-    ] = True
-
-    MONITOR_STATUS[
-        "current_cycle_total_stores"
-    ] = 0
-
-    MONITOR_STATUS[
-        "current_store_id"
-    ] = None
-
-    MONITOR_STATUS[
-        "current_store_name"
-    ] = None
-
-    MONITOR_STATUS[
-        "last_timed_out_store"
-    ] = None
-
-    summary = {
-        "success": True,
-        "stores": [],
-        "started_at": started_at.isoformat(),
-        "completed_at": None,
-        "suppress_events": bool(
-            suppress_events
-        ),
-    }
-
-    try:
-
-        stores = await get_active_universal_stores()
-
-        MONITOR_STATUS[
-            "current_cycle_total_stores"
-        ] = len(
-            stores
-        )
-
-        logger.info(
-            (
-                "UNIVERSAL ACTIVE STORE SET | "
-                "Count=%s | StoreIDs=%s"
-            ),
-            len(
-                stores
-            ),
-            (
-                ",".join(
-                    str(
-                        store.id
-                    )
-                    for store in stores
-                )
-                or
-                "none"
-            ),
-        )
-
-        for store in stores:
-
-            MONITOR_STATUS[
-                "stores_scanned"
-            ] += 1
-
-            MONITOR_STATUS[
-                "current_store_id"
-            ] = store.id
-
-            MONITOR_STATUS[
-                "current_store_name"
-            ] = store.name
-
-            logger.info(
-                (
-                    "UNIVERSAL STORE SCAN START | "
-                    "Store=%s | StoreID=%s | "
-                    "Platform=%s | "
-                    "TimeoutSeconds=%s | "
-                    "Progress=%s/%s"
-                ),
-                store.name,
-                store.id,
-                normalize_platform(
-                    store.platform
-                ),
-                STORE_SCAN_TIMEOUT_SECONDS,
-                MONITOR_STATUS[
-                    "stores_scanned"
-                ],
-                len(
-                    stores
-                ),
-            )
-
-            try:
-
-                store_result = await asyncio.wait_for(
-                    scan_store(
-                        store,
-                        suppress_events=suppress_events,
-                        automatic_mode=True,
-                    ),
-                    timeout=(
-                        STORE_SCAN_TIMEOUT_SECONDS
-                    ),
-                )
-
-                summary[
-                    "stores"
-                ].append(
-                    store_result
-                )
-
-                if store_result.get(
-                    "success"
-                ):
-
-                    await record_universal_store_success(
-                        store
-                    )
-
-                else:
-
-                    MONITOR_STATUS[
-                        "stores_failed"
-                    ] += 1
-
-                    failure_reason = (
-                        store_result.get(
-                            "error"
-                        )
-                        or
-                        "UNIVERSAL_SCAN_FAILED"
-                    )
-
-                    await record_universal_store_failure(
-                        store,
-                        failure_reason,
-                    )
-
-            except asyncio.TimeoutError:
-
-                MONITOR_STATUS[
-                    "stores_failed"
-                ] += 1
-
-                MONITOR_STATUS[
-                    "store_timeouts"
-                ] += 1
-
-                await record_universal_store_failure(
-                    store,
-                    (
-                        "UNIVERSAL_STORE_SCAN_TIMEOUT:"
-                        f"{STORE_SCAN_TIMEOUT_SECONDS}s"
-                    ),
-                )
-
-                MONITOR_STATUS[
-                    "last_timed_out_store"
-                ] = {
-                    "store_id":
-                        store.id,
-
-                    "store_name":
-                        store.name,
-                }
-
-                summary[
-                    "stores"
-                ].append(
-                    {
-                        "store_id":
-                            store.id,
-
-                        "store_name":
-                            store.name,
-
-                        "success":
-                            False,
-
-                        "error":
-                            (
-                                "STORE_SCAN_TIMEOUT:"
-                                f"{STORE_SCAN_TIMEOUT_SECONDS}s"
-                            ),
-                    }
-                )
-
-                logger.error(
-                    (
-                        "UNIVERSAL STORE SCAN TIMEOUT | "
-                        "Store=%s | StoreID=%s | "
-                        "Platform=%s | "
-                        "TimeoutSeconds=%s | "
-                        "Continue=True"
-                    ),
-                    store.name,
-                    store.id,
-                    normalize_platform(
-                        store.platform
-                    ),
-                    STORE_SCAN_TIMEOUT_SECONDS,
-                )
-
-            except asyncio.CancelledError:
-
-                raise
-
-            except Exception as error:
-
-                MONITOR_STATUS[
-                    "stores_failed"
-                ] += 1
-
-                await record_universal_store_failure(
-                    store,
-                    (
-                        f"UNIVERSAL_SCAN_EXCEPTION:"
-                        f"{type(error).__name__}:"
-                        f"{error}"
-                    ),
-                )
-
-                summary[
-                    "stores"
-                ].append(
-                    {
-                        "store_id":
-                            store.id,
-
-                        "store_name":
-                            store.name,
-
-                        "success":
-                            False,
-
-                        "error":
-                            (
-                                f"{type(error).__name__}:"
-                                f"{error}"
-                            ),
-                    }
-                )
-
-                logger.exception(
-                    (
-                        "UNIVERSAL STORE SCAN ERROR | "
-                        "Store=%s | StoreID=%s | "
-                        "Continue=True"
-                    ),
-                    store.name,
-                    store.id,
-                )
-
-        completed_at = utcnow()
-
-        MONITOR_STATUS[
-            "last_scan_completed_at"
-        ] = completed_at.isoformat()
-
-        MONITOR_STATUS[
-            "last_completed_cycle_at"
-        ] = completed_at.isoformat()
-
-        MONITOR_STATUS[
-            "last_completed_stores_scanned"
-        ] = MONITOR_STATUS.get(
-            "stores_scanned",
-            0,
-        )
-
-        MONITOR_STATUS[
-            "last_completed_stores_failed"
-        ] = MONITOR_STATUS.get(
-            "stores_failed",
-            0,
-        )
-
-        MONITOR_STATUS[
-            "last_completed_store_timeouts"
-        ] = MONITOR_STATUS.get(
-            "store_timeouts",
-            0,
-        )
-
-        MONITOR_STATUS[
-            "last_completed_products_seen"
-        ] = MONITOR_STATUS.get(
-            "products_seen",
-            0,
-        )
-
-        MONITOR_STATUS[
-            "last_completed_events_created"
-        ] = MONITOR_STATUS.get(
-            "events_created",
-            0,
-        )
-
-        MONITOR_STATUS[
-            "last_completed_stock_events_blocked"
-        ] = MONITOR_STATUS.get(
-            "capability_stock_events_blocked",
-            0,
-        )
-
-        MONITOR_STATUS[
-            "last_completed_price_events_blocked"
-        ] = MONITOR_STATUS.get(
-            "capability_price_events_blocked",
-            0,
-        )
-
-        MONITOR_STATUS[
-            "current_cycle_in_progress"
-        ] = False
-
-        MONITOR_STATUS[
-            "current_store_id"
-        ] = None
-
-        MONITOR_STATUS[
-            "current_store_name"
-        ] = None
-
-        summary[
-            "completed_at"
-        ] = completed_at.isoformat()
-
-        summary[
-            "success"
-        ] = (
-            MONITOR_STATUS.get(
-                "stores_failed",
-                0,
-            )
-            ==
-            0
-        )
-
-        return summary
-
-    except asyncio.CancelledError:
-
-        MONITOR_STATUS[
-            "current_cycle_in_progress"
-        ] = False
-
-        MONITOR_STATUS[
-            "current_store_id"
-        ] = None
-
-        MONITOR_STATUS[
-            "current_store_name"
-        ] = None
-
-        raise
-
-    except Exception as error:
-
-        MONITOR_STATUS[
-            "last_error"
-        ] = (
-            f"{type(error).__name__}: "
-            f"{error}"
-        )
-
-        MONITOR_STATUS[
-            "current_cycle_in_progress"
-        ] = False
-
-        MONITOR_STATUS[
-            "current_store_id"
-        ] = None
-
-        MONITOR_STATUS[
-            "current_store_name"
-        ] = None
-
-        summary[
-            "success"
-        ] = False
-
-        logger.exception(
-            "UNIVERSAL SCAN FATAL ERROR"
-        )
-
-        return summary
-
-
-# =========================================================
-# AUTOMATIC MONITOR LOOP
-# =========================================================
-
-async def run_universal_retailer_monitor(
-    scan_interval: int = DEFAULT_SCAN_INTERVAL,
-) -> None:
-
-    scan_interval = max(
-        int(
-            scan_interval
-        ),
-        30,
-    )
-
-    if MONITOR_STATUS[
-        "running"
-    ]:
-
-        logger.warning(
-            (
-                "Universal retailer monitor "
-                "is already running."
-            )
-        )
-
-        return
-
-    ensure_retailer_adapters_loaded()
-
-    MONITOR_STATUS[
-        "running"
-    ] = True
-
-    try:
-
-        while True:
-
-            try:
-
-                logger.info(
-                    (
-                        "UNIVERSAL AUTOMATIC CYCLE START | "
-                        "CapabilityEnforcement=ENABLED | "
-                        "PerformanceMode=SHARDED_REFRESH | "
-                        "HealthIntegration=ENABLED | "
-                        "IntervalSeconds=%s"
-                    ),
-                    scan_interval,
-                )
-
-                cycle_result = await scan_all_universal_stores()
-
-                logger.info(
-                    (
-                        "UNIVERSAL AUTOMATIC CYCLE COMPLETE | "
-                        "Success=%s | "
-                        "Stores=%s | "
-                        "Failed=%s | "
-                        "Timeouts=%s | "
-                        "Products=%s | "
-                        "Events=%s | "
-                        "StockEventsBlocked=%s | "
-                        "PriceEventsBlocked=%s | "
-                        "RefreshProducts=%s | "
-                        "DiscoveryAttempts=%s | "
-                        "DiscoveryTimeouts=%s"
-                    ),
-                    cycle_result.get(
-                        "success"
-                    ),
-                    MONITOR_STATUS.get(
-                        "last_completed_stores_scanned",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "last_completed_stores_failed",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "last_completed_store_timeouts",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "last_completed_products_seen",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "last_completed_events_created",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "last_completed_stock_events_blocked",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "last_completed_price_events_blocked",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "fast_refresh_products_selected",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "deep_discovery_attempts",
-                        0,
-                    ),
-                    MONITOR_STATUS.get(
-                        "deep_discovery_timeouts",
-                        0,
-                    ),
-                )
-
-            except asyncio.CancelledError:
-
-                raise
-
-            except Exception as error:
-
-                MONITOR_STATUS[
-                    "last_error"
-                ] = (
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-
-                logger.exception(
-                    "UNIVERSAL MONITOR LOOP ERROR"
-                )
-
-            await asyncio.sleep(
-                scan_interval
-            )
-
-    except asyncio.CancelledError:
-
-        raise
-
-    finally:
-
-        MONITOR_STATUS[
-            "running"
-        ] = False
-
-        MONITOR_STATUS[
-            "current_cycle_in_progress"
-        ] = False
-
-        MONITOR_STATUS[
-            "current_store_id"
-        ] = None
-
-        MONITOR_STATUS[
-            "current_store_name"
-        ] = None
-
-
-# =========================================================
-# STATUS
-# =========================================================
-
-def get_universal_retailer_monitor_status() -> dict[
-    str,
-    Any,
-]:
-
-    return dict(
-        MONITOR_STATUS
-    )
-
-
-# =========================================================
-# MANUAL ONE-SHOT
-# =========================================================
-
-async def run_once(
-    *,
-    suppress_events: bool = True,
-) -> dict[str, Any]:
-
-    return await scan_all_universal_stores(
-        suppress_events=suppress_events
-    )
-
-
-if __name__ == "__main__":
-
-    logging.basicConfig(
-        level=logging.INFO
-    )
-
-    asyncio.run(
-        run_once(
-            suppress_events=True
-        )
-    )
