@@ -4,7 +4,7 @@ PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
 Version: 1.0.4
-Step 6J-1H — WooCommerce Single Category + Zero-Price Integrity
+Step 6J-3D2 — WooCommerce Fast Known-Product Refresh
 
 Safety:
 - Public storefront Store API only
@@ -24,7 +24,7 @@ import asyncio
 import re
 
 from html import unescape
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
 
@@ -1347,6 +1347,198 @@ class WooCommerceAdapter(RetailerAdapter):
         )
 
         return products
+
+    # =====================================================
+    # STEP 6J-3D2
+    # FAST KNOWN-PRODUCT REFRESH
+    # =====================================================
+
+    @staticmethod
+    def _slug_from_product_url(url):
+        """
+        Extract the public WooCommerce product slug from a known
+        storefront permalink. WooCommerce Store API supports the
+        public single-product route /products/:slug.
+
+        This intentionally does not guess IDs, authenticate, mutate
+        carts, or use private WooCommerce REST API credentials.
+        """
+
+        try:
+            parsed = urlparse(str(url or "").strip())
+        except Exception:
+            return None
+
+        if parsed.scheme not in {"http", "https"}:
+            return None
+
+        segments = [
+            unquote(segment).strip()
+            for segment in (parsed.path or "").split("/")
+            if unquote(segment).strip()
+        ]
+
+        if not segments:
+            return None
+
+        slug = segments[-1]
+
+        if slug.lower() in {
+            "product",
+            "products",
+            "shop",
+            "store",
+        }:
+            return None
+
+        return slug
+
+    async def get_normalized_products_from_urls(self, urls):
+        """
+        Refresh a bounded set of already-known WooCommerce products.
+
+        The universal monitor currently sends a small rotating shard
+        (normally no more than 24 URLs). Each known permalink is mapped
+        to WooCommerce's public Store API single-product slug route, so
+        Lotus does not repeat the full search/taxonomy discovery pass
+        every monitoring cycle.
+
+        Final acceptance still goes through normalize_product(), which
+        preserves strict TCG classification, zero-price protection,
+        product-family detection, and explicit public stock handling.
+        """
+
+        self._reset_diagnostics()
+        self.product_taxonomy_context = {}
+        self.category_terms_by_id = {}
+
+        requested_urls = []
+        seen_urls = set()
+
+        for value in urls or []:
+            url = clean_text(value)
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            requested_urls.append(url)
+
+            # Keep this method bounded even if called outside the
+            # universal monitor.
+            if len(requested_urls) >= 40:
+                break
+
+        if not requested_urls:
+            return []
+
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        connector = aiohttp.TCPConnector(
+            limit=4,
+            limit_per_host=3,
+        )
+
+        normalized_by_url = {}
+
+        async with aiohttp.ClientSession(
+            headers=headers,
+            connector=connector,
+        ) as session:
+            path = await self._select_store_api_path(session)
+
+            if not path:
+                self.diagnostics["last_error"] = "PUBLIC_STORE_API_NOT_FOUND"
+                print(
+                    "WOOCOMMERCE FAST REFRESH UNAVAILABLE | "
+                    f"Store={self.store_name} | "
+                    "Reason=PUBLIC_STORE_API_NOT_FOUND"
+                )
+                return []
+
+            semaphore = asyncio.Semaphore(3)
+
+            async def fetch_one(product_url):
+                slug = self._slug_from_product_url(product_url)
+
+                if not slug:
+                    return None
+
+                endpoint = (
+                    f"{self.base_url}{path}/"
+                    f"{quote(slug, safe='')}"
+                )
+
+                async with semaphore:
+                    payload, _ = await self._fetch_json(session, endpoint)
+
+                    # Preserve conservative request pacing while still
+                    # allowing a few independent public GETs in flight.
+                    await asyncio.sleep(self.request_delay)
+
+                if not isinstance(payload, dict):
+                    return None
+
+                try:
+                    normalized = self.normalize_product(payload)
+                except Exception as error:
+                    print(
+                        "WOOCOMMERCE FAST REFRESH NORMALIZE ERROR | "
+                        f"Store={self.store_name} | "
+                        f"URL={product_url} | "
+                        f"{type(error).__name__}: {error}"
+                    )
+                    return None
+
+                if normalized is None:
+                    return None
+
+                if isinstance(normalized, RetailerProduct):
+                    item = normalized.to_dict()
+                elif isinstance(normalized, dict):
+                    item = dict(normalized)
+                else:
+                    return None
+
+                normalized_url = clean_text(item.get("url"))
+                if not normalized_url:
+                    return None
+
+                item["url"] = normalized_url
+                return item
+
+            results = await asyncio.gather(
+                *(fetch_one(url) for url in requested_urls),
+                return_exceptions=False,
+            )
+
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+
+            url = clean_text(item.get("url"))
+            if not url:
+                continue
+
+            normalized_by_url[url] = item
+
+        self.diagnostics["product_urls_discovered"] = len(requested_urls)
+        self.diagnostics["product_pages_successful"] = len(normalized_by_url)
+
+        print(
+            "WOOCOMMERCE FAST REFRESH COMPLETE | "
+            f"Store={self.store_name} | "
+            f"Requested={len(requested_urls)} | "
+            f"Validated={len(normalized_by_url)} | "
+            f"PagesChecked={self.diagnostics.get('pages_checked')} | "
+            f"PagesSuccessful={self.diagnostics.get('pages_successful')} | "
+            f"HTTP429={self.diagnostics.get('http_429')} | "
+            f"HTTPBlocked={self.diagnostics.get('http_blocked')}"
+        )
+
+        return list(normalized_by_url.values())
 
     def normalize_product(self, product):
         if not isinstance(product, dict):
