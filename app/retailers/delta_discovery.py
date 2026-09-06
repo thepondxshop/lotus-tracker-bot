@@ -3,9 +3,9 @@ Lotus Tracker Bot
 PonDeX Trackers
 
 Universal Retailer Lightweight Delta Discovery
-Version: 1.0.0
+Version: 1.1.0
 
-Step 6J-3D1 — Fast New-Product Discovery
+Step 6J-3D2 — WooCommerce Delta Discovery
 
 Purpose:
 - Find NEW public product URLs quickly.
@@ -18,10 +18,12 @@ Supported platforms:
 - PrestaShop
 - BigCommerce
 - Square / Weebly
+- WooCommerce
 
 Design:
 - Small number of public discovery pages.
 - Small sitemap budget.
+- WooCommerce uses the public Store API newest-product page first.
 - Known URLs removed before product-page fetching.
 - Candidate count is tightly bounded.
 - Returned URLs are validated later by the store's existing adapter.
@@ -37,6 +39,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import (
+    urlencode,
     urljoin,
     urlparse,
     urlunparse,
@@ -45,7 +48,7 @@ from urllib.parse import (
 import aiohttp
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = logging.getLogger(
     "lotus.delta_discovery"
@@ -68,9 +71,13 @@ MAX_NEW_CANDIDATES = 12
 
 REQUEST_CONCURRENCY = 3
 
+WOOCOMMERCE_RECENT_PER_PAGE = 100
+
+WOOCOMMERCE_RECENT_PAGES = 1
+
 
 USER_AGENT = (
-    "LotusTracker/1.0 "
+    "LotusTracker/1.1 "
     "(PonDeX Trackers; public retailer discovery monitor)"
 )
 
@@ -187,6 +194,12 @@ SQUARE_HTML_PATHS = (
 
 SQUARE_SITEMAP_PATHS = (
     "/sitemap.xml",
+)
+
+
+WOOCOMMERCE_STORE_API_PATHS = (
+    "/wp-json/wc/store/v1/products",
+    "/wp-json/wc/store/products",
 )
 
 
@@ -323,6 +336,18 @@ def normalize_platform(
 
         "square-weebly":
             "square_weebly",
+
+        "woo":
+            "woocommerce",
+
+        "wc":
+            "woocommerce",
+
+        "woo-commerce":
+            "woocommerce",
+
+        "woo commerce":
+            "woocommerce",
     }
 
     return aliases.get(
@@ -378,8 +403,6 @@ def canonicalize_url(
         or "/"
     )
 
-    # Discovery URLs should not be duplicated because of
-    # tracking, sorting, faceting, or session parameters.
     return urlunparse(
         (
             parsed.scheme.lower(),
@@ -596,8 +619,6 @@ def looks_like_prestashop_product(
     if not path:
         return False
 
-    # Common classic PrestaShop pattern:
-    # /123-product-name.html
     if re.search(
         r"/\d+[-_][^/]+(?:\.html)?/?$",
         path,
@@ -658,8 +679,6 @@ def looks_like_bigcommerce_product(
     ):
         return False
 
-    # BigCommerce product pages are frequently clean
-    # one- or two-segment SEO URLs.
     segments = [
         segment
         for segment in path.split(
@@ -675,7 +694,6 @@ def looks_like_bigcommerce_product(
         term in path
         for term in TCG_PRIORITY_TERMS
     ):
-
         return True
 
     return (
@@ -702,13 +720,42 @@ def looks_like_square_product(
     if SQUARE_PRODUCT_PATH_PATTERN.search(
         path
     ):
-
         return True
 
     return (
         "/product/"
         in path
     )
+
+
+def looks_like_woocommerce_product(
+    url,
+) -> bool:
+
+    path = path_lower(
+        url
+    )
+
+    if not path:
+        return False
+
+    blocked = (
+        "/product-category/",
+        "/product-tag/",
+        "/category/",
+        "/tag/",
+        "/cart",
+        "/checkout",
+        "/my-account",
+    )
+
+    if any(
+        marker in path
+        for marker in blocked
+    ):
+        return False
+
+    return True
 
 
 def looks_like_product_url(
@@ -735,6 +782,12 @@ def looks_like_product_url(
     if platform == "square_weebly":
 
         return looks_like_square_product(
+            url
+        )
+
+    if platform == "woocommerce":
+
+        return looks_like_woocommerce_product(
             url
         )
 
@@ -951,6 +1004,91 @@ async def fetch_text(
         )
 
 
+async def fetch_json(
+    session,
+    url,
+    stats: FetchStats,
+):
+
+    stats.checked += 1
+
+    try:
+
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(
+                total=(
+                    REQUEST_TIMEOUT_SECONDS
+                )
+            ),
+            allow_redirects=True,
+        ) as response:
+
+            if response.status >= 400:
+
+                stats.failed += 1
+
+                stats.last_error = (
+                    f"HTTP_{response.status}"
+                )
+
+                return None
+
+            try:
+
+                payload = await response.json(
+                    content_type=None
+                )
+
+            except Exception as error:
+
+                stats.failed += 1
+
+                stats.last_error = (
+                    "JSON_DECODE:"
+                    f"{type(error).__name__}:"
+                    f"{error}"
+                )
+
+                return None
+
+            stats.successful += 1
+
+            return payload
+
+    except asyncio.TimeoutError:
+
+        stats.timeouts += 1
+
+        stats.last_error = (
+            "REQUEST_TIMEOUT"
+        )
+
+        return None
+
+    except aiohttp.ClientError as error:
+
+        stats.failed += 1
+
+        stats.last_error = (
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        return None
+
+    except Exception as error:
+
+        stats.failed += 1
+
+        stats.last_error = (
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        return None
+
+
 # =========================================================
 # LINK EXTRACTION
 # =========================================================
@@ -1024,8 +1162,6 @@ def extract_html_candidates(
 
                 break
 
-    # Square frequently serializes product URLs inside
-    # HTML/JavaScript rather than normal anchor tags.
     if platform == "square_weebly":
 
         for match in (
@@ -1114,6 +1250,143 @@ def extract_sitemap_locations(
 
 
 # =========================================================
+# WOOCOMMERCE RECENT DISCOVERY
+# =========================================================
+
+async def discover_woocommerce_recent_urls(
+    *,
+    session,
+    base_url: str,
+    domain: str,
+    stats: FetchStats,
+) -> set[str]:
+
+    candidates: set[str] = set()
+
+    selected_path = None
+
+    for path in WOOCOMMERCE_STORE_API_PATHS:
+
+        params = urlencode(
+            {
+                "per_page": 1,
+                "page": 1,
+            }
+        )
+
+        payload = await fetch_json(
+            session,
+            f"{base_url}{path}?{params}",
+            stats,
+        )
+
+        if isinstance(
+            payload,
+            list,
+        ):
+
+            selected_path = path
+
+            break
+
+    if not selected_path:
+
+        return candidates
+
+    for page in range(
+        1,
+        WOOCOMMERCE_RECENT_PAGES + 1,
+    ):
+
+        params = urlencode(
+            {
+                "per_page":
+                    WOOCOMMERCE_RECENT_PER_PAGE,
+
+                "page":
+                    page,
+
+                "orderby":
+                    "date",
+
+                "order":
+                    "desc",
+            }
+        )
+
+        payload = await fetch_json(
+            session,
+            f"{base_url}{selected_path}?{params}",
+            stats,
+        )
+
+        if not isinstance(
+            payload,
+            list,
+        ):
+
+            break
+
+        for product in payload:
+
+            if not isinstance(
+                product,
+                dict,
+            ):
+
+                continue
+
+            permalink = canonicalize_url(
+                product.get(
+                    "permalink"
+                )
+            )
+
+            if not permalink:
+
+                continue
+
+            if not is_safe_candidate_url(
+                permalink,
+                domain,
+            ):
+
+                continue
+
+            if not looks_like_woocommerce_product(
+                permalink
+            ):
+
+                continue
+
+            candidates.add(
+                permalink
+            )
+
+            if (
+                len(
+                    candidates
+                )
+                >=
+                MAX_RAW_CANDIDATES
+            ):
+
+                return candidates
+
+        if (
+            len(
+                payload
+            )
+            <
+            WOOCOMMERCE_RECENT_PER_PAGE
+        ):
+
+            break
+
+    return candidates
+
+
+# =========================================================
 # DELTA DISCOVERY
 # =========================================================
 
@@ -1147,6 +1420,7 @@ async def discover_new_product_urls(
         "prestashop",
         "bigcommerce",
         "square_weebly",
+        "woocommerce",
     }:
 
         return DeltaDiscoveryResult(
@@ -1202,13 +1476,6 @@ async def discover_new_product_urls(
                 normalized
             )
 
-    (
-        html_paths,
-        sitemap_paths,
-    ) = get_platform_sources(
-        platform
-    )
-
     stats = FetchStats()
 
     candidates = set()
@@ -1223,6 +1490,7 @@ async def discover_new_product_urls(
             (
                 "text/html,"
                 "application/xhtml+xml,"
+                "application/json;q=0.95,"
                 "application/xml;q=0.9,"
                 "*/*;q=0.8"
             ),
@@ -1248,156 +1516,133 @@ async def discover_new_product_urls(
     ) as session:
 
         # =================================================
-        # 1. HIGH-YIELD HTML SOURCES
+        # WOOCOMMERCE
         # =================================================
 
-        source_urls = []
+        if platform == "woocommerce":
 
-        seen_sources = set()
+            candidates.update(
 
-        for path in (
-            html_paths[
-                :MAX_SOURCE_PAGES
-            ]
-        ):
-
-            source_url = absolute_url(
-                base_url + "/",
-                path,
+                await discover_woocommerce_recent_urls(
+                    session=session,
+                    base_url=base_url,
+                    domain=domain,
+                    stats=stats,
+                )
             )
 
-            if (
-                source_url
-                and
-                source_url
-                not in seen_sources
+        else:
+
+            (
+                html_paths,
+                sitemap_paths,
+            ) = get_platform_sources(
+                platform
+            )
+
+            # =============================================
+            # HTML SOURCES
+            # =============================================
+
+            source_urls = []
+
+            seen_sources = set()
+
+            for path in (
+                html_paths[
+                    :MAX_SOURCE_PAGES
+                ]
             ):
 
-                source_urls.append(
-                    source_url
+                source_url = absolute_url(
+                    base_url + "/",
+                    path,
                 )
-
-                seen_sources.add(
-                    source_url
-                )
-
-        semaphore = asyncio.Semaphore(
-            REQUEST_CONCURRENCY
-        )
-
-        async def inspect_html_source(
-            source_url,
-        ):
-
-            async with semaphore:
-
-                text, final_url = (
-                    await fetch_text(
-                        session,
-                        source_url,
-                        stats,
-                    )
-                )
-
-                if not text:
-
-                    return
-
-                effective_url = (
-                    final_url
-                    or
-                    source_url
-                )
-
-                found = (
-                    extract_html_candidates(
-                        platform=platform,
-                        domain=domain,
-                        source_url=effective_url,
-                        text=text,
-                    )
-                )
-
-                candidates.update(
-                    found
-                )
-
-        await asyncio.gather(
-            *(
-                inspect_html_source(
-                    source_url
-                )
-                for source_url
-                in source_urls
-            )
-        )
-
-        # =================================================
-        # 2. ROBOTS.TXT SITEMAP DECLARATIONS
-        # =================================================
-
-        sitemap_queue = []
-
-        sitemap_seen = set()
-
-        for path in sitemap_paths:
-
-            sitemap_url = absolute_url(
-                base_url + "/",
-                path,
-            )
-
-            if (
-                sitemap_url
-                and
-                sitemap_url
-                not in sitemap_queue
-            ):
-
-                sitemap_queue.append(
-                    sitemap_url
-                )
-
-        robots_url = absolute_url(
-            base_url + "/",
-            "/robots.txt",
-        )
-
-        robots_text, _ = (
-            await fetch_text(
-                session,
-                robots_url,
-                stats,
-            )
-        )
-
-        if robots_text:
-
-            for raw in (
-                ROBOTS_SITEMAP_PATTERN
-                .findall(
-                    robots_text
-                )
-            ):
-
-                sitemap_url = (
-                    canonicalize_url(
-                        raw
-                    )
-                )
-
-                if not sitemap_url:
-
-                    continue
-
-                if not same_domain(
-                    sitemap_url,
-                    domain,
-                ):
-
-                    continue
 
                 if (
+                    source_url
+                    and
+                    source_url
+                    not in seen_sources
+                ):
+
+                    source_urls.append(
+                        source_url
+                    )
+
+                    seen_sources.add(
+                        source_url
+                    )
+
+            semaphore = asyncio.Semaphore(
+                REQUEST_CONCURRENCY
+            )
+
+            async def inspect_html_source(
+                source_url,
+            ):
+
+                async with semaphore:
+
+                    text, final_url = (
+                        await fetch_text(
+                            session,
+                            source_url,
+                            stats,
+                        )
+                    )
+
+                    if not text:
+
+                        return
+
+                    effective_url = (
+                        final_url
+                        or
+                        source_url
+                    )
+
+                    found = (
+                        extract_html_candidates(
+                            platform=platform,
+                            domain=domain,
+                            source_url=effective_url,
+                            text=text,
+                        )
+                    )
+
+                    candidates.update(
+                        found
+                    )
+
+            await asyncio.gather(
+                *(
+                    inspect_html_source(
+                        source_url
+                    )
+                    for source_url
+                    in source_urls
+                )
+            )
+
+            # =============================================
+            # ROBOTS / SITEMAPS
+            # =============================================
+
+            sitemap_queue = []
+
+            sitemap_seen = set()
+
+            for path in sitemap_paths:
+
+                sitemap_url = absolute_url(
+                    base_url + "/",
+                    path,
+                )
+
+                if (
+                    sitemap_url
+                    and
                     sitemap_url
                     not in sitemap_queue
                 ):
@@ -1406,123 +1651,175 @@ async def discover_new_product_urls(
                         sitemap_url
                     )
 
-        # =================================================
-        # 3. SHALLOW SITEMAP DISCOVERY
-        # =================================================
-
-        while (
-            sitemap_queue
-            and
-            len(
-                sitemap_seen
-            )
-            <
-            MAX_SITEMAP_DOCUMENTS
-        ):
-
-            sitemap_url = (
-                sitemap_queue.pop(
-                    0
-                )
+            robots_url = absolute_url(
+                base_url + "/",
+                "/robots.txt",
             )
 
-            if sitemap_url in sitemap_seen:
-
-                continue
-
-            sitemap_seen.add(
-                sitemap_url
-            )
-
-            sitemap_documents_checked += 1
-
-            text, _ = (
+            robots_text, _ = (
                 await fetch_text(
                     session,
-                    sitemap_url,
+                    robots_url,
                     stats,
                 )
             )
 
-            if not text:
+            if robots_text:
 
-                continue
-
-            locations = (
-                extract_sitemap_locations(
-                    domain=domain,
-                    text=text,
-                )
-            )
-
-            for location in locations:
-
-                lowered = (
-                    location.lower()
-                )
-
-                if (
-                    lowered.endswith(
-                        ".xml"
+                for raw in (
+                    ROBOTS_SITEMAP_PATTERN
+                    .findall(
+                        robots_text
                     )
-                    or
-                    "sitemap"
-                    in lowered
                 ):
 
+                    sitemap_url = (
+                        canonicalize_url(
+                            raw
+                        )
+                    )
+
+                    if not sitemap_url:
+
+                        continue
+
+                    if not same_domain(
+                        sitemap_url,
+                        domain,
+                    ):
+
+                        continue
+
                     if (
-                        location
-                        not in sitemap_seen
-                        and
-                        location
+                        sitemap_url
                         not in sitemap_queue
                     ):
 
-                        # Product/new sitemap documents are
-                        # checked before generic sitemap files.
-                        if any(
-                            term in lowered
-                            for term in (
-                                "product",
-                                "products",
-                                "produit",
-                                "producto",
-                                "produkt",
-                                "new",
-                                "shop",
-                            )
+                        sitemap_queue.append(
+                            sitemap_url
+                        )
+
+            while (
+                sitemap_queue
+                and
+                len(
+                    sitemap_seen
+                )
+                <
+                MAX_SITEMAP_DOCUMENTS
+            ):
+
+                sitemap_url = (
+                    sitemap_queue.pop(
+                        0
+                    )
+                )
+
+                if sitemap_url in sitemap_seen:
+
+                    continue
+
+                sitemap_seen.add(
+                    sitemap_url
+                )
+
+                sitemap_documents_checked += 1
+
+                text, _ = (
+                    await fetch_text(
+                        session,
+                        sitemap_url,
+                        stats,
+                    )
+                )
+
+                if not text:
+
+                    continue
+
+                locations = (
+                    extract_sitemap_locations(
+                        domain=domain,
+                        text=text,
+                    )
+                )
+
+                for location in locations:
+
+                    lowered = (
+                        location.lower()
+                    )
+
+                    if (
+                        lowered.endswith(
+                            ".xml"
+                        )
+                        or
+                        "sitemap"
+                        in lowered
+                    ):
+
+                        if (
+                            location
+                            not in sitemap_seen
+                            and
+                            location
+                            not in sitemap_queue
                         ):
 
-                            sitemap_queue.insert(
-                                0,
-                                location,
-                            )
+                            if any(
+                                term in lowered
+                                for term in (
+                                    "product",
+                                    "products",
+                                    "produit",
+                                    "producto",
+                                    "produkt",
+                                    "new",
+                                    "shop",
+                                )
+                            ):
 
-                        else:
+                                sitemap_queue.insert(
+                                    0,
+                                    location,
+                                )
 
-                            sitemap_queue.append(
-                                location
-                            )
+                            else:
 
-                    continue
+                                sitemap_queue.append(
+                                    location
+                                )
 
-                if not is_safe_candidate_url(
-                    location,
-                    domain,
-                ):
+                        continue
 
-                    continue
+                    if not is_safe_candidate_url(
+                        location,
+                        domain,
+                    ):
 
-                if not looks_like_product_url(
-                    platform,
-                    location,
-                ):
+                        continue
 
-                    continue
+                    if not looks_like_product_url(
+                        platform,
+                        location,
+                    ):
 
-                candidates.add(
-                    location
-                )
+                        continue
+
+                    candidates.add(
+                        location
+                    )
+
+                    if (
+                        len(
+                            candidates
+                        )
+                        >=
+                        MAX_RAW_CANDIDATES
+                    ):
+
+                        break
 
                 if (
                     len(
@@ -1534,18 +1831,8 @@ async def discover_new_product_urls(
 
                     break
 
-            if (
-                len(
-                    candidates
-                )
-                >=
-                MAX_RAW_CANDIDATES
-            ):
-
-                break
-
     # =====================================================
-    # REMOVE EVERYTHING LOTUS ALREADY KNOWS
+    # REMOVE KNOWN URLS
     # =====================================================
 
     new_candidates = [
@@ -1553,10 +1840,6 @@ async def discover_new_product_urls(
         for candidate in candidates
         if candidate not in known
     ]
-
-    # =====================================================
-    # TCG / NEW PRODUCT PRIORITY
-    # =====================================================
 
     new_candidates.sort(
         key=lambda candidate: (
