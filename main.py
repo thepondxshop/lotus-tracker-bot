@@ -3556,6 +3556,19 @@ def format_universal_discovery_diagnostics(value) -> str:
         ("initial_enrichment_product_ok", "Product enrich parsed"),
         ("initial_enrichment_price_hits", "Product enrich price hits"),
         ("initial_enrichment_availability_hits", "Product enrich stock hits"),
+        ("initial_enrichment_max_body_bytes", "Enrich max body bytes"),
+        ("initial_enrichment_h1_hits", "Enrich H1 hits"),
+        ("initial_enrichment_sku_hits", "Enrich SKU hits"),
+        ("initial_enrichment_dollar_hits", "Enrich dollar hits"),
+        ("initial_enrichment_meta_price_hits", "Enrich meta-price hits"),
+        ("initial_enrichment_jsonld_hits", "Enrich JSON-LD hits"),
+        ("initial_enrichment_markup_stock_hits", "Enrich schema-stock hits"),
+        ("initial_enrichment_buy_form_hits", "Enrich buy-form hits"),
+        ("discovered_internal_product_ids", "Internal product IDs"),
+        ("direct_detail_requested", "Direct detail requested"),
+        ("direct_detail_http_ok", "Direct detail HTTP OK"),
+        ("direct_detail_price_hits", "Direct detail price hits"),
+        ("direct_detail_availability_hits", "Direct detail stock hits"),
         ("listing_fragment_urls_found", "Fragment URLs"),
         ("listing_fragment_cards_seen", "Fragment cards"),
         ("sitemap_product_pages_successful", "Product pages OK"),
@@ -3572,7 +3585,7 @@ def format_universal_discovery_diagnostics(value) -> str:
     if last_error:
         lines.append(f"**Adapter error:** `{str(last_error)[:220]}`")
 
-    return "\n".join(lines[:26]) or "Adapter diagnostics were empty."
+    return "\n".join(lines[:34]) or "Adapter diagnostics were empty."
 
 
 # =========================================================
