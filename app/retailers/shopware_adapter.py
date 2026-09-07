@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F2 — Shopware 6 Large-Catalog Discovery Hardening
+Step 6J-3F3 — Shopware Listing Fragment + Product Sitemap Fallback
 Initial production target: Miniature Market
 
 Safety:
@@ -55,6 +55,10 @@ MAX_LISTING_PAGES = 36
 MAX_PREORDER_PAGES = 14
 MAX_PRODUCT_PAGES = 350
 MAX_CONCURRENT_PRODUCT_REQUESTS = 6
+MAX_FRAGMENT_URLS_PER_ROOT = 4
+MAX_PRODUCT_SITEMAP_PAGES = 30
+PRODUCT_SITEMAP_TARGET = 140
+MAX_SITEMAP_PRODUCT_PAGE_FETCHES = 120
 
 # Miniature Market exposes the canonical Shopware category at the first path.
 # The additional paths keep the adapter useful for other public Shopware shops.
@@ -92,6 +96,8 @@ CATEGORY_DISCOVERY_PATHS = (
     "/category-sitemap",
     "/sitemap",
 )
+
+PRODUCT_SITEMAP_PATH = "/product-sitemap"
 
 SHOPWARE_PLATFORM_PROBE_PATHS = (
     "/account/login",
@@ -347,6 +353,18 @@ def canonical_url(base_url: str, value: Any) -> str | None:
         return None
     # Tracking/query parameters are not part of Lotus's product identity.
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
+def canonical_request_url(base_url: str, value: Any) -> str | None:
+    """Canonicalize a public request URL while preserving query parameters."""
+    raw = clean_text(value)
+    if not raw:
+        return None
+    absolute = urljoin(base_url.rstrip("/") + "/", raw)
+    parsed = urlparse(absolute)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", parsed.query, ""))
 
 
 def same_store_host(domain: str, url: str) -> bool:
@@ -854,8 +872,18 @@ class ShopwareAdapter(RetailerAdapter):
             "listing_pages_checked": 0,
             "listing_pages_successful": 0,
             "listing_cards_seen": 0,
+            "listing_fragment_urls_found": 0,
+            "listing_fragment_pages_checked": 0,
+            "listing_fragment_pages_successful": 0,
+            "listing_fragment_cards_seen": 0,
             "supported_listing_products": 0,
             "product_urls_discovered": 0,
+            "sitemap_pages_checked": 0,
+            "sitemap_pages_successful": 0,
+            "sitemap_anchors_seen": 0,
+            "sitemap_supported_products": 0,
+            "sitemap_product_pages_requested": 0,
+            "sitemap_product_pages_successful": 0,
             "product_pages_successful": 0,
             "products_accepted": 0,
             "products_rejected": 0,
@@ -953,6 +981,8 @@ class ShopwareAdapter(RetailerAdapter):
         self,
         session: aiohttp.ClientSession,
         url: str,
+        *,
+        request_headers: dict[str, str] | None = None,
     ) -> tuple[str | None, aiohttp.ClientResponse | None]:
         self.diagnostics["pages_checked"] += 1
         timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
@@ -962,6 +992,7 @@ class ShopwareAdapter(RetailerAdapter):
                 url,
                 timeout=timeout,
                 allow_redirects=True,
+                headers=request_headers,
             ) as response:
                 self.diagnostics["last_http_status"] = int(response.status)
 
@@ -1103,6 +1134,207 @@ class ShopwareAdapter(RetailerAdapter):
             return root
         separator = "&" if "?" in root else "?"
         return f"{root}{separator}p={page}"
+
+    def _extract_listing_fragment_urls(self, html: str) -> list[str]:
+        """
+        Discover public Shopware listing-fragment endpoints embedded in a
+        category shell. Some Shopware storefronts return filter/navigation
+        chrome in the category response and load the actual product grid from
+        /widgets/cms/navigation/... via an XHR request.
+        """
+        decoded = html_lib.unescape(html or "")
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        raw_values: list[str] = []
+
+        # Explicit data-url / data-listing-url style attributes.
+        for match in re.finditer(
+            r"\b(?:data-url|data-listing-url|data-load-url)\s*=\s*[\"']([^\"']+)[\"']",
+            decoded,
+            re.IGNORECASE,
+        ):
+            raw_values.append(match.group(1))
+
+        # JSON embedded in data-listing-options or script configuration.
+        for match in re.finditer(
+            r"[\"'](?:dataUrl|data-url|listingUrl|listing-url)[\"']\s*:\s*[\"']([^\"']+)[\"']",
+            decoded,
+            re.IGNORECASE,
+        ):
+            raw_values.append(match.group(1))
+
+        # Last-resort direct Shopware widget path discovery.
+        for match in re.finditer(
+            r"(?:https?://[^\"'<>\s]+)?/widgets/cms/navigation/[^\"'<>\s\\]+",
+            decoded,
+            re.IGNORECASE,
+        ):
+            raw_values.append(match.group(0))
+
+        for raw in raw_values:
+            raw = raw.replace("\\/", "/")
+            request_url = canonical_request_url(self.base_url, raw)
+            if not request_url or not same_store_host(self.domain, request_url):
+                continue
+            if "/widgets/cms/navigation/" not in request_url.lower():
+                continue
+            key = request_url.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(request_url)
+            if len(candidates) >= MAX_FRAGMENT_URLS_PER_ROOT:
+                break
+
+        return candidates
+
+    def _extract_supported_sitemap_anchors(self, html: str) -> list[dict[str, Any]]:
+        """
+        Extract supported TCG product links from Miniature Market's public
+        product sitemap. This is intentionally title-gated so board games,
+        miniatures, accessories, and unrelated products are ignored.
+        """
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for match in re.finditer(
+            r"<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+            html or "",
+            re.IGNORECASE | re.DOTALL,
+        ):
+            self.diagnostics["sitemap_anchors_seen"] += 1
+            title = clean_text(match.group(2))
+            if not title or not classify_game(title):
+                continue
+
+            url = canonical_url(self.base_url, match.group(1))
+            if not url or not same_store_host(self.domain, url):
+                continue
+
+            path = urlparse(url).path.rstrip("/").lower()
+            if path in {
+                "/product-sitemap",
+                "/category-sitemap",
+                "/sitemap",
+            }:
+                continue
+
+            if url in seen:
+                continue
+            seen.add(url)
+            entries.append({
+                "title": title,
+                "url": url,
+                "text": title,
+                "image_url": None,
+                "product_id": None,
+                "preorder_page": any(term in title.lower() for term in PREORDER_TERMS),
+                "source": "PRODUCT_SITEMAP",
+            })
+
+        return entries
+
+    async def _discover_product_sitemap_entries(
+        self,
+        session: aiohttp.ClientSession,
+    ) -> list[dict[str, Any]]:
+        """Bounded public product-sitemap fallback for Shopware stores."""
+        discovered: dict[str, dict[str, Any]] = {}
+
+        for page in range(1, MAX_PRODUCT_SITEMAP_PAGES + 1):
+            separator = "&" if "?" in PRODUCT_SITEMAP_PATH else "?"
+            url = (
+                f"{self.base_url}{PRODUCT_SITEMAP_PATH}"
+                f"{separator}limit=50&p={page}"
+            )
+            self.diagnostics["sitemap_pages_checked"] += 1
+            html, response = await self._fetch_text(session, url)
+
+            if not html or response is None or response.status >= 400:
+                if page == 1:
+                    break
+                continue
+
+            self.diagnostics["sitemap_pages_successful"] += 1
+            entries = self._extract_supported_sitemap_anchors(html)
+
+            page_new = 0
+            for entry in entries:
+                product_url = canonical_url(self.base_url, entry.get("url"))
+                if not product_url or product_url in discovered:
+                    continue
+                discovered[product_url] = entry
+                page_new += 1
+
+            if len(discovered) >= PRODUCT_SITEMAP_TARGET:
+                break
+
+            # A normal sitemap page contains 50 product links. If the route
+            # stops returning any product-ish anchors for several pages, the
+            # later pages are unlikely to help. Keep the loop bounded anyway.
+            await asyncio.sleep(self.request_delay)
+
+        self.diagnostics["sitemap_supported_products"] = len(discovered)
+        return list(discovered.values())
+
+    async def _enrich_sitemap_entries(
+        self,
+        session: aiohttp.ClientSession,
+        entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch a bounded set of public product pages so onboarding receives
+        real price/availability data instead of merely sitemap URLs.
+        """
+        selected = entries[:MAX_SITEMAP_PRODUCT_PAGE_FETCHES]
+        self.diagnostics["sitemap_product_pages_requested"] = len(selected)
+        if not selected:
+            return []
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_PRODUCT_REQUESTS)
+
+        async def fetch_one(entry: dict[str, Any]) -> dict[str, Any] | None:
+            url = canonical_url(self.base_url, entry.get("url"))
+            if not url:
+                return None
+            async with semaphore:
+                html, response = await self._fetch_text(session, url)
+                await asyncio.sleep(self.request_delay)
+            if not html or response is None or response.status >= 400:
+                return None
+            raw = self._product_page_to_raw(url, html)
+            if not raw:
+                return None
+            if not clean_text(raw.get("title")):
+                raw["title"] = clean_text(entry.get("title"))
+            raw["preorder_page"] = bool(entry.get("preorder_page"))
+            raw["source"] = "PRODUCT_SITEMAP_PRODUCT_PAGE"
+            if not classify_game(clean_text(raw.get("title"))):
+                return None
+            return raw
+
+        results = await asyncio.gather(
+            *(fetch_one(entry) for entry in selected),
+            return_exceptions=False,
+        )
+        enriched = [item for item in results if isinstance(item, dict)]
+        self.diagnostics["sitemap_product_pages_successful"] = len(enriched)
+
+        # If product-page fetching is partially filtered, preserve the sitemap
+        # discoveries that could not be enriched. Their availability remains
+        # UNKNOWN, which Lotus treats conservatively and never as sold out.
+        enriched_urls = {
+            canonical_url(self.base_url, item.get("url"))
+            for item in enriched
+            if item.get("url")
+        }
+        for entry in selected:
+            url = canonical_url(self.base_url, entry.get("url"))
+            if url and url not in enriched_urls:
+                enriched.append(dict(entry))
+
+        return enriched
 
     def _fallback_supported_anchors(
         self,
@@ -1280,6 +1512,47 @@ class ShopwareAdapter(RetailerAdapter):
                         preorder_page=preorder_page,
                     )
 
+                    # Step 6J-3F3: some Shopware storefronts return only the
+                    # category/filter shell to ordinary HTTP clients and load
+                    # the real product grid from /widgets/cms/navigation/... .
+                    # Follow only public, same-host fragment URLs embedded in
+                    # that shell. No private Store/Admin API is used.
+                    if not cards:
+                        fragment_urls = self._extract_listing_fragment_urls(html)
+                        self.diagnostics["listing_fragment_urls_found"] += len(fragment_urls)
+                        fragment_cards: list[dict[str, Any]] = []
+
+                        for fragment_url in fragment_urls:
+                            request_url = self._page_url(fragment_url, page)
+                            self.diagnostics["listing_fragment_pages_checked"] += 1
+                            fragment_html, fragment_response = await self._fetch_text(
+                                session,
+                                request_url,
+                                request_headers={
+                                    "X-Requested-With": "XMLHttpRequest",
+                                    "Accept": "text/html,*/*;q=0.8",
+                                },
+                            )
+                            if (
+                                not fragment_html
+                                or fragment_response is None
+                                or fragment_response.status >= 400
+                            ):
+                                continue
+
+                            self.diagnostics["listing_fragment_pages_successful"] += 1
+                            parsed_fragment_cards = self._parse_listing_page(
+                                fragment_html,
+                                preorder_page=preorder_page,
+                            )
+                            self.diagnostics["listing_fragment_cards_seen"] += len(
+                                parsed_fragment_cards
+                            )
+                            fragment_cards.extend(parsed_fragment_cards)
+
+                        if fragment_cards:
+                            cards = fragment_cards
+
                     page_new = 0
                     for card in cards:
                         title = clean_text(card.get("title"))
@@ -1307,6 +1580,30 @@ class ShopwareAdapter(RetailerAdapter):
 
                     await asyncio.sleep(self.request_delay)
 
+        # Step 6J-3F3: if customized category rendering still yields too few
+        # products, fall back to Miniature Market's public Product Sitemap.
+        # The sitemap gives us canonical product URLs and titles; a bounded
+        # product-page enrichment pass then supplies price/availability.
+        if len(discovered_by_url) < 40:
+            sitemap_entries = await self._discover_product_sitemap_entries(session)
+            unseen_sitemap_entries = [
+                entry
+                for entry in sitemap_entries
+                if canonical_url(self.base_url, entry.get("url")) not in discovered_by_url
+            ]
+            enriched_sitemap_entries = await self._enrich_sitemap_entries(
+                session,
+                unseen_sitemap_entries,
+            )
+
+            for entry in enriched_sitemap_entries:
+                title = clean_text(entry.get("title"))
+                product_url = canonical_url(self.base_url, entry.get("url"))
+                if not title or not product_url or not classify_game(title):
+                    continue
+                if product_url not in discovered_by_url:
+                    discovered_by_url[product_url] = entry
+
         self.diagnostics["supported_listing_products"] = len(discovered_by_url)
         self.diagnostics["product_urls_discovered"] = len(discovered_by_url)
 
@@ -1333,6 +1630,10 @@ class ShopwareAdapter(RetailerAdapter):
             f"ListingPages={self.diagnostics['listing_pages_successful']} | "
             f"SupportedDiscovered={self.diagnostics['product_urls_discovered']} | "
             f"FallbackAnchors={self.diagnostics['fallback_supported_anchors']} | "
+            f"FragmentURLs={self.diagnostics['listing_fragment_urls_found']} | "
+            f"FragmentCards={self.diagnostics['listing_fragment_cards_seen']} | "
+            f"SitemapProducts={self.diagnostics['sitemap_supported_products']} | "
+            f"SitemapProductPagesOK={self.diagnostics['sitemap_product_pages_successful']} | "
             f"BodyTooLarge={self.diagnostics['body_too_large']} | "
             f"LargestBodyBytes={self.diagnostics['largest_body_bytes']} | "
             f"LastError={self.diagnostics.get('last_error')} | "
