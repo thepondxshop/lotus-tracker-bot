@@ -3522,6 +3522,42 @@ async def detectretailer(
 
 
 # =========================================================
+# UNIVERSAL VALIDATION DIAGNOSTIC FORMATTER
+# Step 6J-3F2
+# =========================================================
+
+def format_universal_discovery_diagnostics(value) -> str:
+    diagnostics = value if isinstance(value, dict) else {}
+    if not diagnostics:
+        return "No adapter diagnostics were returned."
+
+    keys = (
+        ("pages_checked", "Pages checked"),
+        ("pages_successful", "Pages OK"),
+        ("listing_roots_found", "Listing roots"),
+        ("listing_pages_successful", "Listing pages OK"),
+        ("listing_cards_seen", "Listing cards"),
+        ("fallback_supported_anchors", "Fallback product links"),
+        ("product_urls_discovered", "Product URLs"),
+        ("body_too_large", "Oversize pages"),
+        ("largest_body_bytes", "Largest body bytes"),
+        ("http_429", "HTTP 429"),
+        ("http_blocked", "HTTP blocked"),
+    )
+
+    lines = []
+    for key, label in keys:
+        if key in diagnostics:
+            lines.append(f"**{label}:** `{diagnostics.get(key)}`")
+
+    last_error = diagnostics.get("last_error")
+    if last_error:
+        lines.append(f"**Adapter error:** `{str(last_error)[:220]}`")
+
+    return "\n".join(lines[:12]) or "Adapter diagnostics were empty."
+
+
+# =========================================================
 # /ADDRETAILER
 # Step 6J-3E3 — Auto Detect + Stage + Silent Validation
 # =========================================================
@@ -4228,6 +4264,15 @@ async def addretailer(
                 ),
                 inline=False,
             )
+
+            if not onboarding_result.validated:
+                embed.add_field(
+                    name="Discovery Diagnostics",
+                    value=format_universal_discovery_diagnostics(
+                        onboarding_result.diagnostics
+                    )[:1000],
+                    inline=False,
+                )
 
         elif onboarding_error:
 
@@ -4952,26 +4997,52 @@ async def scanretailer(
             "success"
         ):
 
-            await interaction.followup.send(
-
-                (
-                    "\u274c **Universal Retailer Scan Failed**\n\n"
-
-                    f"**Store:** "
-                    f"{scan_store_object.name}\n"
-
-                    f"**Domain:** "
-                    f"`{scan_store_object.domain}`\n"
-
-                    f"**Platform:** "
-                    f"`{platform}`\n\n"
-
-                    f"**Reason:** "
-                    f"`{scan_result.get('error') or 'Unknown error'}`\n\n"
-
+            failure_embed = discord.Embed(
+                title="❌ Universal Retailer Scan Failed",
+                description=(
+                    f"Controlled silent scan failed for "
+                    f"**{scan_store_object.name}**. "
                     "No universal retailer alerts were sent."
                 ),
+            )
+            failure_embed.add_field(
+                name="Store ID",
+                value=f"`{scan_store_object.id}`",
+                inline=True,
+            )
+            failure_embed.add_field(
+                name="Platform",
+                value=f"`{platform_display_name(platform)}`",
+                inline=True,
+            )
+            failure_embed.add_field(
+                name="Domain",
+                value=f"`{scan_store_object.domain}`",
+                inline=False,
+            )
+            failure_embed.add_field(
+                name="Reason",
+                value=f"`{scan_result.get('error') or 'Unknown error'}`",
+                inline=False,
+            )
+            failure_embed.add_field(
+                name="Discovery Diagnostics",
+                value=format_universal_discovery_diagnostics(
+                    scan_result.get("diagnostics")
+                )[:1000],
+                inline=False,
+            )
+            failure_embed.add_field(
+                name="Safety",
+                value="🔇 Forced silent scan — Discord alerts remained disabled.",
+                inline=False,
+            )
+            failure_embed.set_footer(
+                text="Lotus Universal Retailer Foundation • 6J-3F2 Shopware Discovery Diagnostics"
+            )
 
+            await interaction.followup.send(
+                embed=failure_embed,
                 ephemeral=True,
             )
 
