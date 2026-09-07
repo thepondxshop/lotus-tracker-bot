@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F3 — Shopware Listing Fragment + Product Sitemap Fallback
+Step 6J-3F5 — Robust Shopware Product Sitemap Anchor + Slug Discovery
 Initial production target: Miniature Market
 
 Safety:
@@ -32,7 +32,7 @@ import json
 import re
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 
@@ -825,6 +825,148 @@ class ShopwareListingParser(HTMLParser):
             self.cards.append(card)
 
 
+
+# =========================================================
+# SHOPWARE PRODUCT-SITEMAP ANCHOR PARSER
+# Step 6J-3F5
+# =========================================================
+
+
+class ShopwareSitemapAnchorParser(HTMLParser):
+    """
+    Tolerant anchor extractor for public Shopware sitemap pages.
+
+    The earlier F3/F4 fallback used one paired-anchor regex. That is too
+    brittle for customized/minified HTML because attributes may be reordered,
+    whitespace may appear around '=', and the product label may live in a
+    nested span/image attribute instead of direct anchor text.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.anchors: list[dict[str, Any]] = []
+        self._current: dict[str, Any] | None = None
+        self._text_parts: list[str] = []
+
+    @staticmethod
+    def _attrs(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+        return {
+            str(key).lower(): str(value or "")
+            for key, value in attrs
+        }
+
+    def _finish_anchor(self) -> None:
+        if self._current is None:
+            return
+
+        href = clean_text(self._current.get("href"))
+        visible = clean_text(" ".join(self._text_parts))
+        title_attr = clean_text(self._current.get("title"))
+        aria_label = clean_text(self._current.get("aria_label"))
+        image_alt = clean_text(self._current.get("image_alt"))
+
+        if href:
+            self.anchors.append({
+                "href": href,
+                "text": visible,
+                "title": title_attr,
+                "aria_label": aria_label,
+                "image_alt": image_alt,
+            })
+
+        self._current = None
+        self._text_parts = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs_raw: list[tuple[str, str | None]],
+    ) -> None:
+        tag = tag.lower()
+        attrs = self._attrs(attrs_raw)
+
+        if tag == "a":
+            # Malformed markup occasionally begins a new anchor without
+            # closing the previous one. Preserve what we already captured.
+            if self._current is not None:
+                self._finish_anchor()
+
+            self._current = {
+                "href": attrs.get("href"),
+                "title": attrs.get("title"),
+                "aria_label": attrs.get("aria-label"),
+                "image_alt": "",
+            }
+            self._text_parts = []
+            return
+
+        if self._current is not None and tag == "img":
+            alt = clean_text(attrs.get("alt"))
+            if alt and not clean_text(self._current.get("image_alt")):
+                self._current["image_alt"] = alt
+
+    def handle_data(self, data: str) -> None:
+        if self._current is None:
+            return
+        text = clean_text(data)
+        if text:
+            self._text_parts.append(text)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._current is not None:
+            self._finish_anchor()
+
+    def close(self) -> None:
+        super().close()
+        if self._current is not None:
+            self._finish_anchor()
+
+
+def sitemap_slug_title(url: str) -> str:
+    """Derive a readable product title from a Miniature Market-style URL."""
+    try:
+        path = unquote(urlparse(url).path or "").strip("/")
+    except Exception:
+        return ""
+
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        return ""
+
+    # Miniature Market product URLs normally end in a product number such as
+    # /GUNDAM-Card-Game-Clan-Unity-ST06-Starter-Deck/BAN2810959.
+    slug = segments[-1]
+    if len(segments) >= 2 and re.fullmatch(
+        r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9._-]{3,}",
+        segments[-1],
+    ):
+        slug = segments[-2]
+
+    slug = re.sub(r"[-_]+", " ", slug)
+    slug = re.sub(r"\s+", " ", slug)
+    return clean_text(slug)
+
+
+def sitemap_href_looks_productish(url: str) -> bool:
+    """Conservative product-URL shape check for slug-based classification."""
+    try:
+        path = unquote(urlparse(url).path or "").strip("/")
+    except Exception:
+        return False
+
+    segments = [segment for segment in path.split("/") if segment]
+    if len(segments) < 2:
+        return False
+
+    product_number = segments[-1]
+    if not re.fullmatch(
+        r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9._-]{3,}",
+        product_number,
+    ):
+        return False
+
+    return True
+
 # =========================================================
 # SHOPWARE ADAPTER
 # =========================================================
@@ -881,6 +1023,10 @@ class ShopwareAdapter(RetailerAdapter):
             "sitemap_pages_checked": 0,
             "sitemap_pages_successful": 0,
             "sitemap_anchors_seen": 0,
+            "sitemap_href_candidates": 0,
+            "sitemap_title_game_hits": 0,
+            "sitemap_slug_game_hits": 0,
+            "sitemap_parser_errors": 0,
             "sitemap_supported_products": 0,
             "sitemap_product_pages_requested": 0,
             "sitemap_product_pages_successful": 0,
@@ -1191,24 +1337,56 @@ class ShopwareAdapter(RetailerAdapter):
 
     def _extract_supported_sitemap_anchors(self, html: str) -> list[dict[str, Any]]:
         """
-        Extract supported TCG product links from Miniature Market's public
-        product sitemap. This is intentionally title-gated so board games,
-        miniatures, accessories, and unrelated products are ignored.
+        Extract supported TCG product links from a public Shopware product
+        sitemap using a tolerant HTML parser plus a conservative href/slug
+        fallback.
+
+        F3/F4 proved the sitemap route itself is reachable on Railway, but a
+        paired-anchor regex returned zero TCG links. F5 therefore treats the
+        href as primary evidence and can classify from a product URL slug when
+        the visible anchor label is nested, empty, or customized.
         """
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
+        anchors: list[dict[str, Any]] = []
 
+        parser = ShopwareSitemapAnchorParser()
+        try:
+            parser.feed(html or "")
+            parser.close()
+            anchors.extend(parser.anchors)
+        except Exception:
+            self.diagnostics["sitemap_parser_errors"] += 1
+
+        # Malformed/minified fallback: extract href values without requiring a
+        # matching </a>. This also tolerates whitespace around '='.
+        parser_hrefs = {
+            clean_text(item.get("href"))
+            for item in anchors
+            if clean_text(item.get("href"))
+        }
         for match in re.finditer(
-            r"<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+            r"\bhref\s*=\s*(?:[\"']([^\"']+)[\"']|([^\s>]+))",
             html or "",
-            re.IGNORECASE | re.DOTALL,
+            re.IGNORECASE,
         ):
-            self.diagnostics["sitemap_anchors_seen"] += 1
-            title = clean_text(match.group(2))
-            if not title or not classify_game(title):
+            href = clean_text(match.group(1) or match.group(2))
+            if not href or href in parser_hrefs:
                 continue
+            parser_hrefs.add(href)
+            anchors.append({
+                "href": href,
+                "text": "",
+                "title": "",
+                "aria_label": "",
+                "image_alt": "",
+            })
 
-            url = canonical_url(self.base_url, match.group(1))
+        for anchor in anchors:
+            self.diagnostics["sitemap_anchors_seen"] += 1
+
+            raw_href = clean_text(anchor.get("href"))
+            url = canonical_url(self.base_url, raw_href)
             if not url or not same_store_host(self.domain, url):
                 continue
 
@@ -1220,8 +1398,45 @@ class ShopwareAdapter(RetailerAdapter):
             }:
                 continue
 
+            self.diagnostics["sitemap_href_candidates"] += 1
+
+            label_candidates = (
+                clean_text(anchor.get("text")),
+                clean_text(anchor.get("title")),
+                clean_text(anchor.get("aria_label")),
+                clean_text(anchor.get("image_alt")),
+            )
+
+            title = ""
+            game = None
+            for candidate in label_candidates:
+                if not candidate:
+                    continue
+                candidate_game = classify_game(candidate)
+                if candidate_game:
+                    title = candidate
+                    game = candidate_game
+                    self.diagnostics["sitemap_title_game_hits"] += 1
+                    break
+
+            # If the visible label is absent or too generic, Miniature Market's
+            # canonical product URL itself contains the product title followed
+            # by a SKU/product number. Only use this fallback when the URL has
+            # that conservative product shape.
+            if game is None and sitemap_href_looks_productish(url):
+                slug_title = sitemap_slug_title(url)
+                slug_game = classify_game(slug_title)
+                if slug_game:
+                    title = slug_title
+                    game = slug_game
+                    self.diagnostics["sitemap_slug_game_hits"] += 1
+
+            if game is None or not title:
+                continue
+
             if url in seen:
                 continue
+
             seen.add(url)
             entries.append({
                 "title": title,
@@ -1229,7 +1444,10 @@ class ShopwareAdapter(RetailerAdapter):
                 "text": title,
                 "image_url": None,
                 "product_id": None,
-                "preorder_page": any(term in title.lower() for term in PREORDER_TERMS),
+                "preorder_page": any(
+                    term in f"{title} {url}".lower()
+                    for term in PREORDER_TERMS
+                ),
                 "source": "PRODUCT_SITEMAP",
             })
 
@@ -1580,7 +1798,7 @@ class ShopwareAdapter(RetailerAdapter):
 
                     await asyncio.sleep(self.request_delay)
 
-            # Step 6J-3F4: IMPORTANT — sitemap discovery must stay inside
+            # Step 6J-3F5: IMPORTANT — sitemap discovery must stay inside
             # this ClientSession context. F3 accidentally ran the sitemap
             # fallback after the `async with ClientSession(...)` block exited,
             # which produced RuntimeError: Session is closed before the first
