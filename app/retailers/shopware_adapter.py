@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F1 — Shopware 6 Production Platform Probe
+Step 6J-3F2 — Shopware 6 Large-Catalog Discovery Hardening
 Initial production target: Miniature Market
 
 Safety:
@@ -50,7 +50,7 @@ USER_AGENT = (
 
 DEFAULT_TIMEOUT = 18
 DEFAULT_REQUEST_DELAY = 0.35
-MAX_BODY_BYTES = 4_000_000
+MAX_BODY_BYTES = 12_000_000
 MAX_LISTING_PAGES = 36
 MAX_PREORDER_PAGES = 14
 MAX_PRODUCT_PAGES = 350
@@ -65,6 +65,19 @@ DEFAULT_LISTING_PATHS = (
     "/tcg",
     "/cards.html",
     "/cards",
+)
+
+# Miniature Market has a very large all-TCG listing.  Smaller game-specific
+# Shopware category pages are deliberately attempted first so initial
+# onboarding can discover supported products without depending on one huge
+# category response.  These paths are only injected for miniaturemarket.com.
+MINIATURE_MARKET_PRIORITY_PATHS = (
+    "/trading-card-games/pokemon.html",
+    "/trading-card-games/one-piece.html",
+    "/trading-card-games/gundam-card-game",
+    "/trading-card-games/riftbound",
+    "/trading-card-games/preorders.html",
+    "/trading-card-games/new-releases.html",
 )
 
 DEFAULT_PREORDER_PATHS = (
@@ -832,7 +845,12 @@ class ShopwareAdapter(RetailerAdapter):
             "pages_checked": 0,
             "pages_successful": 0,
             "pages_failed": 0,
+            "body_too_large": 0,
+            "largest_body_bytes": 0,
             "listing_roots_found": 0,
+            "fallback_anchors_seen": 0,
+            "fallback_supported_anchors": 0,
+            "rejected_products": 0,
             "listing_pages_checked": 0,
             "listing_pages_successful": 0,
             "listing_cards_seen": 0,
@@ -961,10 +979,25 @@ class ShopwareAdapter(RetailerAdapter):
                     self.diagnostics["pages_failed"] += 1
                     return None, response
 
+                # Shopware category pages can be several megabytes because
+                # storefront filters, plugin configuration, and product cards
+                # are server-rendered together.  Step 6J-3F used a 4 MB cap,
+                # which was too small for Miniature Market's TCG catalog and
+                # caused perfectly valid HTTP 200 pages to be discarded before
+                # product links could be parsed.  Keep a bounded cap, but make
+                # it large enough for real Shopware catalog pages.
                 raw = await response.content.read(MAX_BODY_BYTES + 1)
-                if len(raw) > MAX_BODY_BYTES:
+                body_bytes = len(raw)
+                self.diagnostics["largest_body_bytes"] = max(
+                    int(self.diagnostics.get("largest_body_bytes", 0) or 0),
+                    body_bytes,
+                )
+                if body_bytes > MAX_BODY_BYTES:
+                    self.diagnostics["body_too_large"] += 1
                     self.diagnostics["pages_failed"] += 1
-                    self.diagnostics["last_error"] = "HTML_BODY_TOO_LARGE"
+                    self.diagnostics["last_error"] = (
+                        f"HTML_BODY_TOO_LARGE:{body_bytes}>{MAX_BODY_BYTES}"
+                    )
                     return None, response
 
                 charset = response.charset or "utf-8"
@@ -1033,6 +1066,15 @@ class ShopwareAdapter(RetailerAdapter):
             seen.add(key)
             roots.append((canonical, preorder))
 
+        # Store-specific high-value roots first.  This is intentionally
+        # bounded and public; no private Shopware API is used.
+        if self.domain == "miniaturemarket.com":
+            for path in MINIATURE_MARKET_PRIORITY_PATHS:
+                add(
+                    f"{self.base_url}{path}",
+                    "preorder" in path.lower(),
+                )
+
         for path in DEFAULT_LISTING_PATHS:
             add(f"{self.base_url}{path}", False)
         for path in DEFAULT_PREORDER_PATHS:
@@ -1068,33 +1110,97 @@ class ShopwareAdapter(RetailerAdapter):
         *,
         preorder_page: bool,
     ) -> list[dict[str, Any]]:
-        products: list[dict[str, Any]] = []
+        """
+        Theme-independent product-link fallback.
 
-        for match in re.finditer(
-            r"<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
-            html or "",
+        Some Shopware themes heavily customize the normal ``product-box``
+        markup.  Miniature Market is one such storefront.  We therefore scan
+        ordinary same-host anchors and accept only anchors whose visible text,
+        title/aria-label, or nested image alt text classifies as a supported
+        TCG product.  The strict game classifier prevents navigation/category
+        links from being accepted as products.
+        """
+        products: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+
+        anchor_re = re.compile(
+            r"<a\b([^>]*)href=[\"']([^\"']+)[\"']([^>]*)>(.*?)</a>",
             re.IGNORECASE | re.DOTALL,
-        ):
-            title = clean_text(match.group(2))
-            if not classify_game(title):
+        )
+
+        def attr_value(attrs: str, name: str) -> str:
+            match = re.search(
+                rf"\b{re.escape(name)}\s*=\s*[\"']([^\"']+)[\"']",
+                attrs or "",
+                re.IGNORECASE,
+            )
+            return clean_text(match.group(1)) if match else ""
+
+        for match in anchor_re.finditer(html or ""):
+            self.diagnostics["fallback_anchors_seen"] += 1
+
+            attrs = f"{match.group(1)} {match.group(3)}"
+            inner = match.group(4) or ""
+            visible = clean_text(inner)
+            title_attr = attr_value(attrs, "title")
+            aria_label = attr_value(attrs, "aria-label")
+
+            img_alt = ""
+            img_match = re.search(
+                r"<img\b[^>]*\balt=[\"']([^\"']+)[\"']",
+                inner,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if img_match:
+                img_alt = clean_text(img_match.group(1))
+
+            candidates = [visible, title_attr, aria_label, img_alt]
+            title = next(
+                (candidate for candidate in candidates if classify_game(candidate)),
+                "",
+            )
+            if not title:
                 continue
 
-            url = canonical_url(self.base_url, match.group(1))
+            url = canonical_url(self.base_url, match.group(2))
             if not url or not same_store_host(self.domain, url):
                 continue
+            if url in seen_urls:
+                continue
 
-            # Product URLs on Miniature Market/Shopware commonly end in .html.
-            # Other Shopware themes may use extensionless SEO URLs, so the
-            # classifier/title guard remains the primary product check.
-            start = max(0, match.start() - 2500)
-            end = min(len(html), match.end() + 3500)
+            # Reject obvious category/navigation roots even if a theme gives
+            # them a product-like label.
+            path = urlparse(url).path.rstrip("/").lower()
+            if path in {
+                "/trading-card-games",
+                "/trading-card-games.html",
+                "/tcg",
+                "/tcg.html",
+                "/cards",
+                "/cards.html",
+            }:
+                continue
+
+            start = max(0, match.start() - 1800)
+            end = min(len(html), match.end() + 2800)
             context = clean_text(html[start:end])
 
+            image_url = None
+            img_src_match = re.search(
+                r"<img\b[^>]*(?:src|data-src)=[\"']([^\"']+)[\"']",
+                inner,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if img_src_match:
+                image_url = canonical_url(self.base_url, img_src_match.group(1))
+
+            seen_urls.add(url)
+            self.diagnostics["fallback_supported_anchors"] += 1
             products.append({
                 "title": title,
                 "url": url,
                 "text": context,
-                "image_url": None,
+                "image_url": image_url,
                 "product_id": None,
                 "preorder_page": preorder_page,
             })
@@ -1226,6 +1332,10 @@ class ShopwareAdapter(RetailerAdapter):
             f"Store={self.store_name} | Roots={self.diagnostics['listing_roots_found']} | "
             f"ListingPages={self.diagnostics['listing_pages_successful']} | "
             f"SupportedDiscovered={self.diagnostics['product_urls_discovered']} | "
+            f"FallbackAnchors={self.diagnostics['fallback_supported_anchors']} | "
+            f"BodyTooLarge={self.diagnostics['body_too_large']} | "
+            f"LargestBodyBytes={self.diagnostics['largest_body_bytes']} | "
+            f"LastError={self.diagnostics.get('last_error')} | "
             f"Returned={len(entries)} | Known={len(self.known_product_urls)}"
         )
 
@@ -1413,17 +1523,20 @@ class ShopwareAdapter(RetailerAdapter):
     def normalize_product(self, product: Any) -> RetailerProduct | None:
         if not isinstance(product, dict):
             self.diagnostics["products_rejected"] += 1
+            self.diagnostics["rejected_products"] += 1
             return None
 
         title = clean_text(product.get("title") or product.get("name"))
         url = canonical_url(self.base_url, product.get("url"))
         if not title or not url:
             self.diagnostics["products_rejected"] += 1
+            self.diagnostics["rejected_products"] += 1
             return None
 
         game = classify_game(title)
         if not game:
             self.diagnostics["products_rejected"] += 1
+            self.diagnostics["rejected_products"] += 1
             return None
 
         source = clean_text(product.get("source") or "LISTING_CARD").upper()
