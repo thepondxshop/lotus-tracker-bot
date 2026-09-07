@@ -4,7 +4,7 @@ PonDeX Trackers
 
 Retailer Adapter Loader
 Version: 1.0.4
-Step 6J-3A — PrestaShop Universal Adapter Registration
+Step 6J-3F — Shopware 6 Universal Adapter Registration
 """
 
 from __future__ import annotations
@@ -33,9 +33,12 @@ def load_retailer_adapters() -> None:
     from app.retailers import prestashop_adapter
     _ = prestashop_adapter
 
+    from app.retailers import shopware_adapter
+    _ = shopware_adapter
+
     _ADAPTERS_LOADED = True
     logger.info(
-        "RETAILER ADAPTERS LOADED | Version=%s | Platforms=square_weebly,woocommerce,bigcommerce,prestashop",
+        "RETAILER ADAPTERS LOADED | Version=%s | Platforms=square_weebly,woocommerce,bigcommerce,prestashop,shopware",
         VERSION,
     )
 
