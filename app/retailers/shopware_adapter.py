@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F — Shopware 6 Public Storefront Foundation
+Step 6J-3F1 — Shopware 6 Production Platform Probe
 Initial production target: Miniature Market
 
 Safety:
@@ -42,8 +42,10 @@ from app.retailer_registry import retailer_adapter
 
 VERSION = "1.0.4"
 USER_AGENT = (
-    "LotusTracker/1.0.4 "
-    "(PonDeX Trackers; public Shopware storefront monitor)"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/150.0.0.0 Safari/537.36 "
+    "LotusTracker/1.0.4"
 )
 
 DEFAULT_TIMEOUT = 18
@@ -76,6 +78,27 @@ CATEGORY_DISCOVERY_PATHS = (
     "/",
     "/category-sitemap",
     "/sitemap",
+)
+
+SHOPWARE_PLATFORM_PROBE_PATHS = (
+    "/account/login",
+    "/trading-card-games.html",
+    "/",
+)
+
+SHOPWARE_STRONG_MARKERS = (
+    "full range of shopware 6",
+    "data-shopware-plugin",
+    "/bundles/storefront/",
+    "shopware.storefront",
+)
+
+SHOPWARE_STRUCTURAL_MARKERS = (
+    "cms-listing-col",
+    "product-box",
+    "product-detail-buy",
+    "product-detail-price",
+    "account-login",
 )
 
 SUPPORTED_GAME_TERMS: dict[str, tuple[str, ...]] = {
@@ -848,6 +871,65 @@ class ShopwareAdapter(RetailerAdapter):
             if url:
                 cleaned.add(url)
         self.known_product_urls = cleaned
+
+    async def platform_probe(self) -> dict[str, Any]:
+        """
+        Lightweight public Shopware storefront fingerprint using the same
+        HTTP behavior as the production adapter. This avoids detector drift.
+        No authentication, cart mutation, or checkout actions are performed.
+        """
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+        }
+        connector = aiohttp.TCPConnector(limit=3, limit_per_host=2)
+        notes: list[str] = []
+
+        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+            for path in SHOPWARE_PLATFORM_PROBE_PATHS:
+                url = f"{self.base_url}{path}"
+                html, response = await self._fetch_text(session, url)
+                if response is None:
+                    notes.append(f"{path}:NO_RESPONSE")
+                    continue
+                if not html:
+                    notes.append(f"{path}:HTTP_{response.status}:NO_HTML")
+                    continue
+
+                lowered = html.lower()
+                strong = [m for m in SHOPWARE_STRONG_MARKERS if m in lowered]
+                structural = [m for m in SHOPWARE_STRUCTURAL_MARKERS if m in lowered]
+
+                if strong:
+                    return {
+                        "detected": True,
+                        "path": path,
+                        "status": int(response.status),
+                        "strength": "STRONG",
+                        "markers": strong[:4],
+                    }
+
+                if len(structural) >= 2:
+                    return {
+                        "detected": True,
+                        "path": path,
+                        "status": int(response.status),
+                        "strength": "STRUCTURAL",
+                        "markers": structural[:5],
+                    }
+
+                notes.append(
+                    f"{path}:HTTP_{response.status}:BYTES_{len(html.encode('utf-8', errors='ignore'))}"
+                )
+                await asyncio.sleep(self.request_delay)
+
+        return {
+            "detected": False,
+            "reason": self.diagnostics.get("last_error") or "NO_SHOPWARE_MARKERS",
+            "notes": notes[:6],
+        }
 
     async def _fetch_text(
         self,
