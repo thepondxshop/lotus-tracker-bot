@@ -3538,21 +3538,20 @@ def format_universal_discovery_diagnostics(value) -> str:
         ("listing_pages_successful", "Listing pages OK"),
         ("listing_cards_seen", "Listing cards"),
         ("listing_fragment_urls_found", "Fragment URLs"),
-        ("listing_fragment_pages_successful", "Fragment pages OK"),
         ("listing_fragment_cards_seen", "Fragment cards"),
-        ("fallback_supported_anchors", "Fallback product links"),
-        ("sitemap_pages_successful", "Sitemap pages OK"),
-        ("sitemap_anchors_seen", "Sitemap anchors seen"),
-        ("sitemap_href_candidates", "Sitemap href candidates"),
-        ("sitemap_title_game_hits", "Sitemap title TCG hits"),
-        ("sitemap_slug_game_hits", "Sitemap slug TCG hits"),
-        ("sitemap_supported_products", "Sitemap TCG links"),
-        ("sitemap_product_pages_successful", "Sitemap product pages OK"),
+        ("xml_sitemap_docs_successful", "XML sitemap docs OK"),
+        ("xml_sitemap_locs_seen", "XML sitemap URLs seen"),
+        ("xml_sitemap_child_docs", "XML child sitemaps"),
+        ("xml_sitemap_product_candidates", "XML product candidates"),
+        ("xml_sitemap_tcg_hits", "XML TCG hits"),
+        ("sitemap_pages_successful", "HTML sitemap pages OK"),
+        ("sitemap_body_game_pages", "HTML sitemap game-text pages"),
+        ("sitemap_anchors_seen", "HTML sitemap anchors"),
+        ("sitemap_title_game_hits", "HTML title TCG hits"),
+        ("sitemap_slug_game_hits", "HTML slug TCG hits"),
+        ("sitemap_product_pages_successful", "Product pages OK"),
         ("product_urls_discovered", "Product URLs"),
-        ("body_too_large", "Oversize pages"),
-        ("largest_body_bytes", "Largest body bytes"),
         ("http_429", "HTTP 429"),
-        ("http_blocked", "HTTP blocked"),
     )
 
     lines = []
@@ -5048,7 +5047,7 @@ async def scanretailer(
                 inline=False,
             )
             failure_embed.set_footer(
-                text="Lotus Universal Retailer Foundation • 6J-3F3 Shopware Fragment + Sitemap Diagnostics"
+                text="Lotus Universal Retailer Foundation • 6J-3F6 Shopware XML + HTML Sitemap Diagnostics"
             )
 
             await interaction.followup.send(
