@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F5 — Robust Shopware Product Sitemap Anchor + Slug Discovery
+Step 6J-3F6 — XML Sitemap Discovery + HTML Sitemap Diagnostics
 Initial production target: Miniature Market
 
 Safety:
@@ -59,6 +59,13 @@ MAX_FRAGMENT_URLS_PER_ROOT = 4
 MAX_PRODUCT_SITEMAP_PAGES = 30
 PRODUCT_SITEMAP_TARGET = 140
 MAX_SITEMAP_PRODUCT_PAGE_FETCHES = 120
+MAX_XML_SITEMAP_DOCUMENTS = 24
+XML_SITEMAP_TARGET = 180
+XML_SITEMAP_PATHS = (
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+    "/sitemap-index.xml",
+)
 
 # Miniature Market exposes the canonical Shopware category at the first path.
 # The additional paths keep the adapter useful for other public Shopware shops.
@@ -1030,6 +1037,14 @@ class ShopwareAdapter(RetailerAdapter):
             "sitemap_supported_products": 0,
             "sitemap_product_pages_requested": 0,
             "sitemap_product_pages_successful": 0,
+            "sitemap_body_game_pages": 0,
+            "xml_sitemap_docs_checked": 0,
+            "xml_sitemap_docs_successful": 0,
+            "xml_sitemap_locs_seen": 0,
+            "xml_sitemap_child_docs": 0,
+            "xml_sitemap_product_candidates": 0,
+            "xml_sitemap_tcg_hits": 0,
+            "xml_sitemap_parse_errors": 0,
             "product_pages_successful": 0,
             "products_accepted": 0,
             "products_rejected": 0,
@@ -1453,6 +1468,184 @@ class ShopwareAdapter(RetailerAdapter):
 
         return entries
 
+    @staticmethod
+    def _extract_xml_locs(document: str) -> list[str]:
+        """
+        Extract <loc> values from an XML sitemap or sitemap index.
+
+        Namespace prefixes are tolerated because some Shopware/CDN sitemap
+        generators emit namespaced tags. Regex is intentionally used here
+        instead of a strict XML parser so a harmless malformed entity does not
+        discard an otherwise usable public sitemap document.
+        """
+        values: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(
+            r"<(?:[A-Za-z0-9_-]+:)?loc\b[^>]*>(.*?)</(?:[A-Za-z0-9_-]+:)?loc\s*>",
+            document or "",
+            re.IGNORECASE | re.DOTALL,
+        ):
+            value = clean_text(match.group(1))
+            if not value:
+                continue
+            value = html_lib.unescape(value).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            values.append(value)
+        return values
+
+    @staticmethod
+    def _looks_like_sitemap_document(url: str) -> bool:
+        lowered = str(url or "").lower()
+        path = urlparse(lowered).path
+        basename = path.rsplit("/", 1)[-1]
+        return (
+            basename.endswith(".xml")
+            or basename.endswith(".xml.gz")
+            or "sitemap" in basename
+        )
+
+    def _xml_url_to_supported_entry(self, raw_url: str) -> dict[str, Any] | None:
+        """Convert a public XML-sitemap URL into a supported TCG candidate."""
+        url = canonical_url(self.base_url, raw_url)
+        if not url or not same_store_host(self.domain, url):
+            return None
+
+        # Do not treat navigation/sitemap routes as products.
+        path = urlparse(url).path.rstrip("/").lower()
+        if not path or path in {
+            "/sitemap.xml",
+            "/sitemap_index.xml",
+            "/sitemap-index.xml",
+            "/product-sitemap",
+            "/category-sitemap",
+            "/sitemap",
+        }:
+            return None
+
+        # Miniature Market embeds the useful product title in the canonical URL
+        # slug. Other Shopware stores frequently do the same. The classifier
+        # still requires a supported game plus product structure, so unrelated
+        # Gundam model kits or generic Pokemon category roots are rejected.
+        title = sitemap_slug_title(url)
+        game = classify_game(title)
+
+        if game is None:
+            readable_path = clean_text(
+                re.sub(r"[-_/]+", " ", unquote(urlparse(url).path))
+            )
+            game = classify_game(readable_path)
+            if game:
+                title = readable_path
+
+        if game is None or not title:
+            return None
+
+        return {
+            "title": title,
+            "url": url,
+            "text": title,
+            "image_url": None,
+            "product_id": None,
+            "preorder_page": any(
+                term in f"{title} {url}".lower()
+                for term in PREORDER_TERMS
+            ),
+            "source": "XML_SITEMAP",
+        }
+
+    async def _discover_xml_sitemap_entries(
+        self,
+        session: aiohttp.ClientSession,
+    ) -> list[dict[str, Any]]:
+        """
+        Bounded standards-based XML sitemap discovery.
+
+        F5 proved Miniature Market's HTML product-sitemap endpoint returns a
+        much thinner response to Railway than to normal web crawlers. The site
+        also publicly exposes /sitemap.xml, so F6 prefers the standard XML
+        sitemap graph and follows only same-host public sitemap documents.
+        """
+        discovered: dict[str, dict[str, Any]] = {}
+        queue: list[str] = [
+            f"{self.base_url}{path}"
+            for path in XML_SITEMAP_PATHS
+        ]
+        queued = {item.lower() for item in queue}
+        visited: set[str] = set()
+
+        while queue and len(visited) < MAX_XML_SITEMAP_DOCUMENTS:
+            sitemap_url = queue.pop(0)
+            key = sitemap_url.lower()
+            if key in visited:
+                continue
+            visited.add(key)
+
+            self.diagnostics["xml_sitemap_docs_checked"] += 1
+            document, response = await self._fetch_text(session, sitemap_url)
+            if not document or response is None or response.status >= 400:
+                continue
+
+            self.diagnostics["xml_sitemap_docs_successful"] += 1
+            locs = self._extract_xml_locs(document)
+            if not locs:
+                self.diagnostics["xml_sitemap_parse_errors"] += 1
+                await asyncio.sleep(self.request_delay)
+                continue
+
+            self.diagnostics["xml_sitemap_locs_seen"] += len(locs)
+
+            # Put likely product sitemap documents first so the bounded crawl
+            # does not spend its entire budget on image/category/news sitemaps.
+            child_docs: list[str] = []
+            product_urls: list[str] = []
+            for raw_loc in locs:
+                request_url = canonical_request_url(self.base_url, raw_loc)
+                if not request_url or not same_store_host(self.domain, request_url):
+                    continue
+                if self._looks_like_sitemap_document(request_url):
+                    child_docs.append(request_url)
+                else:
+                    product_urls.append(request_url)
+
+            child_docs.sort(
+                key=lambda value: (
+                    0 if "product" in value.lower() else 1,
+                    value.lower(),
+                )
+            )
+
+            for child in child_docs:
+                child_key = child.lower()
+                if child_key in visited or child_key in queued:
+                    continue
+                if len(visited) + len(queue) >= MAX_XML_SITEMAP_DOCUMENTS:
+                    break
+                queued.add(child_key)
+                queue.append(child)
+                self.diagnostics["xml_sitemap_child_docs"] += 1
+
+            for raw_product_url in product_urls:
+                self.diagnostics["xml_sitemap_product_candidates"] += 1
+                entry = self._xml_url_to_supported_entry(raw_product_url)
+                if not entry:
+                    continue
+                product_url = canonical_url(self.base_url, entry.get("url"))
+                if not product_url or product_url in discovered:
+                    continue
+                discovered[product_url] = entry
+                self.diagnostics["xml_sitemap_tcg_hits"] += 1
+                if len(discovered) >= XML_SITEMAP_TARGET:
+                    break
+
+            if len(discovered) >= XML_SITEMAP_TARGET:
+                break
+
+            await asyncio.sleep(self.request_delay)
+
+        return list(discovered.values())
+
     async def _discover_product_sitemap_entries(
         self,
         session: aiohttp.ClientSession,
@@ -1475,6 +1668,17 @@ class ShopwareAdapter(RetailerAdapter):
                 continue
 
             self.diagnostics["sitemap_pages_successful"] += 1
+
+            # F6 diagnostic: distinguish "parser missed a product" from
+            # "Railway received a sitemap shell with no supported-game text".
+            lowered_html = clean_text(html).lower()
+            if any(
+                term in lowered_html
+                for terms in SUPPORTED_GAME_TERMS.values()
+                for term in terms
+            ):
+                self.diagnostics["sitemap_body_game_pages"] += 1
+
             entries = self._extract_supported_sitemap_anchors(html)
 
             page_new = 0
@@ -1809,6 +2013,30 @@ class ShopwareAdapter(RetailerAdapter):
             # The sitemap gives us canonical product URLs and titles; a bounded
             # product-page enrichment pass then supplies price/availability.
             if len(discovered_by_url) < 40:
+                # F6: standards-based XML sitemap discovery comes first.
+                # Miniature Market's HTML product-sitemap is intentionally kept
+                # as a secondary fallback because Railway receives a much thinner
+                # HTML representation than normal web crawlers.
+                xml_entries = await self._discover_xml_sitemap_entries(session)
+                unseen_xml_entries = [
+                    entry
+                    for entry in xml_entries
+                    if canonical_url(self.base_url, entry.get("url")) not in discovered_by_url
+                ]
+                enriched_xml_entries = await self._enrich_sitemap_entries(
+                    session,
+                    unseen_xml_entries,
+                )
+
+                for entry in enriched_xml_entries:
+                    title = clean_text(entry.get("title"))
+                    product_url = canonical_url(self.base_url, entry.get("url"))
+                    if not title or not product_url or not classify_game(title):
+                        continue
+                    if product_url not in discovered_by_url:
+                        discovered_by_url[product_url] = entry
+
+            if len(discovered_by_url) < 40:
                 sitemap_entries = await self._discover_product_sitemap_entries(session)
                 unseen_sitemap_entries = [
                     entry
@@ -1856,6 +2084,8 @@ class ShopwareAdapter(RetailerAdapter):
             f"FallbackAnchors={self.diagnostics['fallback_supported_anchors']} | "
             f"FragmentURLs={self.diagnostics['listing_fragment_urls_found']} | "
             f"FragmentCards={self.diagnostics['listing_fragment_cards_seen']} | "
+            f"XMLSitemapDocs={self.diagnostics['xml_sitemap_docs_successful']} | "
+            f"XMLSitemapHits={self.diagnostics['xml_sitemap_tcg_hits']} | "
             f"SitemapProducts={self.diagnostics['sitemap_supported_products']} | "
             f"SitemapProductPagesOK={self.diagnostics['sitemap_product_pages_successful']} | "
             f"BodyTooLarge={self.diagnostics['body_too_large']} | "
