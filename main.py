@@ -3542,6 +3542,10 @@ def format_universal_discovery_diagnostics(value) -> str:
         ("listing_fragment_cards_seen", "Fragment cards"),
         ("fallback_supported_anchors", "Fallback product links"),
         ("sitemap_pages_successful", "Sitemap pages OK"),
+        ("sitemap_anchors_seen", "Sitemap anchors seen"),
+        ("sitemap_href_candidates", "Sitemap href candidates"),
+        ("sitemap_title_game_hits", "Sitemap title TCG hits"),
+        ("sitemap_slug_game_hits", "Sitemap slug TCG hits"),
         ("sitemap_supported_products", "Sitemap TCG links"),
         ("sitemap_product_pages_successful", "Sitemap product pages OK"),
         ("product_urls_discovered", "Product URLs"),
@@ -3560,7 +3564,7 @@ def format_universal_discovery_diagnostics(value) -> str:
     if last_error:
         lines.append(f"**Adapter error:** `{str(last_error)[:220]}`")
 
-    return "\n".join(lines[:15]) or "Adapter diagnostics were empty."
+    return "\n".join(lines[:20]) or "Adapter diagnostics were empty."
 
 
 # =========================================================
