@@ -1,14 +1,14 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Universal Retailer Platform Detector
-Version: 1.0.1
+Version: 1.0.3
 
-Step 6J-3E3 — Automatic Retailer Platform Fingerprinting
+Step 6J-3F — Shopware 6 Platform Fingerprinting
 
 Purpose:
 - Detect the storefront platform before a universal retailer is staged.
 - Distinguish WooCommerce, Square/Weebly, BigCommerce, PrestaShop,
-  and Shopify using bounded public storefront signals.
+  Shopware 6, and Shopify using bounded public storefront signals.
 - Treat Square payment references as weak evidence so a WooCommerce
   store that merely uses Square for payments is not misclassified.
 - Return confidence + diagnostics so main.py can refuse ambiguous stores.
@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 USER_AGENT = (
     "LotusTracker/1.0.4 "
     "(PonDeX Trackers; public retailer platform fingerprinting)"
@@ -47,6 +47,7 @@ AUTO_STAGE_PLATFORMS = {
     "woocommerce",
     "bigcommerce",
     "prestashop",
+    "shopware",
 }
 
 PLATFORM_LABELS = {
@@ -54,6 +55,7 @@ PLATFORM_LABELS = {
     "woocommerce": "WooCommerce",
     "bigcommerce": "BigCommerce",
     "prestashop": "PrestaShop",
+    "shopware": "Shopware 6",
     "shopify": "Shopify",
     "unknown": "Unknown",
 }
@@ -135,6 +137,7 @@ def _initial_scores() -> dict[str, int]:
         "square_weebly": 0,
         "bigcommerce": 0,
         "prestashop": 0,
+        "shopware": 0,
         "shopify": 0,
     }
 
@@ -145,6 +148,7 @@ def _initial_signal_map() -> dict[str, list[str]]:
         "square_weebly": [],
         "bigcommerce": [],
         "prestashop": [],
+        "shopware": [],
         "shopify": [],
     }
 
@@ -230,6 +234,71 @@ def score_homepage_signals(
             "woocommerce",
             20,
             "WooCommerce REST/Store API reference",
+        )
+
+    # -----------------------------------------------------
+    # Shopware 6
+    # -----------------------------------------------------
+    # Miniature Market and many standard Shopware 6 storefronts render a
+    # server-side no-JavaScript notice containing the platform name. That
+    # exact phrase is decisive storefront evidence and does not depend on
+    # private Store API credentials.
+    if "full range of shopware 6" in compact:
+        _add_signal(
+            scores,
+            signal_map,
+            "shopware",
+            150,
+            "Shopware 6 storefront no-JavaScript marker",
+        )
+
+    if re.search(
+        r'<meta[^>]+name=["\']generator["\'][^>]+content=["\'][^"\']*shopware',
+        lowered,
+    ) or re.search(
+        r'<meta[^>]+content=["\'][^"\']*shopware[^"\']*["\'][^>]+name=["\']generator',
+        lowered,
+    ):
+        _add_signal(
+            scores,
+            signal_map,
+            "shopware",
+            120,
+            "Shopware generator meta tag",
+        )
+
+    if _contains_any(
+        lowered,
+        (
+            "/bundles/storefront/",
+            "data-shopware-plugin",
+            "shopware.storefront",
+            "shopware 6",
+        ),
+    ):
+        _add_signal(
+            scores,
+            signal_map,
+            "shopware",
+            65,
+            "Shopware 6 storefront assets/runtime",
+        )
+
+    if _contains_any(
+        lowered,
+        (
+            "cms-listing-col",
+            "product-box box-",
+            "product-detail-buy",
+            "product-detail-price",
+        ),
+    ):
+        _add_signal(
+            scores,
+            signal_map,
+            "shopware",
+            35,
+            "Shopware storefront product markup",
         )
 
     # -----------------------------------------------------
