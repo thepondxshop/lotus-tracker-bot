@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F9 — Product-Page Enrichment + Success Diagnostics
+Step 6J-3F10 — Product Signal Recovery + Direct Detail Fallback
 Initial production target: Miniature Market
 
 Safety:
@@ -729,6 +729,117 @@ def schema_price(product: dict[str, Any]) -> tuple[float | None, str | None]:
     return None, None
 
 
+
+SHOPWARE_INTERNAL_PRODUCT_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+def tag_attribute(tag: str, name: str) -> str:
+    """Read one HTML attribute without depending on attribute order."""
+    pattern = rf"\b{re.escape(name)}\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))"
+    match = re.search(pattern, tag or "", re.IGNORECASE)
+    if not match:
+        return ""
+    return clean_text(match.group(1) or match.group(2) or match.group(3))
+
+
+def html_meta_value(html: str, *, property_name: str | None = None, itemprop: str | None = None) -> str:
+    """Return a meta/link content value using tolerant attribute-order parsing."""
+    wanted_property = clean_text(property_name).lower()
+    wanted_itemprop = clean_text(itemprop).lower()
+    for match in re.finditer(r"<(?:meta|link)\b[^>]*>", html or "", re.IGNORECASE):
+        tag = match.group(0)
+        if wanted_property:
+            if tag_attribute(tag, "property").lower() != wanted_property:
+                continue
+        if wanted_itemprop:
+            if tag_attribute(tag, "itemprop").lower() != wanted_itemprop:
+                continue
+        value = tag_attribute(tag, "content") or tag_attribute(tag, "href")
+        if value:
+            return value
+    return ""
+
+
+def shopware_meta_price(html: str) -> float | None:
+    candidates = (
+        html_meta_value(html, property_name="product:price:amount"),
+        html_meta_value(html, itemprop="price"),
+    )
+    for candidate in candidates:
+        value = normalize_price(candidate.replace(",", "") if isinstance(candidate, str) else candidate)
+        if value is not None and value > 0:
+            return float(value)
+    return None
+
+
+def shopware_meta_currency(html: str) -> str | None:
+    value = (
+        html_meta_value(html, property_name="product:price:currency")
+        or html_meta_value(html, itemprop="priceCurrency")
+    )
+    value = clean_text(value).upper()
+    return value if re.fullmatch(r"[A-Z]{3}", value or "") else None
+
+
+def availability_from_markup(html: str) -> tuple[bool, bool, str, str] | None:
+    """Recover public schema/microdata availability when JSON-LD is absent."""
+    value = html_meta_value(html, itemprop="availability")
+    if value:
+        parsed = availability_from_schema(value)
+        if parsed:
+            available, known, state, _ = parsed
+            return available, known, state, "SHOPWARE_MICRODATA_AVAILABILITY"
+
+    # Tolerate schema.org availability links that are not marked itemprop due to
+    # custom theme markup, while staying product-page scoped.
+    for token, state in (
+        ("schema.org/InStock", (True, True, "IN_STOCK", "SHOPWARE_SCHEMA_MARKUP")),
+        ("schema.org/OutOfStock", (False, True, "OUT_OF_STOCK", "SHOPWARE_SCHEMA_MARKUP")),
+        ("schema.org/PreOrder", (True, True, "PREORDER", "SHOPWARE_SCHEMA_MARKUP")),
+        ("schema.org/BackOrder", (False, True, "BACKORDER", "SHOPWARE_SCHEMA_MARKUP")),
+    ):
+        if token.lower() in (html or "").lower():
+            return state
+    return None
+
+
+def extract_shopware_internal_product_id(html: str) -> str | None:
+    """Extract a public 32-hex Shopware product id from rendered storefront HTML."""
+    patterns = (
+        r"data-(?:product-id|wishlist-product-id|quickview-product-id)\s*=\s*[\"']([0-9a-fA-F]{32})[\"']",
+        r"[\"']productId[\"']\s*:\s*[\"']([0-9a-fA-F]{32})[\"']",
+        r"/(?:detail|quickview)/([0-9a-fA-F]{32})(?:[/?#\"']|$)",
+        r"itemprop\s*=\s*[\"']productID[\"'][^>]*content\s*=\s*[\"']([0-9a-fA-F]{32})[\"']",
+        r"content\s*=\s*[\"']([0-9a-fA-F]{32})[\"'][^>]*itemprop\s*=\s*[\"']productID[\"']",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, html or "", re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+    return None
+
+
+def merge_product_signal_raw(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+    """Merge a fallback product parse only where it improves missing signals."""
+    merged = dict(primary or {})
+    other = dict(secondary or {})
+    for key in (
+        "title", "image_url", "sku", "external_product_id", "purchase_limit",
+        "currency", "text",
+    ):
+        if (merged.get(key) is None or merged.get(key) == "") and other.get(key) not in (None, ""):
+            merged[key] = other.get(key)
+
+    if normalize_price(merged.get("price")) is None and normalize_price(other.get("price")) is not None:
+        merged["price"] = other.get("price")
+
+    if merged.get("availability_known") is not True and other.get("availability_known") is True:
+        for key in ("available", "availability_known", "availability_state", "availability_source"):
+            merged[key] = other.get(key)
+
+    return merged
+
+
 def schema_image(product: dict[str, Any]) -> str | None:
     image = product.get("image") if isinstance(product, dict) else None
     if isinstance(image, str):
@@ -1150,6 +1261,19 @@ class ShopwareAdapter(RetailerAdapter):
             "initial_enrichment_product_ok": 0,
             "initial_enrichment_price_hits": 0,
             "initial_enrichment_availability_hits": 0,
+            "initial_enrichment_max_body_bytes": 0,
+            "initial_enrichment_h1_hits": 0,
+            "initial_enrichment_sku_hits": 0,
+            "initial_enrichment_dollar_hits": 0,
+            "initial_enrichment_meta_price_hits": 0,
+            "initial_enrichment_jsonld_hits": 0,
+            "initial_enrichment_markup_stock_hits": 0,
+            "initial_enrichment_buy_form_hits": 0,
+            "direct_detail_requested": 0,
+            "direct_detail_http_ok": 0,
+            "direct_detail_price_hits": 0,
+            "direct_detail_availability_hits": 0,
+            "discovered_internal_product_ids": 0,
             "last_http_status": None,
             "last_error": None,
             "games": {},
@@ -2170,9 +2294,70 @@ class ShopwareAdapter(RetailerAdapter):
                 return product_url, None
 
             self.diagnostics["initial_enrichment_http_ok"] += 1
+            body_bytes = len((html or "").encode("utf-8", errors="ignore"))
+            self.diagnostics["initial_enrichment_max_body_bytes"] = max(
+                int(self.diagnostics.get("initial_enrichment_max_body_bytes", 0) or 0),
+                body_bytes,
+            )
+            lowered_html = (html or "").lower()
+            if re.search(r"<h1\b", html or "", re.IGNORECASE):
+                self.diagnostics["initial_enrichment_h1_hits"] += 1
+            if "sku:" in lowered_html or "product-detail-ordernumber" in lowered_html:
+                self.diagnostics["initial_enrichment_sku_hits"] += 1
+            if PRICE_DOLLAR_RE.search(clean_text(html)):
+                self.diagnostics["initial_enrichment_dollar_hits"] += 1
+            if shopware_meta_price(html) is not None:
+                self.diagnostics["initial_enrichment_meta_price_hits"] += 1
+            if parse_jsonld_product(html):
+                self.diagnostics["initial_enrichment_jsonld_hits"] += 1
+            if availability_from_markup(html):
+                self.diagnostics["initial_enrichment_markup_stock_hits"] += 1
+            if (
+                "product-detail-form-container" in lowered_html
+                or "line-item/add" in lowered_html
+                or "btn-buy" in lowered_html
+            ):
+                self.diagnostics["initial_enrichment_buy_form_hits"] += 1
+
             raw = self._product_page_to_raw(product_url, html)
             if not isinstance(raw, dict):
                 return product_url, None
+
+            # F10: Some CDN paths return a reduced SEO product shell to Railway.
+            # When the public widget/page exposes a Shopware internal product id,
+            # retry the standard public /detail/{productId} storefront route.
+            # This remains an ordinary public GET and does not use Store API keys.
+            needs_signal_recovery = (
+                normalize_price(raw.get("price")) is None
+                or raw.get("availability_known") is not True
+            )
+            internal_pid = clean_text(entry.get("product_id"))
+            if not SHOPWARE_INTERNAL_PRODUCT_ID_RE.fullmatch(internal_pid or ""):
+                internal_pid = extract_shopware_internal_product_id(html) or ""
+
+            if needs_signal_recovery and SHOPWARE_INTERNAL_PRODUCT_ID_RE.fullmatch(internal_pid or ""):
+                self.diagnostics["direct_detail_requested"] += 1
+                detail_url = f"{self.base_url}/detail/{internal_pid}"
+                detail_html, detail_response = await self._fetch_text(
+                    session,
+                    detail_url,
+                    request_headers={
+                        "Accept": BROWSER_NAV_HEADERS["Accept"],
+                        "Referer": product_url,
+                        "Sec-Fetch-Dest": "document",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Site": "same-origin",
+                    },
+                )
+                if detail_html and detail_response is not None and detail_response.status < 400:
+                    self.diagnostics["direct_detail_http_ok"] += 1
+                    detail_raw = self._product_page_to_raw(product_url, detail_html)
+                    if isinstance(detail_raw, dict):
+                        if normalize_price(detail_raw.get("price")) is not None:
+                            self.diagnostics["direct_detail_price_hits"] += 1
+                        if detail_raw.get("availability_known") is True:
+                            self.diagnostics["direct_detail_availability_hits"] += 1
+                        raw = merge_product_signal_raw(raw, detail_raw)
 
             original_title = clean_text(entry.get("title"))
             parsed_title = clean_text(raw.get("title"))
@@ -2186,7 +2371,7 @@ class ShopwareAdapter(RetailerAdapter):
                 raw.get("preorder_page")
                 or entry.get("preorder_page")
             )
-            raw["source"] = "DISCOVERY_PRODUCT_PAGE_ENRICHMENT"
+            raw["source"] = "DISCOVERY_PRODUCT_PAGE_ENRICHMENT_F10"
 
             if not classify_game(clean_text(raw.get("title"))):
                 return product_url, None
@@ -2356,6 +2541,9 @@ class ShopwareAdapter(RetailerAdapter):
                             continue
 
                         discovered_by_url[product_url] = card
+                        card_pid = clean_text(card.get("product_id"))
+                        if SHOPWARE_INTERNAL_PRODUCT_ID_RE.fullmatch(card_pid or ""):
+                            self.diagnostics["discovered_internal_product_ids"] += 1
                         page_new += 1
 
                     if page_new <= 0:
@@ -2471,6 +2659,12 @@ class ShopwareAdapter(RetailerAdapter):
             f"EnrichHTTP={self.diagnostics['initial_enrichment_http_ok']} | "
             f"EnrichPrice={self.diagnostics['initial_enrichment_price_hits']} | "
             f"EnrichAvailability={self.diagnostics['initial_enrichment_availability_hits']} | "
+            f"MetaPrice={self.diagnostics['initial_enrichment_meta_price_hits']} | "
+            f"MarkupStock={self.diagnostics['initial_enrichment_markup_stock_hits']} | "
+            f"DirectDetail={self.diagnostics['direct_detail_http_ok']}/"
+            f"{self.diagnostics['direct_detail_requested']} | "
+            f"DirectPrice={self.diagnostics['direct_detail_price_hits']} | "
+            f"DirectStock={self.diagnostics['direct_detail_availability_hits']} | "
             f"BodyTooLarge={self.diagnostics['body_too_large']} | "
             f"LargestBodyBytes={self.diagnostics['largest_body_bytes']} | "
             f"LastError={self.diagnostics.get('last_error')} | "
@@ -2516,13 +2710,7 @@ class ShopwareAdapter(RetailerAdapter):
                 title = clean_text(match.group(1))
 
         if not title:
-            match = re.search(
-                r"<meta\b[^>]+property=[\"']og:title[\"'][^>]+content=[\"']([^\"']+)[\"']",
-                html or "",
-                re.IGNORECASE,
-            )
-            if match:
-                title = clean_text(match.group(1))
+            title = clean_text(html_meta_value(html, property_name="og:title"))
 
         product_text = primary_product_text(html, title) or full_text
 
@@ -2540,10 +2728,14 @@ class ShopwareAdapter(RetailerAdapter):
             external_id = clean_text(external_id) or None
 
         if price is None:
+            price = shopware_meta_price(html)
+        if price is None:
             price = parse_price_from_text(product_text)
         if price is None and product_text != full_text:
             price = parse_price_from_text(full_text)
 
+        if not currency:
+            currency = shopware_meta_currency(html)
         if not currency:
             currency_match = re.search(
                 r"(?:priceCurrency|currency)[\"']?\s*[:=]\s*[\"']([A-Z]{3})[\"']",
@@ -2557,29 +2749,31 @@ class ShopwareAdapter(RetailerAdapter):
             )
 
         if not image_url:
-            image_match = re.search(
-                r"<meta\b[^>]+property=[\"']og:image[\"'][^>]+content=[\"']([^\"']+)[\"']",
-                html or "",
-                re.IGNORECASE,
-            )
-            if image_match:
-                image_url = canonical_url(self.base_url, image_match.group(1))
+            og_image = html_meta_value(html, property_name="og:image")
+            if og_image:
+                image_url = canonical_url(self.base_url, og_image)
 
         if schema_availability:
             available, availability_known, availability_state, availability_source = (
                 schema_availability
             )
         else:
-            preorder_context = any(
-                term in f"{title} {url} {product_text}".lower()
-                for term in PREORDER_TERMS
-            )
-            available, availability_known, availability_state, availability_source = (
-                availability_from_text(
-                    product_text,
-                    preorder_context=preorder_context,
+            markup_availability = availability_from_markup(html)
+            if markup_availability:
+                available, availability_known, availability_state, availability_source = (
+                    markup_availability
                 )
-            )
+            else:
+                preorder_context = any(
+                    term in f"{title} {url} {product_text}".lower()
+                    for term in PREORDER_TERMS
+                )
+                available, availability_known, availability_state, availability_source = (
+                    availability_from_text(
+                        product_text,
+                        preorder_context=preorder_context,
+                    )
+                )
 
         return {
             "title": title,
