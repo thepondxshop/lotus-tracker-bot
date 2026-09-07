@@ -177,6 +177,17 @@ from app.retailer_onboarding import (
 
 
 # =========================================================
+# RETAILER PLATFORM FINGERPRINTING
+# Step 6J-3E3
+# =========================================================
+
+from app.retailer_platform_detector import (
+    detect_retailer_platform,
+    platform_display_name,
+)
+
+
+# =========================================================
 # STORE HEALTH
 # =========================================================
 
@@ -3153,7 +3164,9 @@ async def eventstatus(
 
             "**Affiliate Pipeline:** \u2705\n"
 
-            "**Universal Retailer Foundation:** \u2705\n\n"
+            "**Universal Retailer Foundation:** \u2705\n"
+
+            "**Auto Platform Fingerprinting:** \u2705\n\n"
 
             "**Engine Version:** `1.0.4`"
         ),
@@ -3282,12 +3295,243 @@ def normalize_retailer_domain(
 
 
 # =========================================================
+# /DETECTRETAILER
+# Step 6J-3E3 — Automatic Platform Fingerprinting Diagnostic
+# =========================================================
+#
+# Read-only diagnostic command. No Store row is created or changed.
+# This lets us inspect Lotus's platform decision before onboarding.
+# =========================================================
+
+@bot.tree.command(
+    name="detectretailer",
+    description="Detect a retailer storefront platform without adding it.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def detectretailer(
+    interaction,
+    domain: str,
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    clean_domain = (
+        normalize_retailer_domain(
+            domain
+        )
+    )
+
+    if not clean_domain:
+
+        await interaction.followup.send(
+            "❌ Retailer domain is required.",
+            ephemeral=True,
+        )
+
+        return
+
+    try:
+
+        detection = (
+            await detect_retailer_platform(
+                clean_domain
+            )
+        )
+
+    except asyncio.CancelledError:
+
+        raise
+
+    except Exception as error:
+
+        await interaction.followup.send(
+            (
+                "❌ Retailer platform detection failed.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    detected_label = (
+        platform_display_name(
+            detection.platform
+        )
+    )
+
+    confidence_icon = {
+        "HIGH": "🟢",
+        "MEDIUM": "🟡",
+        "LOW": "🟠",
+        "UNKNOWN": "🔴",
+    }.get(
+        detection.confidence,
+        "⚪",
+    )
+
+    if detection.platform == "shopify":
+
+        title = "🛍️ Shopify Storefront Detected"
+        action_text = (
+            "This store belongs in Lotus's dedicated Shopify pipeline. "
+            "Use `/addshopifystore` rather than `/addretailer`."
+        )
+
+    elif detection.auto_stage_allowed:
+
+        title = "🧠 Retailer Platform Detected"
+        action_text = (
+            "✅ This fingerprint is strong enough for automatic staging. "
+            "You can use `/addretailer` without choosing a platform."
+        )
+
+    else:
+
+        title = "⚠️ Retailer Platform Needs Review"
+        action_text = (
+            "Lotus will not automatically stage this domain at the current "
+            "confidence level. Review the fingerprint before using a manual "
+            "platform override."
+        )
+
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"Platform fingerprint completed for `{clean_domain}`."
+        ),
+    )
+
+    embed.add_field(
+        name="Detected Platform",
+        value=f"`{detected_label}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Confidence",
+        value=(
+            f"{confidence_icon} "
+            f"`{detection.confidence}`"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Detection Score",
+        value=f"`{detection.score}`",
+        inline=True,
+    )
+
+    if detection.homepage_status is not None:
+
+        homepage_value = (
+            f"HTTP `{detection.homepage_status}`"
+        )
+
+        if detection.homepage_url:
+            homepage_value += (
+                f"\n`{detection.homepage_url[:850]}`"
+            )
+
+        embed.add_field(
+            name="Homepage Probe",
+            value=homepage_value,
+            inline=False,
+        )
+
+    ranked_scores = sorted(
+        detection.scores.items(),
+        key=lambda item: (
+            -item[1],
+            item[0],
+        ),
+    )
+
+    score_lines = []
+
+    for candidate, score in ranked_scores:
+
+        score_lines.append(
+            f"**{platform_display_name(candidate)}:** `{score}`"
+        )
+
+    embed.add_field(
+        name="Candidate Scores",
+        value=(
+            "\n".join(score_lines)
+            or "No platform scores."
+        ),
+        inline=False,
+    )
+
+    signal_lines = [
+        f"• {signal}"
+        for signal in detection.signals[:6]
+    ]
+
+    embed.add_field(
+        name="Strongest Signals",
+        value=(
+            "\n".join(signal_lines)
+            if signal_lines
+            else "No decisive storefront signals were found."
+        ),
+        inline=False,
+    )
+
+    if detection.errors:
+
+        error_preview = "\n".join(
+            f"• `{error[:220]}`"
+            for error in detection.errors[:4]
+        )
+
+        embed.add_field(
+            name="Probe Notes",
+            value=error_preview,
+            inline=False,
+        )
+
+    embed.add_field(
+        name="Next Step",
+        value=action_text,
+        inline=False,
+    )
+
+    embed.set_footer(
+        text=(
+            "Lotus Universal Retailer Foundation • "
+            "6J-3E3 Automatic Platform Fingerprinting"
+        )
+    )
+
+    await interaction.followup.send(
+        embed=embed,
+        ephemeral=True,
+    )
+
+
+# =========================================================
 # /ADDRETAILER
+# Step 6J-3E3 — Auto Detect + Stage + Silent Validation
+# =========================================================
+#
+# New default workflow:
+# /addretailer name:<name> domain:<domain> region:<region>
+#
+# Lotus fingerprints the storefront first. A platform override remains
+# optional for administrator recovery/testing, but is no longer required.
+# Ambiguous fingerprints are refused before any Store row is created.
 # =========================================================
 
 @bot.tree.command(
     name="addretailer",
-    description="Stage and immediately validate a universal retailer.",
+    description="Auto-detect, stage, and silently validate a universal retailer.",
 )
 @app_commands.checks.has_permissions(
     administrator=True
@@ -3295,12 +3539,19 @@ def normalize_retailer_domain(
 @app_commands.choices(
     platform=RETAILER_PLATFORM_CHOICES,
 )
+@app_commands.describe(
+    region="Retailer region code, for example US, CA, GB, JP, or EU.",
+    platform=(
+        "Optional manual override. Leave this blank for Lotus to "
+        "detect the storefront platform automatically."
+    ),
+)
 async def addretailer(
     interaction,
     name: str,
     domain: str,
-    platform: app_commands.Choice[str],
     region: str = "US",
+    platform: app_commands.Choice[str] | None = None,
 ):
 
     await interaction.response.defer(
@@ -3310,7 +3561,7 @@ async def addretailer(
     if SessionLocal is None:
 
         await interaction.followup.send(
-            "\u274c PostgreSQL is unavailable.",
+            "❌ PostgreSQL is unavailable.",
             ephemeral=True,
         )
 
@@ -3338,16 +3589,10 @@ async def addretailer(
         .upper()
     )
 
-    clean_platform = (
-        normalize_platform(
-            platform.value
-        )
-    )
-
     if not clean_name:
 
         await interaction.followup.send(
-            "\u274c Retailer name is required.",
+            "❌ Retailer name is required.",
             ephemeral=True,
         )
 
@@ -3356,77 +3601,22 @@ async def addretailer(
     if not clean_domain:
 
         await interaction.followup.send(
-            "\u274c Retailer domain is required.",
+            "❌ Retailer domain is required.",
             ephemeral=True,
         )
 
         return
 
-    try:
-
-        load_retailer_adapters()
-
-    except Exception as error:
-
-        await interaction.followup.send(
-
-            (
-                "\u274c Retailer adapters could not be loaded.\n\n"
-
-                f"`{type(error).__name__}: "
-                f"{error}`"
-            ),
-
-            ephemeral=True,
-        )
-
-        return
-
-    registered_platforms = set(
-        get_registered_retailer_platforms()
-    )
-
-    if clean_platform not in registered_platforms:
-
-        await interaction.followup.send(
-
-            (
-                "\u274c No Lotus adapter is currently registered "
-                f"for `{clean_platform}`."
-            ),
-
-            ephemeral=True,
-        )
-
-        return
-
-    if clean_platform not in {
-        "square_weebly",
-        "woocommerce",
-        "bigcommerce",
-        "prestashop",
-    }:
-
-        await interaction.followup.send(
-
-            (
-                "\u274c That retailer platform has not yet passed "
-                "Lotus universal-retailer validation."
-            ),
-
-            ephemeral=True,
-        )
-
-        return
+    # =====================================================
+    # DUPLICATE SAFETY CHECK
+    # =====================================================
 
     try:
 
         async with SessionLocal() as session:
 
             candidate_domains = {
-
                 clean_domain,
-
                 f"www.{clean_domain}",
             }
 
@@ -3457,57 +3647,320 @@ async def addretailer(
             if existing is not None:
 
                 await interaction.followup.send(
-
                     (
-                        "\u26a0\ufe0f **Retailer already registered.**\n\n"
-
-                        f"**Store ID:** "
-                        f"`{existing.id}`\n"
-
-                        f"**Name:** "
-                        f"{existing.name}\n"
-
-                        f"**Domain:** "
-                        f"`{existing.domain}`\n"
-
-                        f"**Platform:** "
-                        f"`{existing.platform or 'Unknown'}`\n"
-
-                        f"**Active:** "
-                        f"`{existing.active}`\n\n"
-
+                        "⚠️ **Retailer already registered.**\n\n"
+                        f"**Store ID:** `{existing.id}`\n"
+                        f"**Name:** {existing.name}\n"
+                        f"**Domain:** `{existing.domain}`\n"
+                        f"**Platform:** `{existing.platform or 'Unknown'}`\n"
+                        f"**Active:** `{existing.active}`\n\n"
                         "No duplicate store was created."
                     ),
-
                     ephemeral=True,
                 )
 
                 return
 
-            store = Store(
+    except Exception as error:
 
-                name=(
-                    clean_name
-                ),
+        await interaction.followup.send(
+            (
+                "❌ Could not perform retailer duplicate check.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
 
-                domain=(
+        return
+
+    # =====================================================
+    # STEP 6J-3E3
+    # AUTOMATIC PLATFORM FINGERPRINTING
+    # =====================================================
+
+    detection = None
+    detection_mode = "MANUAL_OVERRIDE"
+    detection_confidence = "MANUAL"
+    detection_score = None
+    detection_signals = [
+        "Administrator-selected platform override"
+    ]
+
+    if platform is None:
+
+        detection_mode = "AUTOMATIC"
+
+        try:
+
+            detection = (
+                await detect_retailer_platform(
                     clean_domain
-                ),
+                )
+            )
 
-                platform=(
-                    clean_platform
-                ),
+        except asyncio.CancelledError:
 
-                region=(
-                    clean_region
-                ),
+            raise
 
+        except Exception as error:
+
+            await interaction.followup.send(
+                (
+                    "❌ Retailer platform fingerprinting failed.\n\n"
+                    f"`{type(error).__name__}: {error}`\n\n"
+                    "No store was created."
+                ),
+                ephemeral=True,
+            )
+
+            return
+
+        if detection.platform == "shopify":
+
+            embed = discord.Embed(
+                title="🛍️ Shopify Storefront Detected",
+                description=(
+                    f"**{clean_name}** was not added to the Universal "
+                    "Retailer pipeline because Lotus detected Shopify."
+                ),
+            )
+
+            embed.add_field(
+                name="Domain",
+                value=f"`{clean_domain}`",
+                inline=False,
+            )
+
+            embed.add_field(
+                name="Confidence",
+                value=(
+                    f"`{detection.confidence}` "
+                    f"• Score `{detection.score}`"
+                ),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Next Step",
+                value=(
+                    "Use `/addshopifystore` so this retailer is handled "
+                    "by Lotus's dedicated Shopify monitor."
+                ),
+                inline=False,
+            )
+
+            embed.set_footer(
+                text=(
+                    "Lotus Retailer Fingerprinting • "
+                    "No Store row created"
+                )
+            )
+
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=True,
+            )
+
+            return
+
+        if not detection.auto_stage_allowed:
+
+            detected_label = (
+                platform_display_name(
+                    detection.platform
+                )
+            )
+
+            ranked_scores = sorted(
+                detection.scores.items(),
+                key=lambda item: (
+                    -item[1],
+                    item[0],
+                ),
+            )
+
+            score_text = "\n".join(
+                f"**{platform_display_name(candidate)}:** `{score}`"
+                for candidate, score in ranked_scores
+            )
+
+            signal_text = "\n".join(
+                f"• {signal}"
+                for signal in detection.signals[:6]
+            )
+
+            embed = discord.Embed(
+                title="⚠️ Retailer Platform Needs Review",
+                description=(
+                    f"Lotus did **not** stage **{clean_name}** because the "
+                    "storefront fingerprint was not strong enough for "
+                    "automatic onboarding."
+                ),
+            )
+
+            embed.add_field(
+                name="Domain",
+                value=f"`{clean_domain}`",
+                inline=False,
+            )
+
+            embed.add_field(
+                name="Best Match",
+                value=f"`{detected_label}`",
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Confidence",
+                value=f"`{detection.confidence}`",
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Score",
+                value=f"`{detection.score}`",
+                inline=True,
+            )
+
+            embed.add_field(
+                name="Candidate Scores",
+                value=(
+                    score_text
+                    or "No platform scores."
+                ),
+                inline=False,
+            )
+
+            embed.add_field(
+                name="Detected Signals",
+                value=(
+                    signal_text
+                    or "No decisive storefront signals were found."
+                ),
+                inline=False,
+            )
+
+            embed.add_field(
+                name="Next Step",
+                value=(
+                    "Run `/detectretailer` to review the fingerprint. "
+                    "If you independently confirm the platform, rerun "
+                    "`/addretailer` and use the optional `platform` override."
+                ),
+                inline=False,
+            )
+
+            embed.set_footer(
+                text=(
+                    "Lotus 6J-3E3 • Ambiguous platforms are never "
+                    "auto-staged"
+                )
+            )
+
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=True,
+            )
+
+            return
+
+        clean_platform = (
+            normalize_platform(
+                detection.platform
+            )
+        )
+
+        detection_confidence = (
+            detection.confidence
+        )
+
+        detection_score = (
+            detection.score
+        )
+
+        detection_signals = (
+            detection.signals[:6]
+        )
+
+    else:
+
+        clean_platform = (
+            normalize_platform(
+                platform.value
+            )
+        )
+
+    # =====================================================
+    # ADAPTER SAFETY
+    # =====================================================
+
+    try:
+
+        load_retailer_adapters()
+
+    except Exception as error:
+
+        await interaction.followup.send(
+            (
+                "❌ Retailer adapters could not be loaded.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    registered_platforms = set(
+        get_registered_retailer_platforms()
+    )
+
+    if clean_platform not in registered_platforms:
+
+        await interaction.followup.send(
+            (
+                "❌ No Lotus adapter is currently registered "
+                f"for `{clean_platform}`.\n\n"
+                "No store was created."
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    if clean_platform not in {
+        "square_weebly",
+        "woocommerce",
+        "bigcommerce",
+        "prestashop",
+    }:
+
+        await interaction.followup.send(
+            (
+                "❌ That retailer platform has not yet passed "
+                "Lotus universal-retailer validation.\n\n"
+                "No store was created."
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    # =====================================================
+    # STAGE STORE — ALWAYS INACTIVE
+    # =====================================================
+
+    try:
+
+        async with SessionLocal() as session:
+
+            store = Store(
+                name=clean_name,
+                domain=clean_domain,
+                platform=clean_platform,
+                region=clean_region,
                 active=False,
-
                 health_status="HEALTHY",
-
                 consecutive_failures=0,
-
                 disabled_reason=(
                     "UNIVERSAL_STAGING"
                 ),
@@ -3523,30 +3976,20 @@ async def addretailer(
                 store
             )
 
-            store_id = (
-                store.id
-            )
-
-            store_name = (
-                store.name
-            )
-
-            store_domain = (
-                store.domain
-            )
-
-            store_region = (
-                store.region
-            )
+            store_id = store.id
+            store_name = store.name
+            store_domain = store.domain
+            store_region = store.region
 
         # =================================================
-        # STEP 6J-3E1
         # IMMEDIATE SILENT VALIDATION
         # =================================================
         #
-        # The new retailer remains inactive even if validation
-        # succeeds. Existing catalog items are baselined silently.
-        # No Discord product alerts are emitted by this scan.
+        # Existing retailer_onboarding safety remains intact:
+        # - suppress_events=True
+        # - automatic_mode=False
+        # - store remains inactive after validation
+        # =================================================
 
         onboarding_result = None
         onboarding_error = None
@@ -3576,18 +4019,15 @@ async def addretailer(
                     f"Store={store_name} | "
                     f"StoreID={store_id} | "
                     f"Platform={clean_platform} | "
+                    f"DetectionMode={detection_mode} | "
                     f"Error={onboarding_error}"
                 )
             )
 
-        platform_label = {
-            "square_weebly": "Square / Weebly",
-            "woocommerce": "WooCommerce",
-            "bigcommerce": "BigCommerce",
-            "prestashop": "PrestaShop",
-        }.get(
-            clean_platform,
-            clean_platform,
+        platform_label = (
+            platform_display_name(
+                clean_platform
+            )
         )
 
         if (
@@ -3596,110 +4036,142 @@ async def addretailer(
         ):
 
             embed = discord.Embed(
-
-                title=(
-                    "\u2705 Universal Retailer Validated"
-                ),
-
+                title="✅ Universal Retailer Validated",
                 description=(
-                    f"**{store_name}** was staged and immediately "
-                    "passed Lotus's silent validation scan."
+                    f"**{store_name}** was fingerprinted, staged, and "
+                    "immediately passed Lotus's silent validation scan."
                 ),
             )
 
             monitoring_value = (
-                "\U0001f7e1 Validated / Inactive"
+                "🟡 Validated / Inactive"
             )
 
             validation_value = (
-                "\u2705 Passed"
+                "✅ Passed"
             )
 
             next_step_value = (
-                f"Run `/enablestore store_id:{store_id}` when you "
-                "want this retailer added to automatic monitoring."
+                f"Run `/enablestore store_id:{store_id}` after reviewing "
+                "this validation result."
             )
 
         else:
 
             embed = discord.Embed(
-
-                title=(
-                    "\u26a0\ufe0f Universal Retailer Needs Review"
-                ),
-
+                title="⚠️ Universal Retailer Needs Review",
                 description=(
-                    f"**{store_name}** was staged, but Lotus could "
-                    "not fully validate it automatically. It remains "
-                    "inactive and cannot send alerts."
+                    f"**{store_name}** was fingerprinted and staged, but "
+                    "Lotus could not fully validate it automatically. It "
+                    "remains inactive and cannot send alerts."
                 ),
             )
 
             monitoring_value = (
-                "\U0001f534 Staged / Inactive"
+                "🔴 Staged / Inactive"
             )
 
             validation_value = (
-                "\u274c Failed / Review Required"
+                "❌ Failed / Review Required"
             )
 
             next_step_value = (
-                f"Review the validation result, then run "
-                f"`/scanretailer store_id:{store_id}` to retry a "
-                "controlled silent scan."
+                f"Review the platform/validation result, then run "
+                f"`/scanretailer store_id:{store_id}` or use "
+                f"`/setretailerplatform store_id:{store_id}` if the "
+                "platform fingerprint appears incorrect."
             )
 
         embed.add_field(
             name="Store ID",
-            value=(
-                f"`{store_id}`"
-            ),
+            value=f"`{store_id}`",
             inline=True,
         )
 
         embed.add_field(
             name="Platform",
-            value=(
-                f"`{platform_label}`"
-            ),
+            value=f"`{platform_label}`",
             inline=True,
         )
 
         embed.add_field(
             name="Region",
-            value=(
-                f"`{store_region}`"
-            ),
+            value=f"`{store_region}`",
             inline=True,
         )
 
         embed.add_field(
             name="Domain",
+            value=f"`{store_domain}`",
+            inline=False,
+        )
+
+        if detection_mode == "AUTOMATIC":
+
+            detection_value = (
+                "🧠 Automatic"
+            )
+
+            confidence_value = (
+                f"`{detection_confidence}`"
+            )
+
+            if detection_score is not None:
+                confidence_value += (
+                    f" • Score `{detection_score}`"
+                )
+
+        else:
+
+            detection_value = (
+                "🛠️ Manual Override"
+            )
+
+            confidence_value = (
+                "`MANUAL`"
+            )
+
+        embed.add_field(
+            name="Platform Detection",
+            value=detection_value,
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Fingerprint Confidence",
+            value=confidence_value,
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Monitoring",
+            value=monitoring_value,
+            inline=True,
+        )
+
+        signal_text = "\n".join(
+            f"• {signal}"
+            for signal in detection_signals[:5]
+        )
+
+        embed.add_field(
+            name="Fingerprint Signals",
             value=(
-                f"`{store_domain}`"
+                signal_text
+                or "No fingerprint signal details."
             ),
             inline=False,
         )
 
         embed.add_field(
-            name="Monitoring",
-            value=(
-                monitoring_value
-            ),
-            inline=True,
-        )
-
-        embed.add_field(
             name="Discord Alerts",
-            value="\U0001f507 Disabled",
+            value="🔇 Disabled",
             inline=True,
         )
 
         embed.add_field(
             name="Validation",
-            value=(
-                validation_value
-            ),
+            value=validation_value,
             inline=True,
         )
 
@@ -3707,9 +4179,7 @@ async def addretailer(
 
             embed.add_field(
                 name="Products Found",
-                value=(
-                    f"`{onboarding_result.products}`"
-                ),
+                value=f"`{onboarding_result.products}`",
                 inline=True,
             )
 
@@ -3765,16 +4235,14 @@ async def addretailer(
 
         embed.add_field(
             name="Next Step",
-            value=(
-                next_step_value
-            ),
+            value=next_step_value,
             inline=False,
         )
 
         embed.set_footer(
             text=(
-                "Lotus Universal Retailer Foundation \u2022 "
-                "6J-3E1 Immediate Silent Validation"
+                "Lotus Universal Retailer Foundation • "
+                "6J-3E3 Auto Fingerprint + Silent Validation"
             )
         )
 
@@ -3786,17 +4254,12 @@ async def addretailer(
     except Exception as error:
 
         await interaction.followup.send(
-
             (
-                "\u274c Retailer could not be added.\n\n"
-
-                f"`{type(error).__name__}: "
-                f"{error}`"
+                "❌ Retailer could not be added.\n\n"
+                f"`{type(error).__name__}: {error}`"
             ),
-
             ephemeral=True,
         )
-
 
 
 # =========================================================
@@ -6772,6 +7235,8 @@ async def status(
             "**Inventory Flicker:** \u2705\n"
 
             "**Universal Retailer Foundation:** \u2705\n"
+
+            "**Auto Platform Fingerprinting:** \u2705\n"
 
             f"**Universal Adapters Loaded:** "
             f"{'\u2705' if universal_status.get('adapters_loaded') else '\u26aa'}\n\n"
