@@ -1,0 +1,32 @@
+Lotus Tracker Bot — Step 6J-3F12
+Official Product Feed / Hybrid Retailer Source
+
+Required after your LinkConnector account + Miniature Market campaign are approved:
+
+LINKCONNECTOR_API_KEY=your_linkconnector_api_key
+
+Optional (Lotus will try to auto-discover Miniature Market's Merchant ID if omitted):
+
+LINKCONNECTOR_MINIATURE_MARKET_MERCHANT_ID=
+
+Optional affiliate reporting/tracking values:
+
+LINKCONNECTOR_AFFILIATE_ID=
+LINKCONNECTOR_AFFILIATE_TRACK=lotus-tracker
+
+Optional integration controls (defaults shown):
+
+LINKCONNECTOR_MINIATURE_MARKET_FEED_ENABLED=true
+LINKCONNECTOR_FEED_CACHE_SECONDS=300
+LINKCONNECTOR_FEED_PAGES_PER_KEYWORD=2
+LINKCONNECTOR_FEED_MAX_PRODUCTS=600
+LINKCONNECTOR_FEED_CONCURRENCY=4
+LINKCONNECTOR_TIMEOUT_SECONDS=20
+
+Notes:
+- If LINKCONNECTOR_API_KEY is absent, F12 stays safely inactive and the existing
+  Shopware compatibility path remains available for diagnostics.
+- F12 does NOT use LinkConnector's inventory-stock endpoint for Miniature Market.
+  Availability stays UNKNOWN and stock/restock/sold-out events remain capability-gated.
+- /feedstatus store_id:14 is read-only and sends no product alerts.
+- Keep Store 14 inactive until feed catalog + price coverage are reviewed.
