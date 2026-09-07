@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F6 — XML Sitemap Discovery + HTML Sitemap Diagnostics
+Step 6J-3F7 — Browser-Parity Storefront Retrieval + Loose Anchor Discovery
 Initial production target: Miniature Market
 
 Safety:
@@ -16,6 +16,9 @@ Safety:
 - Missing/non-positive prices are treated as unknown and never as a price drop.
 
 Design:
+- Browser-parity retrieval uses an ordinary desktop browser User-Agent because some
+  Shopware/CDN combinations serve a reduced navigation shell to non-browser UAs.
+  This does not bypass authentication, CAPTCHA, queues, or access controls.
 - Deep discovery scans public Shopware category/listing pages and extracts
   supported TCG products directly from product cards. This avoids crawling an
   entire large catalog product-by-product.
@@ -44,9 +47,19 @@ VERSION = "1.0.4"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/150.0.0.0 Safari/537.36 "
-    "LotusTracker/1.0.4"
+    "Chrome/150.0.0.0 Safari/537.36"
 )
+
+BROWSER_NAV_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "max-age=0",
+}
 
 DEFAULT_TIMEOUT = 18
 DEFAULT_REQUEST_DELAY = 0.35
@@ -999,7 +1012,11 @@ class ShopwareAdapter(RetailerAdapter):
             store_name=store_name,
         )
         self.domain = normalize_domain(self.domain)
-        self.base_url = f"https://{self.domain}"
+        self.base_url = (
+            "https://www.miniaturemarket.com"
+            if self.domain == "miniaturemarket.com"
+            else f"https://{self.domain}"
+        )
         self.request_delay = max(float(request_delay), 0.25)
         self.max_listing_pages = max(1, min(int(max_listing_pages), MAX_LISTING_PAGES))
         self.max_product_pages = max(1, min(int(max_product_pages), MAX_PRODUCT_PAGES))
@@ -1057,6 +1074,12 @@ class ShopwareAdapter(RetailerAdapter):
             "backorders": 0,
             "http_429": 0,
             "http_blocked": 0,
+            "browser_profile_requests": 0,
+            "browser_profile_pages_successful": 0,
+            "listing_pages_with_game_text": 0,
+            "listing_pages_with_add_to_cart": 0,
+            "loose_anchor_candidates": 0,
+            "loose_anchor_products": 0,
             "last_http_status": None,
             "last_error": None,
             "games": {},
@@ -1085,12 +1108,7 @@ class ShopwareAdapter(RetailerAdapter):
         HTTP behavior as the production adapter. This avoids detector drift.
         No authentication, cart mutation, or checkout actions are performed.
         """
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-        }
+        headers = dict(BROWSER_NAV_HEADERS)
         connector = aiohttp.TCPConnector(limit=3, limit_per_host=2)
         notes: list[str] = []
 
@@ -1148,6 +1166,14 @@ class ShopwareAdapter(RetailerAdapter):
         self.diagnostics["pages_checked"] += 1
         timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
 
+        effective_user_agent = (
+            (request_headers or {}).get("User-Agent")
+            or session.headers.get("User-Agent")
+            or ""
+        )
+        if effective_user_agent == USER_AGENT:
+            self.diagnostics["browser_profile_requests"] += 1
+
         try:
             async with session.get(
                 url,
@@ -1199,6 +1225,8 @@ class ShopwareAdapter(RetailerAdapter):
                     text = raw.decode("utf-8", errors="replace")
 
                 self.diagnostics["pages_successful"] += 1
+                if effective_user_agent == USER_AGENT:
+                    self.diagnostics["browser_profile_pages_successful"] += 1
                 return text, response
 
         except asyncio.CancelledError:
@@ -1859,6 +1887,61 @@ class ShopwareAdapter(RetailerAdapter):
                 "preorder_page": preorder_page,
             })
 
+        # F7 secondary parser: HTMLParser is more tolerant than the regex path
+        # above when a customized Shopware theme reorders attributes, nests the
+        # product label deeply, or emits unusual whitespace.  This path is used
+        # only for same-host anchors whose label itself identifies a supported
+        # game, so navigation/category links remain excluded.
+        if not products:
+            parser = ShopwareSitemapAnchorParser()
+            try:
+                parser.feed(html or "")
+                parser.close()
+            except Exception:
+                parser.anchors = []
+
+            for anchor in parser.anchors:
+                raw_href = clean_text(anchor.get("href"))
+                url = canonical_url(self.base_url, raw_href)
+                if not url or not same_store_host(self.domain, url):
+                    continue
+
+                self.diagnostics["loose_anchor_candidates"] += 1
+
+                candidates = (
+                    clean_text(anchor.get("text")),
+                    clean_text(anchor.get("title")),
+                    clean_text(anchor.get("aria_label")),
+                    clean_text(anchor.get("image_alt")),
+                )
+                title = next(
+                    (value for value in candidates if value and classify_game(value)),
+                    "",
+                )
+                if not title:
+                    continue
+
+                path = urlparse(url).path.rstrip("/").lower()
+                if path in {
+                    "", "/trading-card-games", "/trading-card-games.html",
+                    "/category-sitemap", "/product-sitemap", "/sitemap",
+                }:
+                    continue
+                if url in seen_urls:
+                    continue
+
+                seen_urls.add(url)
+                self.diagnostics["loose_anchor_products"] += 1
+                products.append({
+                    "title": title,
+                    "url": url,
+                    "text": " ".join(value for value in candidates if value),
+                    "image_url": None,
+                    "product_id": None,
+                    "preorder_page": preorder_page,
+                    "source": "LOOSE_LISTING_ANCHOR",
+                })
+
         return products
 
     def _parse_listing_page(
@@ -1891,12 +1974,7 @@ class ShopwareAdapter(RetailerAdapter):
     async def fetch_products(self) -> list[dict[str, Any]]:
         self._reset_diagnostics()
 
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-        }
+        headers = dict(BROWSER_NAV_HEADERS)
 
         connector = aiohttp.TCPConnector(limit=6, limit_per_host=4)
         discovered_by_url: dict[str, dict[str, Any]] = {}
@@ -1929,6 +2007,21 @@ class ShopwareAdapter(RetailerAdapter):
                         continue
 
                     self.diagnostics["listing_pages_successful"] += 1
+
+                    listing_lower = html.lower()
+                    if any(
+                        marker in listing_lower
+                        for marker in (
+                            "pokemon tcg", "pokémon tcg", "one piece tcg",
+                            "gundam card game", "riftbound", "fusion world",
+                            "palworld", "cyberpunk tcg", "azuki tcg",
+                            "hellbreak tcg",
+                        )
+                    ):
+                        self.diagnostics["listing_pages_with_game_text"] += 1
+                    if "add to cart" in listing_lower or "add to basket" in listing_lower:
+                        self.diagnostics["listing_pages_with_add_to_cart"] += 1
+
                     cards = self._parse_listing_page(
                         html,
                         preorder_page=preorder_page,
@@ -2080,6 +2173,9 @@ class ShopwareAdapter(RetailerAdapter):
             "SHOPWARE DISCOVERY COMPLETE | "
             f"Store={self.store_name} | Roots={self.diagnostics['listing_roots_found']} | "
             f"ListingPages={self.diagnostics['listing_pages_successful']} | "
+            f"BrowserPages={self.diagnostics['browser_profile_pages_successful']} | "
+            f"GameTextPages={self.diagnostics['listing_pages_with_game_text']} | "
+            f"CartTextPages={self.diagnostics['listing_pages_with_add_to_cart']} | "
             f"SupportedDiscovered={self.diagnostics['product_urls_discovered']} | "
             f"FallbackAnchors={self.diagnostics['fallback_supported_anchors']} | "
             f"FragmentURLs={self.diagnostics['listing_fragment_urls_found']} | "
@@ -2220,11 +2316,7 @@ class ShopwareAdapter(RetailerAdapter):
         if not requested:
             return []
 
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
+        headers = dict(BROWSER_NAV_HEADERS)
         connector = aiohttp.TCPConnector(
             limit=MAX_CONCURRENT_PRODUCT_REQUESTS,
             limit_per_host=MAX_CONCURRENT_PRODUCT_REQUESTS,
