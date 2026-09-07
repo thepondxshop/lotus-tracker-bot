@@ -861,7 +861,45 @@ def schema_image(product: dict[str, Any]) -> str | None:
 
 # =========================================================
 # SHOPWARE LISTING CARD PARSER
+# Step 6J-3F11 — Card Metadata + Buy-Form Signal Recovery
 # =========================================================
+
+
+def parse_product_information_attribute(value: Any) -> dict[str, Any]:
+    """Parse Shopware's public data-product-information JSON attribute."""
+    raw = html_lib.unescape(str(value or "")).strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def apply_product_information(card: dict[str, Any], value: Any) -> bool:
+    """Merge public Shopware product-card metadata into a discovery card."""
+    info = parse_product_information_attribute(value)
+    if not info:
+        return False
+
+    product_id = clean_text(info.get("id"))
+    name = clean_text(info.get("name"))
+    sku = clean_text(info.get("sku"))
+    price = normalize_price(info.get("price"))
+
+    if product_id and not card.get("product_id"):
+        card["product_id"] = product_id
+    if name and not card.get("title"):
+        card["title"] = name
+    if sku and not card.get("sku"):
+        card["sku"] = sku
+    if price is not None and price > 0 and normalize_price(card.get("price")) is None:
+        card["price"] = float(price)
+        card["currency"] = "USD"
+
+    card["card_product_information"] = True
+    return True
 
 
 class ShopwareListingParser(HTMLParser):
@@ -899,8 +937,19 @@ class ShopwareListingParser(HTMLParser):
                 or attrs.get("data-product")
                 or None
             ),
+            "sku": None,
+            "price": None,
+            "currency": "USD",
+            "available": False,
+            "availability_known": False,
+            "availability_state": "UNKNOWN",
+            "availability_source": "UNKNOWN",
             "preorder_page": self.preorder_page,
         }
+        apply_product_information(
+            self._current,
+            attrs.get("data-product-information"),
+        )
         self._card_depth = 1
 
     def handle_starttag(self, tag: str, attrs_raw: list[tuple[str, str | None]]) -> None:
@@ -922,6 +971,72 @@ class ShopwareListingParser(HTMLParser):
             )
             if product_id and not self._current.get("product_id"):
                 self._current["product_id"] = product_id
+
+            apply_product_information(
+                self._current,
+                attrs.get("data-product-information"),
+            )
+
+            # Standard Shopware listing buy forms publish the internal product
+            # UUID in hidden lineItems[...] fields. This is useful even when a
+            # customized CDN response omits the visible Add-to-cart label.
+            if tag == "input":
+                input_name = clean_text(attrs.get("name"))
+                input_value = clean_text(attrs.get("value"))
+                if (
+                    input_value
+                    and SHOPWARE_INTERNAL_PRODUCT_ID_RE.fullmatch(input_value)
+                    and (
+                        "[id]" in input_name.lower()
+                        or "[referencedid]" in input_name.lower()
+                        or "productid" in input_name.lower()
+                    )
+                ):
+                    if not self._current.get("product_id"):
+                        self._current["product_id"] = input_value
+
+                if input_name.lower() == "redirectparameters" and input_value:
+                    try:
+                        redirect_data = json.loads(html_lib.unescape(input_value))
+                    except Exception:
+                        redirect_data = {}
+                    redirect_pid = clean_text(
+                        redirect_data.get("productId")
+                        if isinstance(redirect_data, dict)
+                        else ""
+                    )
+                    if (
+                        SHOPWARE_INTERNAL_PRODUCT_ID_RE.fullmatch(redirect_pid or "")
+                        and not self._current.get("product_id")
+                    ):
+                        self._current["product_id"] = redirect_pid
+
+            # Shopware exposes a machine-readable buy-form signal even when the
+            # localized button text itself is absent from a reduced fragment.
+            form_action = clean_text(attrs.get("action")).lower()
+            data_add_to_cart = clean_text(attrs.get("data-add-to-cart")).lower()
+            if (
+                data_add_to_cart in {"1", "true", "yes"}
+                or "/checkout/line-item/add" in form_action
+                or "btn-buy" in classes
+            ):
+                disabled = "disabled" in attrs or clean_text(attrs.get("aria-disabled")).lower() == "true"
+                if not disabled:
+                    self._current["available"] = True
+                    self._current["availability_known"] = True
+                    self._current["availability_state"] = (
+                        "PREORDER" if self.preorder_page else "IN_STOCK"
+                    )
+                    self._current["availability_source"] = "SHOPWARE_LISTING_BUY_FORM"
+
+            if any(marker in classes for marker in (
+                "delivery-soldout", "out-of-stock", "sold-out",
+                "product-unavailable",
+            )):
+                self._current["available"] = False
+                self._current["availability_known"] = True
+                self._current["availability_state"] = "OUT_OF_STOCK"
+                self._current["availability_source"] = "SHOPWARE_LISTING_STOCK_CLASS"
 
             if tag == "img" and not self._current.get("image_url"):
                 image = (
@@ -1005,6 +1120,23 @@ class ShopwareListingParser(HTMLParser):
         text = clean_text(" ".join(card.pop("text_parts", [])))
         title = clean_text(card.get("title"))
         url = clean_text(card.get("url"))
+
+        if normalize_price(card.get("price")) is None:
+            parsed_price = parse_price_from_text(text)
+            if parsed_price is not None:
+                card["price"] = parsed_price
+                card["currency"] = "USD"
+
+        if card.get("availability_known") is not True:
+            available, known, state, source = availability_from_text(
+                text,
+                preorder_context=self.preorder_page,
+            )
+            if known:
+                card["available"] = available
+                card["availability_known"] = known
+                card["availability_state"] = state
+                card["availability_source"] = source
 
         if title and url and classify_game(title):
             card["title"] = title
@@ -1256,6 +1388,13 @@ class ShopwareAdapter(RetailerAdapter):
             "synthetic_widget_pages_with_game_text": 0,
             "synthetic_widget_pages_with_add_to_cart": 0,
             "synthetic_widget_cards_seen": 0,
+            "synthetic_widget_product_info_pages": 0,
+            "synthetic_widget_buy_form_pages": 0,
+            "synthetic_widget_out_of_stock_pages": 0,
+            "listing_card_product_info_hits": 0,
+            "listing_card_price_hits": 0,
+            "listing_card_stock_hits": 0,
+            "listing_card_internal_id_hits": 0,
             "initial_enrichment_requested": 0,
             "initial_enrichment_http_ok": 0,
             "initial_enrichment_product_ok": 0,
@@ -2232,6 +2371,15 @@ class ShopwareAdapter(RetailerAdapter):
             )
 
         self.diagnostics["listing_cards_seen"] += len(cards)
+        for card in cards:
+            if card.get("card_product_information"):
+                self.diagnostics["listing_card_product_info_hits"] += 1
+            if normalize_price(card.get("price")) is not None:
+                self.diagnostics["listing_card_price_hits"] += 1
+            if card.get("availability_known") is True:
+                self.diagnostics["listing_card_stock_hits"] += 1
+            if SHOPWARE_INTERNAL_PRODUCT_ID_RE.fullmatch(clean_text(card.get("product_id")) or ""):
+                self.diagnostics["listing_card_internal_id_hits"] += 1
         return cards
 
     async def _enrich_discovered_entries(
@@ -2371,7 +2519,7 @@ class ShopwareAdapter(RetailerAdapter):
                 raw.get("preorder_page")
                 or entry.get("preorder_page")
             )
-            raw["source"] = "DISCOVERY_PRODUCT_PAGE_ENRICHMENT_F10"
+            raw["source"] = "DISCOVERY_PRODUCT_PAGE_ENRICHMENT_F11"
 
             if not classify_game(clean_text(raw.get("title"))):
                 return product_url, None
@@ -2512,6 +2660,19 @@ class ShopwareAdapter(RetailerAdapter):
                                 self.diagnostics[
                                     "synthetic_widget_pages_with_add_to_cart"
                                 ] += 1
+                            if "data-product-information" in fragment_lower:
+                                self.diagnostics["synthetic_widget_product_info_pages"] += 1
+                            if (
+                                "data-add-to-cart" in fragment_lower
+                                or "/checkout/line-item/add" in fragment_lower
+                                or "btn-buy" in fragment_lower
+                            ):
+                                self.diagnostics["synthetic_widget_buy_form_pages"] += 1
+                            if any(marker in fragment_lower for marker in (
+                                "out of stock", "sold out", "delivery-soldout",
+                                "out-of-stock",
+                            )):
+                                self.diagnostics["synthetic_widget_out_of_stock_pages"] += 1
 
                             parsed_fragment_cards = self._parse_listing_page(
                                 fragment_html,
@@ -2535,9 +2696,23 @@ class ShopwareAdapter(RetailerAdapter):
                         if not title or not product_url or not classify_game(title):
                             continue
                         if product_url in discovered_by_url:
-                            # Prefer preorder-page context if either copy says so.
+                            existing = discovered_by_url[product_url]
+                            # Prefer the strongest public signals across repeated
+                            # category/native-widget appearances of the same URL.
                             if preorder_page:
-                                discovered_by_url[product_url]["preorder_page"] = True
+                                existing["preorder_page"] = True
+                            if normalize_price(existing.get("price")) is None and normalize_price(card.get("price")) is not None:
+                                existing["price"] = card.get("price")
+                                existing["currency"] = card.get("currency") or "USD"
+                            if existing.get("availability_known") is not True and card.get("availability_known") is True:
+                                for key in ("available", "availability_known", "availability_state", "availability_source"):
+                                    existing[key] = card.get(key)
+                            if not clean_text(existing.get("product_id")) and clean_text(card.get("product_id")):
+                                existing["product_id"] = card.get("product_id")
+                            if not clean_text(existing.get("sku")) and clean_text(card.get("sku")):
+                                existing["sku"] = card.get("sku")
+                            if not clean_text(existing.get("image_url")) and clean_text(card.get("image_url")):
+                                existing["image_url"] = card.get("image_url")
                             continue
 
                         discovered_by_url[product_url] = card
@@ -2655,6 +2830,10 @@ class ShopwareAdapter(RetailerAdapter):
             f"XMLSitemapHits={self.diagnostics['xml_sitemap_tcg_hits']} | "
             f"SitemapProducts={self.diagnostics['sitemap_supported_products']} | "
             f"SitemapProductPagesOK={self.diagnostics['sitemap_product_pages_successful']} | "
+            f"CardInfo={self.diagnostics['listing_card_product_info_hits']} | "
+            f"CardPrice={self.diagnostics['listing_card_price_hits']} | "
+            f"CardStock={self.diagnostics['listing_card_stock_hits']} | "
+            f"CardIDs={self.diagnostics['listing_card_internal_id_hits']} | "
             f"EnrichRequested={self.diagnostics['initial_enrichment_requested']} | "
             f"EnrichHTTP={self.diagnostics['initial_enrichment_http_ok']} | "
             f"EnrichPrice={self.diagnostics['initial_enrichment_price_hits']} | "
