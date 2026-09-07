@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F8 — Native Shopware Navigation Widget Discovery
+Step 6J-3F9 — Product-Page Enrichment + Success Diagnostics
 Initial production target: Miniature Market
 
 Safety:
@@ -72,6 +72,14 @@ MAX_FRAGMENT_URLS_PER_ROOT = 4
 MAX_PRODUCT_SITEMAP_PAGES = 30
 PRODUCT_SITEMAP_TARGET = 140
 MAX_SITEMAP_PRODUCT_PAGE_FETCHES = 120
+
+# F9: discovery cards can expose a title + URL before they expose reliable
+# price/stock data. Initial/manual discovery enriches a bounded set of those
+# URLs from their public product pages. Background deep discovery uses a much
+# smaller budget because the normal sharded fast-refresh path handles known
+# products separately.
+MAX_INITIAL_DISCOVERY_ENRICHMENT = 120
+MAX_BACKGROUND_DISCOVERY_ENRICHMENT = 36
 MAX_XML_SITEMAP_DOCUMENTS = 24
 XML_SITEMAP_TARGET = 180
 XML_SITEMAP_PATHS = (
@@ -489,6 +497,55 @@ def classify_product_family(title: str) -> str:
     if any(term in lowered for term in CN_TERMS):
         return "CN"
     return "GLOBAL_STANDARD"
+
+
+def primary_product_text(html: str, title: str = "") -> str:
+    """
+    Return a conservative text slice for the primary product detail area.
+
+    Miniature Market product pages can include unrelated recommended products
+    below the main buy box. Looking for stock text across the entire page can
+    therefore misread an in-stock item as sold out because a related product is
+    sold out. F9 scopes fallback price/availability parsing to the primary
+    product section whenever possible.
+    """
+    raw = str(html or "")
+    if not raw:
+        return ""
+
+    start = 0
+    h1 = re.search(r"<h1\b[^>]*>.*?</h1>", raw, re.IGNORECASE | re.DOTALL)
+    if h1:
+        start = h1.start()
+    elif title:
+        lowered = raw.lower()
+        pos = lowered.find(clean_text(title).lower())
+        if pos >= 0:
+            start = pos
+
+    # Keep enough of the detail area to include price, SKU, stock controls,
+    # manufacturer text, and purchase limits, but stop before recommendation
+    # carousels/footer content when those markers are present.
+    fragment = raw[start:start + 90_000]
+    lower_fragment = fragment.lower()
+
+    cut_positions = []
+    for marker in (
+        "related products",
+        "cross-selling",
+        "product-slider",
+        "cms-element-product-slider",
+        "customer reviews are disabled",
+        ">resources<",
+    ):
+        idx = lower_fragment.find(marker)
+        if idx > 500:
+            cut_positions.append(idx)
+
+    if cut_positions:
+        fragment = fragment[:min(cut_positions)]
+
+    return clean_text(fragment)
 
 
 def parse_price_from_text(text: str) -> float | None:
@@ -1088,6 +1145,11 @@ class ShopwareAdapter(RetailerAdapter):
             "synthetic_widget_pages_with_game_text": 0,
             "synthetic_widget_pages_with_add_to_cart": 0,
             "synthetic_widget_cards_seen": 0,
+            "initial_enrichment_requested": 0,
+            "initial_enrichment_http_ok": 0,
+            "initial_enrichment_product_ok": 0,
+            "initial_enrichment_price_hits": 0,
+            "initial_enrichment_availability_hits": 0,
             "last_http_status": None,
             "last_error": None,
             "games": {},
@@ -2048,6 +2110,112 @@ class ShopwareAdapter(RetailerAdapter):
         self.diagnostics["listing_cards_seen"] += len(cards)
         return cards
 
+    async def _enrich_discovered_entries(
+        self,
+        session: aiohttp.ClientSession,
+        discovered_by_url: dict[str, dict[str, Any]],
+    ) -> None:
+        """
+        Enrich discovery-only cards from their public product pages.
+
+        F8 proved Miniature Market's native Shopware widget can surface product
+        URLs even when the returned card fragment omits price/stock controls.
+        The universal monitor must not treat those discovery-only cards as a
+        finished inventory signal. F9 therefore performs a bounded same-host
+        GET of newly discovered product pages and merges authoritative public
+        price/availability/SKU/limit data back into the discovery record.
+        """
+        if not discovered_by_url:
+            return
+
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for product_url, entry in discovered_by_url.items():
+            price = normalize_price(entry.get("price"))
+            availability_known = entry.get("availability_known")
+            if price is None or availability_known is not True:
+                candidates.append((product_url, entry))
+
+        if not candidates:
+            return
+
+        limit = (
+            MAX_BACKGROUND_DISCOVERY_ENRICHMENT
+            if self.known_product_urls
+            else MAX_INITIAL_DISCOVERY_ENRICHMENT
+        )
+        selected = candidates[:limit]
+        self.diagnostics["initial_enrichment_requested"] += len(selected)
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_PRODUCT_REQUESTS)
+
+        async def fetch_one(
+            product_url: str,
+            entry: dict[str, Any],
+        ) -> tuple[str, dict[str, Any] | None]:
+            async with semaphore:
+                html, response = await self._fetch_text(
+                    session,
+                    product_url,
+                    request_headers={
+                        "Accept": BROWSER_NAV_HEADERS["Accept"],
+                        "Referer": self.base_url + "/trading-card-games.html",
+                        "Sec-Fetch-Dest": "document",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Site": "same-origin",
+                    },
+                )
+                await asyncio.sleep(self.request_delay)
+
+            if not html or response is None or response.status >= 400:
+                return product_url, None
+
+            self.diagnostics["initial_enrichment_http_ok"] += 1
+            raw = self._product_page_to_raw(product_url, html)
+            if not isinstance(raw, dict):
+                return product_url, None
+
+            original_title = clean_text(entry.get("title"))
+            parsed_title = clean_text(raw.get("title"))
+            if not parsed_title or not classify_game(parsed_title):
+                raw["title"] = original_title
+
+            if not raw.get("image_url") and entry.get("image_url"):
+                raw["image_url"] = entry.get("image_url")
+
+            raw["preorder_page"] = bool(
+                raw.get("preorder_page")
+                or entry.get("preorder_page")
+            )
+            raw["source"] = "DISCOVERY_PRODUCT_PAGE_ENRICHMENT"
+
+            if not classify_game(clean_text(raw.get("title"))):
+                return product_url, None
+
+            self.diagnostics["initial_enrichment_product_ok"] += 1
+            if normalize_price(raw.get("price")) is not None:
+                self.diagnostics["initial_enrichment_price_hits"] += 1
+            if raw.get("availability_known") is True:
+                self.diagnostics["initial_enrichment_availability_hits"] += 1
+
+            return product_url, raw
+
+        results = await asyncio.gather(
+            *(fetch_one(url, entry) for url, entry in selected),
+            return_exceptions=False,
+        )
+
+        for product_url, enriched in results:
+            if not isinstance(enriched, dict):
+                continue
+            original = dict(discovered_by_url.get(product_url) or {})
+            # Preserve original discovery metadata when the product page omits it,
+            # but let product-page price/stock/title/SKU values win when present.
+            merged = dict(original)
+            for key, value in enriched.items():
+                if value is not None and value != "":
+                    merged[key] = value
+            discovered_by_url[product_url] = merged
+
     async def fetch_products(self) -> list[dict[str, Any]]:
         self._reset_diagnostics()
 
@@ -2256,6 +2424,14 @@ class ShopwareAdapter(RetailerAdapter):
                     if product_url not in discovered_by_url:
                         discovered_by_url[product_url] = entry
 
+            # F9: listing/native-widget discovery can legitimately produce a
+            # title + URL without price or stock controls. Enrich those public
+            # product URLs while the same browser-parity session is still open.
+            await self._enrich_discovered_entries(
+                session,
+                discovered_by_url,
+            )
+
         self.diagnostics["supported_listing_products"] = len(discovered_by_url)
         self.diagnostics["product_urls_discovered"] = len(discovered_by_url)
 
@@ -2291,6 +2467,10 @@ class ShopwareAdapter(RetailerAdapter):
             f"XMLSitemapHits={self.diagnostics['xml_sitemap_tcg_hits']} | "
             f"SitemapProducts={self.diagnostics['sitemap_supported_products']} | "
             f"SitemapProductPagesOK={self.diagnostics['sitemap_product_pages_successful']} | "
+            f"EnrichRequested={self.diagnostics['initial_enrichment_requested']} | "
+            f"EnrichHTTP={self.diagnostics['initial_enrichment_http_ok']} | "
+            f"EnrichPrice={self.diagnostics['initial_enrichment_price_hits']} | "
+            f"EnrichAvailability={self.diagnostics['initial_enrichment_availability_hits']} | "
             f"BodyTooLarge={self.diagnostics['body_too_large']} | "
             f"LargestBodyBytes={self.diagnostics['largest_body_bytes']} | "
             f"LastError={self.diagnostics.get('last_error')} | "
@@ -2344,8 +2524,10 @@ class ShopwareAdapter(RetailerAdapter):
             if match:
                 title = clean_text(match.group(1))
 
+        product_text = primary_product_text(html, title) or full_text
+
         if not sku:
-            match = SKU_TEXT_RE.search(full_text)
+            match = SKU_TEXT_RE.search(product_text)
             if match:
                 sku = clean_text(match.group(1)) or None
 
@@ -2358,6 +2540,8 @@ class ShopwareAdapter(RetailerAdapter):
             external_id = clean_text(external_id) or None
 
         if price is None:
+            price = parse_price_from_text(product_text)
+        if price is None and product_text != full_text:
             price = parse_price_from_text(full_text)
 
         if not currency:
@@ -2386,8 +2570,15 @@ class ShopwareAdapter(RetailerAdapter):
                 schema_availability
             )
         else:
+            preorder_context = any(
+                term in f"{title} {url} {product_text}".lower()
+                for term in PREORDER_TERMS
+            )
             available, availability_known, availability_state, availability_source = (
-                availability_from_text(full_text)
+                availability_from_text(
+                    product_text,
+                    preorder_context=preorder_context,
+                )
             )
 
         return {
@@ -2402,8 +2593,8 @@ class ShopwareAdapter(RetailerAdapter):
             "image_url": image_url,
             "sku": sku,
             "external_product_id": external_id,
-            "purchase_limit": parse_purchase_limit(full_text),
-            "text": full_text,
+            "purchase_limit": parse_purchase_limit(product_text),
+            "text": product_text,
             "source": "PRODUCT_PAGE",
         }
 
@@ -2542,15 +2733,21 @@ class ShopwareAdapter(RetailerAdapter):
         product_type = infer_product_type(title)
         product_family = classify_product_family(title)
 
+        preorder_lifecycle = preorder_page or any(
+            term in text.lower() for term in PREORDER_TERMS
+        )
+
         if availability_state == "IN_STOCK":
             product_state = "STOCK_AVAILABLE"
+        elif availability_state == "OUT_OF_STOCK" and preorder_lifecycle:
+            product_state = "PREORDER_PAGE"
         elif availability_state == "OUT_OF_STOCK":
             product_state = "SOLD_OUT"
         elif availability_state == "PREORDER":
             product_state = "PREORDER"
         elif availability_state == "BACKORDER":
             product_state = "BACKORDER"
-        elif preorder_page or any(term in text.lower() for term in PREORDER_TERMS):
+        elif preorder_lifecycle:
             # Public preorder labeling confirms lifecycle/page state even when
             # the storefront does not expose a decisive orderability signal.
             # Keep stock availability UNKNOWN while preserving preorder routing.
