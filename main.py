@@ -3800,6 +3800,480 @@ async def addretailer(
 
 
 # =========================================================
+# /SETRETAILERPLATFORM
+# Step 6J-3E2 — Safe Platform Correction
+# + Immediate Silent Revalidation
+# =========================================================
+#
+# Purpose:
+# - Correct a universal retailer that was staged under
+#   the wrong adapter/platform.
+# - Only inactive retailers may be changed.
+# - Reset staging/validation state safely.
+# - Immediately rerun Lotus silent validation.
+# - NEVER activate the retailer automatically.
+#
+# Example:
+# /setretailerplatform store_id:13 platform:WooCommerce
+# =========================================================
+
+@bot.tree.command(
+    name="setretailerplatform",
+    description=(
+        "Correct an inactive retailer platform "
+        "and silently revalidate it."
+    ),
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+@app_commands.choices(
+    platform=RETAILER_PLATFORM_CHOICES,
+)
+async def setretailerplatform(
+    interaction,
+    store_id: int,
+    platform: app_commands.Choice[str],
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    if SessionLocal is None:
+
+        await interaction.followup.send(
+            "❌ PostgreSQL is unavailable.",
+            ephemeral=True,
+        )
+
+        return
+
+    clean_platform = (
+        normalize_platform(
+            platform.value
+        )
+    )
+
+    approved_platforms = {
+        "square_weebly",
+        "woocommerce",
+        "bigcommerce",
+        "prestashop",
+    }
+
+    if clean_platform not in approved_platforms:
+
+        await interaction.followup.send(
+            (
+                "❌ That platform is not currently approved "
+                "for Lotus Universal Retailer monitoring.\n\n"
+                f"Platform: `{clean_platform}`"
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    try:
+
+        load_retailer_adapters()
+
+    except Exception as error:
+
+        await interaction.followup.send(
+            (
+                "❌ Retailer adapters could not be loaded.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    registered_platforms = set(
+        get_registered_retailer_platforms()
+    )
+
+    if clean_platform not in registered_platforms:
+
+        await interaction.followup.send(
+            (
+                "❌ No Lotus adapter is currently registered "
+                f"for `{clean_platform}`."
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    try:
+
+        # =================================================
+        # LOAD + SAFETY CHECK
+        # =================================================
+
+        async with SessionLocal() as session:
+
+            statement = (
+                select(
+                    Store
+                )
+                .where(
+                    Store.id
+                    ==
+                    store_id
+                )
+                .limit(
+                    1
+                )
+            )
+
+            result = (
+                await session.execute(
+                    statement
+                )
+            )
+
+            store = (
+                result.scalar_one_or_none()
+            )
+
+            if store is None:
+
+                await interaction.followup.send(
+                    "❌ Retailer Store ID not found.",
+                    ephemeral=True,
+                )
+
+                return
+
+            # =================================================
+            # ACTIVE STORE PROTECTION
+            # =================================================
+            #
+            # Never switch adapters underneath an actively
+            # monitored retailer. That could create false
+            # events or corrupt its monitoring baseline.
+            # =================================================
+
+            if store.active:
+
+                await interaction.followup.send(
+                    (
+                        "❌ **Platform correction blocked.**\n\n"
+                        f"**{store.name}** is currently active.\n\n"
+                        "A retailer must be inactive before its "
+                        "platform/adapter can be changed."
+                    ),
+                    ephemeral=True,
+                )
+
+                return
+
+            old_platform = (
+                normalize_platform(
+                    store.platform
+                )
+            )
+
+            store_name = (
+                store.name
+                or "Unknown Store"
+            )
+
+            store_domain = (
+                store.domain
+                or "Unknown"
+            )
+
+            store_region = (
+                store.region
+                or "US"
+            )
+
+            # =================================================
+            # SAFE PLATFORM CORRECTION
+            # =================================================
+
+            store.platform = (
+                clean_platform
+            )
+
+            # Store MUST remain inactive.
+            store.active = False
+
+            # Reset staging/validation state so the new adapter
+            # receives a clean controlled validation attempt.
+            store.health_status = "HEALTHY"
+            store.consecutive_failures = 0
+            store.disabled_reason = "UNIVERSAL_STAGING"
+            store.last_error = None
+
+            await session.commit()
+
+        # =================================================
+        # LOG CORRECTION
+        # =================================================
+
+        print(
+            (
+                "UNIVERSAL RETAILER PLATFORM CORRECTED | "
+                f"Store={store_name} | "
+                f"StoreID={store_id} | "
+                f"Domain={store_domain} | "
+                f"OldPlatform={old_platform} | "
+                f"NewPlatform={clean_platform} | "
+                "Active=False"
+            )
+        )
+
+        # =================================================
+        # IMMEDIATE SILENT REVALIDATION
+        # =================================================
+        #
+        # retailer_onboarding.py guarantees:
+        # - suppress_events=True
+        # - automatic_mode=False
+        # - no automatic activation
+        # =================================================
+
+        onboarding_result = (
+            await validate_staged_retailer(
+                store_id
+            )
+        )
+
+        # =================================================
+        # DISPLAY LABELS
+        # =================================================
+
+        platform_labels = {
+            "square_weebly": "Square / Weebly",
+            "woocommerce": "WooCommerce",
+            "bigcommerce": "BigCommerce",
+            "prestashop": "PrestaShop",
+        }
+
+        old_platform_label = (
+            platform_labels.get(
+                old_platform,
+                old_platform
+                or "Unknown",
+            )
+        )
+
+        new_platform_label = (
+            platform_labels.get(
+                clean_platform,
+                clean_platform,
+            )
+        )
+
+        # =================================================
+        # RESULT EMBED
+        # =================================================
+
+        if onboarding_result.validated:
+
+            embed = discord.Embed(
+                title=(
+                    "✅ Retailer Platform Corrected "
+                    "& Validated"
+                ),
+                description=(
+                    f"**{store_name}** was switched to the "
+                    f"**{new_platform_label}** adapter and "
+                    "successfully passed Lotus's controlled "
+                    "silent validation."
+                ),
+            )
+
+        else:
+
+            embed = discord.Embed(
+                title=(
+                    "⚠️ Retailer Platform Corrected "
+                    "— Review Required"
+                ),
+                description=(
+                    f"**{store_name}** was switched to the "
+                    f"**{new_platform_label}** adapter, but "
+                    "validation still requires review.\n\n"
+                    "The retailer remains inactive and cannot "
+                    "send Discord alerts."
+                ),
+            )
+
+        embed.add_field(
+            name="Store ID",
+            value=f"`{store_id}`",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Region",
+            value=f"`{store_region}`",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Monitoring",
+            value=(
+                "🟡 Validated / Inactive"
+                if onboarding_result.validated
+                else
+                "🔴 Staged / Inactive"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Domain",
+            value=f"`{store_domain}`",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Previous Platform",
+            value=f"`{old_platform_label}`",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="New Platform",
+            value=f"`{new_platform_label}`",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Discord Alerts",
+            value="🔇 Disabled",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Products Found",
+            value=(
+                f"`{onboarding_result.products}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Availability Coverage",
+            value=(
+                f"`{onboarding_result.availability_coverage}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Price Coverage",
+            value=(
+                f"`{onboarding_result.price_coverage}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Scan Mode",
+            value=(
+                f"`{onboarding_result.scan_mode or 'UNKNOWN'}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Historical Alerts Suppressed",
+            value=(
+                f"`{onboarding_result.suppressed}`"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Validation",
+            value=(
+                "✅ Passed"
+                if onboarding_result.validated
+                else
+                "❌ Failed / Review Required"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Validation Reason",
+            value=(
+                f"`{onboarding_result.validation_reason}`"
+            ),
+            inline=False,
+        )
+
+        if onboarding_result.validated:
+
+            embed.add_field(
+                name="Next Step",
+                value=(
+                    f"Store `{store_id}` is validated but still "
+                    "inactive. Do **not** enable it until we review "
+                    "this validation result together."
+                ),
+                inline=False,
+            )
+
+        else:
+
+            embed.add_field(
+                name="Next Step",
+                value=(
+                    "Leave this retailer inactive and review the "
+                    "new validation result before making any "
+                    "additional adapter changes."
+                ),
+                inline=False,
+            )
+
+        embed.set_footer(
+            text=(
+                "Lotus Universal Retailer Foundation • "
+                "6J-3E2 Safe Platform Correction"
+            )
+        )
+
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=True,
+        )
+
+    except asyncio.CancelledError:
+
+        raise
+
+    except Exception as error:
+
+        print(
+            (
+                "UNIVERSAL RETAILER PLATFORM CORRECTION ERROR | "
+                f"StoreID={store_id} | "
+                f"NewPlatform={clean_platform} | "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+        )
+
+        await interaction.followup.send(
+            (
+                "❌ Retailer platform correction failed.\n\n"
+                f"`{type(error).__name__}: {error}`\n\n"
+                "The retailer was not intentionally activated."
+            ),
+            ephemeral=True,
+        )
+
+
+# =========================================================
 # /SCANRETAILER
 # =========================================================
 
