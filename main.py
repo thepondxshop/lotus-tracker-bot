@@ -441,6 +441,11 @@ RETAILER_PLATFORM_CHOICES = [
         name="PrestaShop",
         value="prestashop",
     ),
+
+    app_commands.Choice(
+        name="Shopware 6",
+        value="shopware",
+    ),
 ]
 
 
@@ -3506,7 +3511,7 @@ async def detectretailer(
     embed.set_footer(
         text=(
             "Lotus Universal Retailer Foundation • "
-            "6J-3E3 Automatic Platform Fingerprinting"
+            "6J-3F Shopware 6 Platform Fingerprinting"
         )
     )
 
@@ -3932,6 +3937,7 @@ async def addretailer(
         "woocommerce",
         "bigcommerce",
         "prestashop",
+        "shopware",
     }:
 
         await interaction.followup.send(
@@ -4242,7 +4248,7 @@ async def addretailer(
         embed.set_footer(
             text=(
                 "Lotus Universal Retailer Foundation • "
-                "6J-3E3 Auto Fingerprint + Silent Validation"
+                "6J-3F Auto Fingerprint + Silent Validation"
             )
         )
 
@@ -4323,6 +4329,7 @@ async def setretailerplatform(
         "woocommerce",
         "bigcommerce",
         "prestashop",
+        "shopware",
     }
 
     if clean_platform not in approved_platforms:
@@ -4516,6 +4523,7 @@ async def setretailerplatform(
             "woocommerce": "WooCommerce",
             "bigcommerce": "BigCommerce",
             "prestashop": "PrestaShop",
+            "shopware": "Shopware 6",
         }
 
         old_platform_label = (
@@ -4893,6 +4901,7 @@ async def scanretailer(
             "woocommerce",
             "bigcommerce",
             "prestashop",
+            "shopware",
         }:
 
             await interaction.followup.send(
@@ -5014,6 +5023,7 @@ async def scanretailer(
             "woocommerce": "WooCommerce",
             "bigcommerce": "BigCommerce",
             "prestashop": "PrestaShop",
+            "shopware": "Shopware 6",
         }.get(platform, platform)
 
         embed.add_field(
@@ -5302,6 +5312,7 @@ async def stores(
         "woocommerce": "WooCommerce",
         "bigcommerce": "BigCommerce",
         "prestashop": "PrestaShop",
+        "shopware": "Shopware 6",
         "pokemon_center": "Pokémon Center",
         "major_retailer": "Major Retailer",
     }
