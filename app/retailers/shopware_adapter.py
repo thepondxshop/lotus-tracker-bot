@@ -1580,29 +1580,35 @@ class ShopwareAdapter(RetailerAdapter):
 
                     await asyncio.sleep(self.request_delay)
 
-        # Step 6J-3F3: if customized category rendering still yields too few
-        # products, fall back to Miniature Market's public Product Sitemap.
-        # The sitemap gives us canonical product URLs and titles; a bounded
-        # product-page enrichment pass then supplies price/availability.
-        if len(discovered_by_url) < 40:
-            sitemap_entries = await self._discover_product_sitemap_entries(session)
-            unseen_sitemap_entries = [
-                entry
-                for entry in sitemap_entries
-                if canonical_url(self.base_url, entry.get("url")) not in discovered_by_url
-            ]
-            enriched_sitemap_entries = await self._enrich_sitemap_entries(
-                session,
-                unseen_sitemap_entries,
-            )
+            # Step 6J-3F4: IMPORTANT — sitemap discovery must stay inside
+            # this ClientSession context. F3 accidentally ran the sitemap
+            # fallback after the `async with ClientSession(...)` block exited,
+            # which produced RuntimeError: Session is closed before the first
+            # sitemap request could run.
+            #
+            # Step 6J-3F3: if customized category rendering still yields too few
+            # products, fall back to Miniature Market's public Product Sitemap.
+            # The sitemap gives us canonical product URLs and titles; a bounded
+            # product-page enrichment pass then supplies price/availability.
+            if len(discovered_by_url) < 40:
+                sitemap_entries = await self._discover_product_sitemap_entries(session)
+                unseen_sitemap_entries = [
+                    entry
+                    for entry in sitemap_entries
+                    if canonical_url(self.base_url, entry.get("url")) not in discovered_by_url
+                ]
+                enriched_sitemap_entries = await self._enrich_sitemap_entries(
+                    session,
+                    unseen_sitemap_entries,
+                )
 
-            for entry in enriched_sitemap_entries:
-                title = clean_text(entry.get("title"))
-                product_url = canonical_url(self.base_url, entry.get("url"))
-                if not title or not product_url or not classify_game(title):
-                    continue
-                if product_url not in discovered_by_url:
-                    discovered_by_url[product_url] = entry
+                for entry in enriched_sitemap_entries:
+                    title = clean_text(entry.get("title"))
+                    product_url = canonical_url(self.base_url, entry.get("url"))
+                    if not title or not product_url or not classify_game(title):
+                        continue
+                    if product_url not in discovered_by_url:
+                        discovered_by_url[product_url] = entry
 
         self.diagnostics["supported_listing_products"] = len(discovered_by_url)
         self.diagnostics["product_urls_discovered"] = len(discovered_by_url)
