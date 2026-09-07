@@ -3537,7 +3537,13 @@ def format_universal_discovery_diagnostics(value) -> str:
         ("listing_roots_found", "Listing roots"),
         ("listing_pages_successful", "Listing pages OK"),
         ("listing_cards_seen", "Listing cards"),
+        ("listing_fragment_urls_found", "Fragment URLs"),
+        ("listing_fragment_pages_successful", "Fragment pages OK"),
+        ("listing_fragment_cards_seen", "Fragment cards"),
         ("fallback_supported_anchors", "Fallback product links"),
+        ("sitemap_pages_successful", "Sitemap pages OK"),
+        ("sitemap_supported_products", "Sitemap TCG links"),
+        ("sitemap_product_pages_successful", "Sitemap product pages OK"),
         ("product_urls_discovered", "Product URLs"),
         ("body_too_large", "Oversize pages"),
         ("largest_body_bytes", "Largest body bytes"),
@@ -3554,7 +3560,7 @@ def format_universal_discovery_diagnostics(value) -> str:
     if last_error:
         lines.append(f"**Adapter error:** `{str(last_error)[:220]}`")
 
-    return "\n".join(lines[:12]) or "Adapter diagnostics were empty."
+    return "\n".join(lines[:15]) or "Adapter diagnostics were empty."
 
 
 # =========================================================
@@ -5038,7 +5044,7 @@ async def scanretailer(
                 inline=False,
             )
             failure_embed.set_footer(
-                text="Lotus Universal Retailer Foundation • 6J-3F2 Shopware Discovery Diagnostics"
+                text="Lotus Universal Retailer Foundation • 6J-3F3 Shopware Fragment + Sitemap Diagnostics"
             )
 
             await interaction.followup.send(
