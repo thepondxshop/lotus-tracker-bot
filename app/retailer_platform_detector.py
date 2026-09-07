@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 USER_AGENT = (
     "LotusTracker/1.0.4 "
     "(PonDeX Trackers; public retailer platform fingerprinting)"
@@ -630,6 +630,80 @@ async def _probe_json_endpoint(
         return False, None, f"{type(error).__name__}:{error}"
 
 
+async def _probe_woocommerce_with_production_adapter(
+    base_url: str,
+) -> tuple[bool, str | None, str | None]:
+    """
+    Probe WooCommerce using the exact production adapter logic.
+
+    Step 6J-3E3.2:
+    The fingerprint detector must not maintain a second, subtly different
+    WooCommerce JSON implementation. Carnage Cards proved that the
+    production adapter could successfully parse the public Store API while
+    the standalone detector reported INVALID_JSON. This helper therefore
+    delegates endpoint selection to WooCommerceAdapter itself.
+
+    This performs public GET requests only and does not fetch a whole catalog.
+    WooCommerceAdapter._select_store_api_path requests at most the two known
+    public Store API product endpoints with per_page=1.
+    """
+    try:
+        # Import lazily to avoid forcing retailer adapter imports during
+        # module initialization and to keep detector startup lightweight.
+        from app.retailers.woocommerce_adapter import (
+            WooCommerceAdapter,
+            USER_AGENT as WOO_USER_AGENT,
+        )
+
+        parsed = urlparse(base_url)
+        domain = str(parsed.netloc or parsed.path or "").strip().strip("/")
+        if not domain:
+            return False, None, "INVALID_WOO_PROBE_DOMAIN"
+
+        adapter = WooCommerceAdapter(
+            domain=domain,
+            region="US",
+            store_name="Lotus Platform Fingerprint Probe",
+            max_pages=1,
+        )
+
+        headers = {
+            "User-Agent": WOO_USER_AGENT,
+            "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        connector = aiohttp.TCPConnector(
+            limit=4,
+            limit_per_host=2,
+        )
+
+        async with aiohttp.ClientSession(
+            headers=headers,
+            connector=connector,
+        ) as woo_session:
+            path = await adapter._select_store_api_path(woo_session)
+
+        if path:
+            return True, str(path), None
+
+        diagnostics = adapter.get_diagnostics()
+        reason = str(
+            diagnostics.get("last_error")
+            or "PUBLIC_STORE_API_NOT_FOUND"
+        )
+        return False, None, reason
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        return (
+            False,
+            None,
+            f"{type(error).__name__}:{error}",
+        )
+
+
 async def _probe_platform_apis(
     *,
     session: aiohttp.ClientSession,
@@ -640,70 +714,101 @@ async def _probe_platform_apis(
 ) -> None:
     base_url = base_url.rstrip("/")
 
-    # WooCommerce / WordPress REST namespace fingerprint.
-    # A Woo Store API namespace in the public WP REST index is decisive
-    # storefront evidence and avoids depending on homepage markup.
-    ok, payload, error = await _probe_json_endpoint(
-        session,
-        f"{base_url}/wp-json/",
-    )
-    if ok and isinstance(payload, dict):
-        namespaces = payload.get("namespaces")
-        routes = payload.get("routes")
+    # =====================================================
+    # WooCommerce — production-adapter truth first
+    # =====================================================
+    #
+    # If Lotus's real WooCommerce adapter can select a public Store API
+    # endpoint, that is decisive evidence. This keeps platform detection
+    # aligned with the exact HTTP/JSON behavior used by production scans.
+    # =====================================================
 
-        namespace_hit = False
-        if isinstance(namespaces, list):
-            namespace_hit = any(
-                str(item).lower().startswith("wc/store")
-                for item in namespaces
-            )
-
-        route_hit = False
-        if isinstance(routes, dict):
-            route_hit = any(
-                str(route).lower().startswith("/wc/store/")
-                for route in routes.keys()
-            )
-
-        if namespace_hit or route_hit:
-            _add_signal(
-                scores,
-                signal_map,
-                "woocommerce",
-                120,
-                "WordPress REST index exposes WooCommerce Store API namespace",
-            )
-    elif error and error not in {"HTTP_401", "HTTP_403", "HTTP_404"}:
-        errors.append(f"WOO_INDEX_PROBE:{error}")
-
-    # WooCommerce public Store API. This is our strongest product-level
-    # signal because the same endpoint family is used by Lotus's
-    # production WooCommerce adapter.
-    woo_paths = (
-        "/wp-json/wc/store/v1/products?per_page=1&page=1",
-        "/wp-json/wc/store/products?per_page=1&page=1",
+    woo_detected, woo_path, woo_adapter_error = (
+        await _probe_woocommerce_with_production_adapter(
+            base_url
+        )
     )
 
-    woo_detected = False
-    for path in woo_paths:
-        ok, payload, error = await _probe_json_endpoint(
-            session,
-            f"{base_url}{path}",
+    if woo_detected:
+        _add_signal(
+            scores,
+            signal_map,
+            "woocommerce",
+            140,
+            (
+                "Production WooCommerce adapter confirmed public "
+                f"Store API endpoint {woo_path}"
+            ),
         )
 
-        if ok and isinstance(payload, list):
-            woo_detected = True
-            _add_signal(
-                scores,
-                signal_map,
-                "woocommerce",
-                110,
-                "Public WooCommerce Store API responded with a product collection",
+    else:
+        if woo_adapter_error:
+            errors.append(
+                f"WOO_PRODUCTION_PROBE:{woo_adapter_error}"
             )
-            break
 
-        if error and error not in {"HTTP_401", "HTTP_403", "HTTP_404"}:
-            errors.append(f"WOO_PROBE:{error}")
+        # Fallback namespace fingerprint. This remains useful for stores
+        # whose product collection endpoint is temporarily filtered but
+        # whose WordPress REST index still advertises wc/store routes.
+        ok, payload, error = await _probe_json_endpoint(
+            session,
+            f"{base_url}/wp-json/",
+        )
+        if ok and isinstance(payload, dict):
+            namespaces = payload.get("namespaces")
+            routes = payload.get("routes")
+
+            namespace_hit = False
+            if isinstance(namespaces, list):
+                namespace_hit = any(
+                    str(item).lower().startswith("wc/store")
+                    for item in namespaces
+                )
+
+            route_hit = False
+            if isinstance(routes, dict):
+                route_hit = any(
+                    str(route).lower().startswith("/wc/store/")
+                    for route in routes.keys()
+                )
+
+            if namespace_hit or route_hit:
+                _add_signal(
+                    scores,
+                    signal_map,
+                    "woocommerce",
+                    120,
+                    "WordPress REST index exposes WooCommerce Store API namespace",
+                )
+        elif error and error not in {"HTTP_401", "HTTP_403", "HTTP_404"}:
+            errors.append(f"WOO_INDEX_PROBE:{error}")
+
+        # Final low-cost detector fallback. It uses the generic detector
+        # JSON helper only when the production adapter could not confirm
+        # WooCommerce.
+        woo_paths = (
+            "/wp-json/wc/store/v1/products?per_page=1&page=1",
+            "/wp-json/wc/store/products?per_page=1&page=1",
+        )
+
+        for path in woo_paths:
+            ok, payload, error = await _probe_json_endpoint(
+                session,
+                f"{base_url}{path}",
+            )
+
+            if ok and isinstance(payload, list):
+                _add_signal(
+                    scores,
+                    signal_map,
+                    "woocommerce",
+                    110,
+                    "Public WooCommerce Store API responded with a product collection",
+                )
+                break
+
+            if error and error not in {"HTTP_401", "HTTP_403", "HTTP_404"}:
+                errors.append(f"WOO_PROBE:{error}")
 
     # Shopify's public products.json is not universally exposed, so a
     # successful Shopify-shaped payload is strong evidence while failure
@@ -771,10 +876,6 @@ async def _probe_platform_apis(
             )
     elif error and error not in {"HTTP_401", "HTTP_403", "HTTP_404"}:
         errors.append(f"BIGCOMMERCE_PROBE:{error}")
-
-    # `woo_detected` exists mainly to make the intended strong Woo path
-    # explicit for future diagnostics/refactoring.
-    _ = woo_detected
 
 
 async def detect_retailer_platform(
