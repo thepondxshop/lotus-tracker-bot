@@ -3551,6 +3551,11 @@ def format_universal_discovery_diagnostics(value) -> str:
         ("synthetic_widget_pages_with_game_text", "Native widget game pages"),
         ("synthetic_widget_pages_with_add_to_cart", "Native widget cart pages"),
         ("synthetic_widget_cards_seen", "Native widget cards"),
+        ("initial_enrichment_requested", "Product enrich requested"),
+        ("initial_enrichment_http_ok", "Product enrich HTTP OK"),
+        ("initial_enrichment_product_ok", "Product enrich parsed"),
+        ("initial_enrichment_price_hits", "Product enrich price hits"),
+        ("initial_enrichment_availability_hits", "Product enrich stock hits"),
         ("listing_fragment_urls_found", "Fragment URLs"),
         ("listing_fragment_cards_seen", "Fragment cards"),
         ("sitemap_product_pages_successful", "Product pages OK"),
@@ -3567,7 +3572,7 @@ def format_universal_discovery_diagnostics(value) -> str:
     if last_error:
         lines.append(f"**Adapter error:** `{str(last_error)[:220]}`")
 
-    return "\n".join(lines[:20]) or "Adapter diagnostics were empty."
+    return "\n".join(lines[:26]) or "Adapter diagnostics were empty."
 
 
 # =========================================================
@@ -5051,7 +5056,7 @@ async def scanretailer(
                 inline=False,
             )
             failure_embed.set_footer(
-                text="Lotus Universal Retailer Foundation • 6J-3F7 Shopware Browser-Parity Diagnostics"
+                text="Lotus Universal Retailer Foundation • 6J-3F9 Shopware Product Enrichment Diagnostics"
             )
 
             await interaction.followup.send(
@@ -5214,6 +5219,33 @@ async def scanretailer(
             inline=True,
         )
 
+        # F9: a technically successful Shopware scan can still be incomplete
+        # (for example only a few discovery-only URLs with no price/stock).
+        # Surface adapter diagnostics on success whenever coverage is weak so
+        # administrators do not mistake a partial baseline for production-ready
+        # monitoring.
+        if platform == "shopware" and (
+            int(scan_result.get("products", 0) or 0) < 40
+            or unknown_stock > 0
+            or missing_prices > 0
+        ):
+            embed.add_field(
+                name="Shopware Discovery Diagnostics",
+                value=format_universal_discovery_diagnostics(
+                    scan_result.get("diagnostics")
+                )[:1000],
+                inline=False,
+            )
+            embed.add_field(
+                name="Shopware Readiness",
+                value=(
+                    "⚠️ Discovery is working, but this retailer is still in "
+                    "compatibility review. Keep it inactive until product "
+                    "coverage plus price/availability quality are verified."
+                ),
+                inline=False,
+            )
+
         embed.add_field(
 
             name="Safety Mode",
@@ -5260,7 +5292,8 @@ async def scanretailer(
 
         embed.set_footer(
             text=(
-                "Lotus Universal Retailer Foundation \u2022 v1.0.4"
+                "Lotus Universal Retailer Foundation • "
+                "6J-3F9 Shopware Product Enrichment"
             )
         )
 
