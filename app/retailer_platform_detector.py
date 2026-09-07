@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Universal Retailer Platform Detector
-Version: 1.0.0
+Version: 1.0.1
 
 Step 6J-3E3 — Automatic Retailer Platform Fingerprinting
 
@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 USER_AGENT = (
     "LotusTracker/1.0.4 "
     "(PonDeX Trackers; public retailer platform fingerprinting)"
@@ -40,6 +40,7 @@ USER_AGENT = (
 
 REQUEST_TIMEOUT_SECONDS = 15
 MAX_BODY_BYTES = 1_250_000
+MAX_JSON_PROBE_BYTES = 8_000_000
 
 AUTO_STAGE_PLATFORMS = {
     "square_weebly",
@@ -556,24 +557,72 @@ async def _probe_json_endpoint(
     session: aiohttp.ClientSession,
     url: str,
 ) -> tuple[bool, Any, str | None]:
+    """
+    Fetch a public JSON endpoint conservatively.
+
+    Step 6J-3E3.1 compatibility fix:
+    - Uses a larger but still bounded JSON probe read. Some WooCommerce
+      stores return unexpectedly large Store API responses even when
+      `per_page=1` is requested. The old 1.25 MB detector limit could
+      truncate valid JSON and report INVALID_JSON.
+    - Handles UTF BOMs and unusual charset declarations.
+    - Callers use a fresh DummyCookieJar session so homepage cookies do
+      not influence REST/API fingerprint probes.
+    """
     try:
         async with session.get(
             url,
             allow_redirects=True,
-            headers={
-                "Accept": "application/json,text/plain;q=0.8,*/*;q=0.5",
-            },
         ) as response:
             if response.status != 200:
                 return False, None, f"HTTP_{response.status}"
 
-            text = await _read_bounded_text(response)
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_JSON_PROBE_BYTES:
+                        return False, None, "JSON_BODY_TOO_LARGE"
+                except (TypeError, ValueError):
+                    pass
+
+            raw = await response.content.read(
+                MAX_JSON_PROBE_BYTES + 1
+            )
+
+            if len(raw) > MAX_JSON_PROBE_BYTES:
+                return False, None, "JSON_BODY_TOO_LARGE"
+
+            # Prefer the response charset when it is valid, otherwise
+            # use UTF-8. UTF-8-SIG removes a leading BOM safely.
+            charset = str(response.charset or "utf-8").lower()
+            try:
+                if charset in {"utf-8", "utf8"}:
+                    text = raw.decode("utf-8-sig", errors="replace")
+                else:
+                    text = raw.decode(charset, errors="replace")
+            except (LookupError, UnicodeError):
+                text = raw.decode("utf-8-sig", errors="replace")
+
+            text = text.lstrip("\ufeff").strip()
+
+            # Some public endpoints prepend an anti-XSSI marker.
+            if text.startswith(")]}'"):
+                newline = text.find("\n")
+                if newline >= 0:
+                    text = text[newline + 1 :].lstrip()
+
             try:
                 payload = json.loads(text)
+                return True, payload, None
             except Exception:
-                return False, None, "INVALID_JSON"
-
-            return True, payload, None
+                content_type = str(
+                    response.headers.get("Content-Type") or "unknown"
+                ).split(";", 1)[0]
+                return (
+                    False,
+                    None,
+                    f"INVALID_JSON_CONTENT_TYPE_{content_type}",
+                )
 
     except asyncio.CancelledError:
         raise
@@ -591,8 +640,45 @@ async def _probe_platform_apis(
 ) -> None:
     base_url = base_url.rstrip("/")
 
-    # WooCommerce public Store API. This is our strongest signal because
-    # the same public API is used by Lotus's WooCommerce adapter.
+    # WooCommerce / WordPress REST namespace fingerprint.
+    # A Woo Store API namespace in the public WP REST index is decisive
+    # storefront evidence and avoids depending on homepage markup.
+    ok, payload, error = await _probe_json_endpoint(
+        session,
+        f"{base_url}/wp-json/",
+    )
+    if ok and isinstance(payload, dict):
+        namespaces = payload.get("namespaces")
+        routes = payload.get("routes")
+
+        namespace_hit = False
+        if isinstance(namespaces, list):
+            namespace_hit = any(
+                str(item).lower().startswith("wc/store")
+                for item in namespaces
+            )
+
+        route_hit = False
+        if isinstance(routes, dict):
+            route_hit = any(
+                str(route).lower().startswith("/wc/store/")
+                for route in routes.keys()
+            )
+
+        if namespace_hit or route_hit:
+            _add_signal(
+                scores,
+                signal_map,
+                "woocommerce",
+                120,
+                "WordPress REST index exposes WooCommerce Store API namespace",
+            )
+    elif error and error not in {"HTTP_401", "HTTP_403", "HTTP_404"}:
+        errors.append(f"WOO_INDEX_PROBE:{error}")
+
+    # WooCommerce public Store API. This is our strongest product-level
+    # signal because the same endpoint family is used by Lotus's
+    # production WooCommerce adapter.
     woo_paths = (
         "/wp-json/wc/store/v1/products?per_page=1&page=1",
         "/wp-json/wc/store/products?per_page=1&page=1",
@@ -729,10 +815,14 @@ async def detect_retailer_platform(
         "Cache-Control": "no-cache",
     }
 
+    # Homepage probe gets its own cookie jar/session. Some storefronts
+    # set presentation or cache cookies on the homepage that can change
+    # how subsequent REST requests are served. Platform API probes must
+    # therefore be isolated from homepage cookies.
     async with aiohttp.ClientSession(
         timeout=timeout,
         headers=headers,
-    ) as session:
+    ) as homepage_session:
         (
             homepage_url,
             homepage_status,
@@ -740,33 +830,52 @@ async def detect_retailer_platform(
             response_headers,
             homepage_errors,
         ) = await _fetch_homepage(
-            session,
+            homepage_session,
             clean_domain,
         )
 
-        errors.extend(homepage_errors)
+    errors.extend(homepage_errors)
 
-        score_homepage_signals(
-            html=html,
-            final_url=homepage_url,
-            headers=response_headers,
-            scores=scores,
-            signal_map=signal_map,
-        )
+    score_homepage_signals(
+        html=html,
+        final_url=homepage_url,
+        headers=response_headers,
+        scores=scores,
+        signal_map=signal_map,
+    )
 
-        # Use the resolved origin for API probes when possible, so www/non-www
-        # redirects and alternate storefront hosts are handled correctly.
-        if homepage_url:
-            parsed = urlparse(homepage_url)
-            if parsed.scheme and parsed.netloc:
-                base_url = f"{parsed.scheme}://{parsed.netloc}"
-            else:
-                base_url = f"https://{clean_domain}"
+    # Use the resolved origin for API probes when possible, so www/non-www
+    # redirects and alternate storefront hosts are handled correctly.
+    if homepage_url:
+        parsed = urlparse(homepage_url)
+        if parsed.scheme and parsed.netloc:
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
         else:
             base_url = f"https://{clean_domain}"
+    else:
+        base_url = f"https://{clean_domain}"
 
+    # Match the production WooCommerce adapter's JSON-first request profile
+    # and deliberately isolate API probing from homepage cookies.
+    probe_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    connector = aiohttp.TCPConnector(
+        limit=4,
+        limit_per_host=2,
+    )
+
+    async with aiohttp.ClientSession(
+        timeout=timeout,
+        headers=probe_headers,
+        connector=connector,
+        cookie_jar=aiohttp.DummyCookieJar(),
+    ) as probe_session:
         await _probe_platform_apis(
-            session=session,
+            session=probe_session,
             base_url=base_url,
             scores=scores,
             signal_map=signal_map,
