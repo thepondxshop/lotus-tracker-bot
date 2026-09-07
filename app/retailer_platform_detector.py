@@ -1,9 +1,9 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Universal Retailer Platform Detector
-Version: 1.0.3
+Version: 1.0.4
 
-Step 6J-3F — Shopware 6 Platform Fingerprinting
+Step 6J-3F1 — Shopware 6 Production-Adapter Fingerprinting
 
 Purpose:
 - Detect the storefront platform before a universal retailer is staged.
@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 USER_AGENT = (
     "LotusTracker/1.0.4 "
     "(PonDeX Trackers; public retailer platform fingerprinting)"
@@ -773,6 +773,45 @@ async def _probe_woocommerce_with_production_adapter(
         )
 
 
+async def _probe_shopware_with_production_adapter(
+    base_url: str,
+) -> tuple[bool, str | None, str | None, list[str]]:
+    """Use the real Shopware adapter for platform truth."""
+    try:
+        from app.retailers.shopware_adapter import ShopwareAdapter
+
+        parsed = urlparse(base_url)
+        domain = str(parsed.netloc or parsed.path or "").strip().strip("/")
+        if not domain:
+            return False, None, "INVALID_SHOPWARE_PROBE_DOMAIN", []
+
+        adapter = ShopwareAdapter(
+            domain=domain,
+            region="US",
+            store_name="Lotus Platform Fingerprint Probe",
+            max_listing_pages=1,
+            max_product_pages=1,
+        )
+        result = await adapter.platform_probe()
+        if result.get("detected"):
+            path = str(result.get("path") or "/")
+            strength = str(result.get("strength") or "STRONG")
+            markers = [str(x) for x in (result.get("markers") or [])]
+            label = f"{path} [{strength}]"
+            if markers:
+                label += " markers=" + ",".join(markers[:3])
+            return True, label, None, []
+
+        reason = str(result.get("reason") or "NO_SHOPWARE_MARKERS")
+        notes = [str(x) for x in (result.get("notes") or [])]
+        return False, None, reason, notes
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        return False, None, f"{type(error).__name__}:{error}", []
+
+
 async def _probe_platform_apis(
     *,
     session: aiohttp.ClientSession,
@@ -782,6 +821,30 @@ async def _probe_platform_apis(
     errors: list[str],
 ) -> None:
     base_url = base_url.rstrip("/")
+
+    # =====================================================
+    # Shopware 6 — production-adapter truth first
+    # =====================================================
+    shopware_detected, shopware_detail, shopware_error, shopware_notes = (
+        await _probe_shopware_with_production_adapter(base_url)
+    )
+
+    if shopware_detected:
+        _add_signal(
+            scores,
+            signal_map,
+            "shopware",
+            160,
+            (
+                "Production Shopware adapter confirmed public storefront "
+                f"signature at {shopware_detail}"
+            ),
+        )
+    else:
+        if shopware_error:
+            errors.append(f"SHOPWARE_PRODUCTION_PROBE:{shopware_error}")
+        for note in shopware_notes[:4]:
+            errors.append(f"SHOPWARE_PROBE_NOTE:{note}")
 
     # =====================================================
     # WooCommerce — production-adapter truth first
