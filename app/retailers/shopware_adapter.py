@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F10 — Product Signal Recovery + Direct Detail Fallback
+Step 6J-3F12 — Official Product Feed + Shopware Hybrid Source
 Initial production target: Miniature Market
 
 Safety:
@@ -41,6 +41,7 @@ import aiohttp
 
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
+from app.affiliate_feeds import get_official_feed_source
 
 
 VERSION = "1.0.4"
@@ -1321,6 +1322,10 @@ class ShopwareAdapter(RetailerAdapter):
         self.max_listing_pages = max(1, min(int(max_listing_pages), MAX_LISTING_PAGES))
         self.max_product_pages = max(1, min(int(max_product_pages), MAX_PRODUCT_PAGES))
         self.known_product_urls: set[str] = set()
+        self.official_feed = get_official_feed_source(
+            self.domain,
+            store_name=self.store_name,
+        )
         self.diagnostics: dict[str, Any] = {}
         self._reset_diagnostics()
 
@@ -1413,6 +1418,33 @@ class ShopwareAdapter(RetailerAdapter):
             "direct_detail_price_hits": 0,
             "direct_detail_availability_hits": 0,
             "discovered_internal_product_ids": 0,
+            # F12 — official product-feed/hybrid source diagnostics.
+            "official_feed_provider": (
+                getattr(self.official_feed, "provider", None)
+                if self.official_feed is not None
+                else None
+            ),
+            "official_feed_enabled": bool(
+                getattr(self.official_feed, "enabled", False)
+            ),
+            "official_feed_configured": bool(
+                getattr(self.official_feed, "api_key", "")
+            ),
+            "official_feed_active": False,
+            "official_feed_cache_hit": False,
+            "official_feed_merchant_id": None,
+            "official_feed_catalogs_seen": 0,
+            "official_feed_api_calls": 0,
+            "official_feed_search_calls": 0,
+            "official_feed_rows_seen": 0,
+            "official_feed_rows_deduped": 0,
+            "official_feed_products": 0,
+            "official_feed_supported_products": 0,
+            "official_feed_price_hits": 0,
+            "official_feed_stock_hits": 0,
+            "official_feed_keywords_completed": 0,
+            "official_feed_truncated": False,
+            "official_feed_last_error": None,
             "last_http_status": None,
             "last_error": None,
             "games": {},
@@ -1426,6 +1458,65 @@ class ShopwareAdapter(RetailerAdapter):
 
     def get_diagnostics(self) -> dict[str, Any]:
         return dict(self.diagnostics)
+
+    def _merge_official_feed_diagnostics(self) -> None:
+        if self.official_feed is None:
+            return
+        try:
+            feed_diagnostics = self.official_feed.get_diagnostics()
+        except Exception:
+            return
+        if not isinstance(feed_diagnostics, dict):
+            return
+        for key, value in feed_diagnostics.items():
+            if key.startswith("official_feed_"):
+                self.diagnostics[key] = value
+
+    @staticmethod
+    def _feed_classification_text(product: dict[str, Any]) -> str:
+        return clean_text(
+            " ".join(
+                str(product.get(key) or "")
+                for key in ("title", "name", "description", "promo", "text")
+            )
+        )
+
+    async def _fetch_official_feed_products(self) -> list[dict[str, Any]]:
+        if self.official_feed is None:
+            return []
+        try:
+            feed_products = await self.official_feed.fetch_products()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.diagnostics["official_feed_last_error"] = (
+                f"{type(error).__name__}:{error}"
+            )[:240]
+            return []
+        finally:
+            self._merge_official_feed_diagnostics()
+
+        supported: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for raw in feed_products or []:
+            if not isinstance(raw, dict):
+                continue
+            title = clean_text(raw.get("title") or raw.get("name"))
+            classification_text = self._feed_classification_text(raw)
+            if not title or not classify_game(title) and not classify_game(classification_text):
+                continue
+            url = clean_text(raw.get("url"))
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            supported.append(dict(raw))
+
+        self.diagnostics["official_feed_supported_products"] = len(supported)
+        self.diagnostics["official_feed_active"] = bool(supported)
+        return supported
 
     def set_known_product_urls(self, urls: list[str] | tuple[str, ...] | set[str]) -> None:
         cleaned: set[str] = set()
@@ -2552,6 +2643,39 @@ class ShopwareAdapter(RetailerAdapter):
     async def fetch_products(self) -> list[dict[str, Any]]:
         self._reset_diagnostics()
 
+        # F12 — Prefer an approved official merchant product feed when one is
+        # configured for this storefront. This gives Lotus authoritative
+        # discovery + price data without pretending that the feed exposes stock.
+        # If the feed is unavailable, the existing public Shopware compatibility
+        # path remains a safe fallback.
+        feed_products = await self._fetch_official_feed_products()
+        if feed_products:
+            if self.known_product_urls:
+                feed_products.sort(
+                    key=lambda item: (
+                        clean_text(item.get("url")) in self.known_product_urls,
+                        clean_text(item.get("title")).lower(),
+                    )
+                )
+
+            if len(feed_products) > self.max_product_pages:
+                feed_products = feed_products[: self.max_product_pages]
+                self.diagnostics["official_feed_truncated"] = True
+
+            self.diagnostics["supported_listing_products"] = len(feed_products)
+            self.diagnostics["product_urls_discovered"] = len(feed_products)
+
+            print(
+                "SHOPWARE OFFICIAL FEED ACTIVE | "
+                f"Store={self.store_name} | "
+                f"Provider={self.diagnostics.get('official_feed_provider')} | "
+                f"MerchantID={self.diagnostics.get('official_feed_merchant_id')} | "
+                f"Products={len(feed_products)} | "
+                f"PriceHits={self.diagnostics.get('official_feed_price_hits')} | "
+                "StockCapability=UNVERIFIED"
+            )
+            return feed_products
+
         headers = dict(BROWSER_NAV_HEADERS)
 
         connector = aiohttp.TCPConnector(limit=6, limit_per_host=4)
@@ -2972,71 +3096,124 @@ class ShopwareAdapter(RetailerAdapter):
         }
 
     async def get_normalized_products_from_urls(self, urls: list[str]) -> list[dict[str, Any]]:
-        requested: list[str] = []
-        seen: set[str] = set()
-
+        # Keep exact URLs first: official affiliate-feed URLs may contain
+        # required tracking query parameters and may live on LinkConnector.
+        requested_exact: list[str] = []
+        seen_exact: set[str] = set()
         for raw_url in urls or []:
+            value = clean_text(raw_url)
+            parsed = urlparse(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
+            if value in seen_exact:
+                continue
+            seen_exact.add(value)
+            requested_exact.append(value)
+
+        if not requested_exact:
+            return []
+
+        normalized_output: list[dict[str, Any]] = []
+        matched_urls: set[str] = set()
+
+        # F12: refresh official-feed products from the shared TTL cache/source.
+        # This avoids hitting LinkConnector on every 60-second monitor cycle.
+        feed_products = await self._fetch_official_feed_products()
+        if feed_products:
+            feed_by_url = {
+                clean_text(item.get("url")): item
+                for item in feed_products
+                if isinstance(item, dict) and clean_text(item.get("url"))
+            }
+            for requested_url in requested_exact:
+                raw = feed_by_url.get(requested_url)
+                if raw is None:
+                    continue
+                normalized = self.normalize_product(raw)
+                if isinstance(normalized, RetailerProduct):
+                    normalized_output.append(normalized.to_dict())
+                    matched_urls.add(requested_url)
+                elif isinstance(normalized, dict):
+                    normalized_output.append(dict(normalized))
+                    matched_urls.add(requested_url)
+
+        # Preserve the existing Shopware page-refresh path for legacy baseline
+        # rows and for stores without an active official feed. External feed URLs
+        # are never requested as storefront pages.
+        storefront_requested: list[str] = []
+        storefront_seen: set[str] = set()
+        for raw_url in requested_exact:
+            if raw_url in matched_urls:
+                continue
             url = canonical_url(self.base_url, raw_url)
             if not url or not same_store_host(self.domain, url):
                 continue
-            if url in seen:
+            if url in storefront_seen:
                 continue
-            seen.add(url)
-            requested.append(url)
+            storefront_seen.add(url)
+            storefront_requested.append(url)
 
-        if not requested:
-            return []
-
-        headers = dict(BROWSER_NAV_HEADERS)
-        connector = aiohttp.TCPConnector(
-            limit=MAX_CONCURRENT_PRODUCT_REQUESTS,
-            limit_per_host=MAX_CONCURRENT_PRODUCT_REQUESTS,
-        )
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_PRODUCT_REQUESTS)
-
-        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-
-            async def fetch_one(url: str) -> dict[str, Any] | None:
-                async with semaphore:
-                    html, response = await self._fetch_text(session, url)
-                    await asyncio.sleep(self.request_delay)
-
-                if not html or response is None or response.status >= 400:
-                    return None
-
-                raw = self._product_page_to_raw(url, html)
-                if not raw:
-                    return None
-
-                normalized = self.normalize_product(raw)
-                if normalized is None:
-                    return None
-                if isinstance(normalized, RetailerProduct):
-                    return normalized.to_dict()
-                if isinstance(normalized, dict):
-                    return dict(normalized)
-                return None
-
-            results = await asyncio.gather(
-                *(fetch_one(url) for url in requested),
-                return_exceptions=False,
+        if storefront_requested:
+            headers = dict(BROWSER_NAV_HEADERS)
+            connector = aiohttp.TCPConnector(
+                limit=MAX_CONCURRENT_PRODUCT_REQUESTS,
+                limit_per_host=MAX_CONCURRENT_PRODUCT_REQUESTS,
             )
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_PRODUCT_REQUESTS)
 
-        normalized: list[dict[str, Any]] = []
-        for item in results:
-            if isinstance(item, dict):
-                normalized.append(item)
+            async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
 
-        self.diagnostics["product_pages_successful"] += len(normalized)
+                async def fetch_one(url: str) -> dict[str, Any] | None:
+                    async with semaphore:
+                        html, response = await self._fetch_text(session, url)
+                        await asyncio.sleep(self.request_delay)
+
+                    if not html or response is None or response.status >= 400:
+                        return None
+
+                    raw = self._product_page_to_raw(url, html)
+                    if not raw:
+                        return None
+
+                    normalized = self.normalize_product(raw)
+                    if normalized is None:
+                        return None
+                    if isinstance(normalized, RetailerProduct):
+                        return normalized.to_dict()
+                    if isinstance(normalized, dict):
+                        return dict(normalized)
+                    return None
+
+                results = await asyncio.gather(
+                    *(fetch_one(url) for url in storefront_requested),
+                    return_exceptions=False,
+                )
+
+            for item in results:
+                if isinstance(item, dict):
+                    normalized_output.append(item)
+
+        self.diagnostics["product_pages_successful"] += sum(
+            1
+            for item in normalized_output
+            if str(
+                (item.get("platform_data") or {}).get("source", "")
+                if isinstance(item.get("platform_data"), dict)
+                else ""
+            ).upper() == "PRODUCT_PAGE"
+        )
 
         print(
             "SHOPWARE FAST REFRESH COMPLETE | "
-            f"Store={self.store_name} | Requested={len(requested)} | "
-            f"Validated={len(normalized)} | HTTP429={self.diagnostics['http_429']} | "
+            f"Store={self.store_name} | Requested={len(requested_exact)} | "
+            f"FeedMatched={len(matched_urls)} | "
+            f"StorefrontRequested={len(storefront_requested)} | "
+            f"Validated={len(normalized_output)} | "
+            f"HTTP429={self.diagnostics['http_429']} | "
             f"HTTPBlocked={self.diagnostics['http_blocked']}"
         )
 
-        return normalized
+        return normalized_output
 
     def normalize_product(self, product: Any) -> RetailerProduct | None:
         if not isinstance(product, dict):
@@ -3045,20 +3222,36 @@ class ShopwareAdapter(RetailerAdapter):
             return None
 
         title = clean_text(product.get("title") or product.get("name"))
-        url = canonical_url(self.base_url, product.get("url"))
+        source = clean_text(product.get("source") or "LISTING_CARD").upper()
+        text = clean_text(product.get("text") or title)
+        description = clean_text(product.get("description"))
+        promo = clean_text(product.get("promo"))
+        classification_text = clean_text(
+            " ".join(part for part in (title, description, promo, text) if part)
+        )
+
+        raw_url = clean_text(product.get("url"))
+        if source.startswith("LINKCONNECTOR_"):
+            parsed_url = urlparse(raw_url)
+            url = (
+                raw_url
+                if parsed_url.scheme in {"http", "https"} and parsed_url.netloc
+                else None
+            )
+        else:
+            url = canonical_url(self.base_url, raw_url)
+
         if not title or not url:
             self.diagnostics["products_rejected"] += 1
             self.diagnostics["rejected_products"] += 1
             return None
 
-        game = classify_game(title)
+        game = classify_game(title) or classify_game(classification_text)
         if not game:
             self.diagnostics["products_rejected"] += 1
             self.diagnostics["rejected_products"] += 1
             return None
 
-        source = clean_text(product.get("source") or "LISTING_CARD").upper()
-        text = clean_text(product.get("text") or title)
         preorder_page = bool(product.get("preorder_page"))
 
         price = normalize_price(product.get("price"))
@@ -3102,9 +3295,9 @@ class ShopwareAdapter(RetailerAdapter):
         elif availability_state == "BACKORDER":
             self.diagnostics["backorders"] += 1
 
-        product_category = classify_product_category(title)
-        product_type = infer_product_type(title)
-        product_family = classify_product_family(title)
+        product_category = classify_product_category(classification_text or title)
+        product_type = infer_product_type(classification_text or title)
+        product_family = classify_product_family(classification_text or title)
 
         preorder_lifecycle = preorder_page or any(
             term in text.lower() for term in PREORDER_TERMS
@@ -3133,7 +3326,7 @@ class ShopwareAdapter(RetailerAdapter):
             or product.get("product_id")
             or product.get("sku")
         ) or None
-        if not external_product_id:
+        if not external_product_id and not source.startswith("LINKCONNECTOR_"):
             slug = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
             external_product_id = slug[:-5] if slug.lower().endswith(".html") else slug
             external_product_id = clean_text(external_product_id) or None
@@ -3154,10 +3347,29 @@ class ShopwareAdapter(RetailerAdapter):
             )
         )
 
+        is_official_feed = source.startswith("LINKCONNECTOR_")
+        parsed_product_url = urlparse(url)
+        affiliate_tracking_url = (
+            parsed_product_url.netloc.lower().endswith("linkconnector.com")
+            and parsed_product_url.path.lower().endswith("/ta.php")
+        )
+
         platform_data = {
             "adapter": "shopware",
             "shopware_version_family": "6",
             "source": source,
+            "official_feed": is_official_feed,
+            "official_feed_provider": (
+                "linkconnector" if is_official_feed else None
+            ),
+            "merchant_id": clean_text(product.get("merchant_id")) or None,
+            "feed_product_id": clean_text(
+                product.get("product_id") or product.get("external_product_id")
+            ) or None,
+            "affiliate_tracking_url": bool(affiliate_tracking_url),
+            "stock_capability_verified": bool(
+                product.get("stock_capability_verified", False)
+            ) if is_official_feed else availability_known,
             "availability_known": availability_known,
             "availability_state": availability_state,
             "availability_source": availability_source,
