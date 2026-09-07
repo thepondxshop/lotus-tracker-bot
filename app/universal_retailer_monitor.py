@@ -5,7 +5,7 @@ PonDeX Trackers
 Universal Retailer Monitor
 Version: 1.1.0
 
-Step 6J-3A — PrestaShop Universal Platform Registration
+Step 6J-3F — Shopware 6 Universal Platform Support
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -66,8 +66,23 @@ DELTA_DISCOVERY_TIMEOUT_SECONDS = 25
 DELTA_DISCOVERY_CANDIDATE_LIMIT = 12
 DELTA_DISCOVERY_STARTUP_GRACE_SECONDS = 30
 
-SUPPORTED_UNIVERSAL_PLATFORMS = {"square_weebly", "woocommerce", "bigcommerce", "prestashop"}
-DELTA_DISCOVERY_PLATFORMS = {"square_weebly", "woocommerce", "bigcommerce", "prestashop"}
+SUPPORTED_UNIVERSAL_PLATFORMS = {
+    "square_weebly",
+    "woocommerce",
+    "bigcommerce",
+    "prestashop",
+    "shopware",
+}
+
+# Shopware 6 is production-supported for normal sharded refresh + bounded
+# deep discovery in Step 6J-3F. Keep it out of the lightweight generic delta
+# crawler until the platform-specific Shopware delta path is validated.
+DELTA_DISCOVERY_PLATFORMS = {
+    "square_weebly",
+    "woocommerce",
+    "bigcommerce",
+    "prestashop",
+}
 
 PRIORITY_STATUSES = {
     "PREORDER", "PREORDER_PAGE", "PREORDER_LIVE", "BACKORDER",
