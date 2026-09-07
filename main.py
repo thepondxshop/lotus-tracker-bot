@@ -3537,6 +3537,12 @@ def format_universal_discovery_diagnostics(value) -> str:
         ("listing_roots_found", "Listing roots"),
         ("listing_pages_successful", "Listing pages OK"),
         ("listing_cards_seen", "Listing cards"),
+        ("listing_pages_with_game_text", "Listing pages with game text"),
+        ("listing_pages_with_add_to_cart", "Listing pages with Add to cart"),
+        ("loose_anchor_candidates", "Loose anchor candidates"),
+        ("loose_anchor_products", "Loose anchor products"),
+        ("browser_profile_requests", "Browser-profile requests"),
+        ("browser_profile_pages_successful", "Browser-profile pages OK"),
         ("listing_fragment_urls_found", "Fragment URLs"),
         ("listing_fragment_cards_seen", "Fragment cards"),
         ("xml_sitemap_docs_successful", "XML sitemap docs OK"),
@@ -5047,7 +5053,7 @@ async def scanretailer(
                 inline=False,
             )
             failure_embed.set_footer(
-                text="Lotus Universal Retailer Foundation • 6J-3F6 Shopware XML + HTML Sitemap Diagnostics"
+                text="Lotus Universal Retailer Foundation • 6J-3F7 Shopware Browser-Parity Diagnostics"
             )
 
             await interaction.followup.send(
