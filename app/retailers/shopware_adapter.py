@@ -3,7 +3,7 @@ Lotus Tracker Bot / PonDeX Trackers
 Shopware 6 Universal Retailer Adapter
 Version 1.0.4
 
-Step 6J-3F7 — Browser-Parity Storefront Retrieval + Loose Anchor Discovery
+Step 6J-3F8 — Native Shopware Navigation Widget Discovery
 Initial production target: Miniature Market
 
 Safety:
@@ -1080,6 +1080,14 @@ class ShopwareAdapter(RetailerAdapter):
             "listing_pages_with_add_to_cart": 0,
             "loose_anchor_candidates": 0,
             "loose_anchor_products": 0,
+            "listing_options_seen": 0,
+            "navigation_ids_seen": 0,
+            "listing_slot_ids_seen": 0,
+            "synthetic_widget_urls_found": 0,
+            "synthetic_widget_pages_successful": 0,
+            "synthetic_widget_pages_with_game_text": 0,
+            "synthetic_widget_pages_with_add_to_cart": 0,
+            "synthetic_widget_cards_seen": 0,
             "last_http_status": None,
             "last_error": None,
             "games": {},
@@ -1327,40 +1335,98 @@ class ShopwareAdapter(RetailerAdapter):
     def _extract_listing_fragment_urls(self, html: str) -> list[str]:
         """
         Discover public Shopware listing-fragment endpoints embedded in a
-        category shell. Some Shopware storefronts return filter/navigation
-        chrome in the category response and load the actual product grid from
-        /widgets/cms/navigation/... via an XHR request.
+        category shell.
+
+        F8 adds native Shopware route synthesis. Standard Shopware storefronts
+        expose ``window.activeNavigationId`` even when a CDN/theme returns a
+        reduced category shell without product cards. The normal storefront
+        listing plugin then calls ``/widgets/cms/navigation/{navigationId}``
+        with X-Requested-With. We reproduce only that public GET request.
         """
         decoded = html_lib.unescape(html or "")
+        expanded = unquote(decoded)
+
         candidates: list[str] = []
         seen: set[str] = set()
-
         raw_values: list[str] = []
 
-        # Explicit data-url / data-listing-url style attributes.
+        self.diagnostics["listing_options_seen"] += len(
+            re.findall(r"data-listing-options", expanded, re.IGNORECASE)
+        )
+
         for match in re.finditer(
             r"\b(?:data-url|data-listing-url|data-load-url)\s*=\s*[\"']([^\"']+)[\"']",
-            decoded,
+            expanded,
             re.IGNORECASE,
         ):
             raw_values.append(match.group(1))
 
-        # JSON embedded in data-listing-options or script configuration.
         for match in re.finditer(
             r"[\"'](?:dataUrl|data-url|listingUrl|listing-url)[\"']\s*:\s*[\"']([^\"']+)[\"']",
-            decoded,
+            expanded,
             re.IGNORECASE,
         ):
             raw_values.append(match.group(1))
 
-        # Last-resort direct Shopware widget path discovery.
         for match in re.finditer(
             r"(?:https?://[^\"'<>\s]+)?/widgets/cms/navigation/[^\"'<>\s\\]+",
-            decoded,
+            expanded,
             re.IGNORECASE,
         ):
             raw_values.append(match.group(0))
 
+        navigation_ids: list[str] = []
+        navigation_seen: set[str] = set()
+        nav_patterns = (
+            r"activeNavigationId\s*=\s*[\"']([0-9a-fA-F-]{32,36})[\"']",
+            r"[\"']navigationId[\"']\s*:\s*[\"']([0-9a-fA-F-]{32,36})[\"']",
+            r"data-navigation-id\s*=\s*[\"']([0-9a-fA-F-]{32,36})[\"']",
+            r"/widgets/cms/navigation/([0-9a-fA-F-]{32,36})",
+        )
+        for pattern in nav_patterns:
+            for match in re.finditer(pattern, expanded, re.IGNORECASE):
+                value = clean_text(match.group(1))
+                if not value:
+                    continue
+                key = value.lower()
+                if key in navigation_seen:
+                    continue
+                navigation_seen.add(key)
+                navigation_ids.append(value)
+
+        self.diagnostics["navigation_ids_seen"] += len(navigation_ids)
+
+        slot_ids: list[str] = []
+        slot_seen: set[str] = set()
+        slot_patterns = (
+            r"[\"']slots[\"']\s*:\s*[\"']([0-9a-fA-F-]{32,36})[\"']",
+            r"[?&]slots=([0-9a-fA-F-]{32,36})",
+            r"data-(?:slot|slot-id)\s*=\s*[\"']([0-9a-fA-F-]{32,36})[\"']",
+        )
+        for pattern in slot_patterns:
+            for match in re.finditer(pattern, expanded, re.IGNORECASE):
+                value = clean_text(match.group(1))
+                if not value:
+                    continue
+                key = value.lower()
+                if key in slot_seen:
+                    continue
+                slot_seen.add(key)
+                slot_ids.append(value)
+
+        self.diagnostics["listing_slot_ids_seen"] += len(slot_ids)
+
+        for nav_id in navigation_ids:
+            raw_values.append(
+                f"/widgets/cms/navigation/{nav_id}?no-aggregations=1"
+            )
+            if slot_ids:
+                raw_values.append(
+                    f"/widgets/cms/navigation/{nav_id}?"
+                    f"slots={slot_ids[0]}&no-aggregations=1"
+                )
+
+        synthetic_count = 0
         for raw in raw_values:
             raw = raw.replace("\\/", "/")
             request_url = canonical_request_url(self.base_url, raw)
@@ -1368,14 +1434,25 @@ class ShopwareAdapter(RetailerAdapter):
                 continue
             if "/widgets/cms/navigation/" not in request_url.lower():
                 continue
+
+            parsed = urlparse(request_url)
+            clean_path = re.sub(r"/filter/?$", "", parsed.path, flags=re.I)
+            if clean_path != parsed.path:
+                request_url = urlunparse((
+                    parsed.scheme, parsed.netloc, clean_path, "", parsed.query, ""
+                ))
+
             key = request_url.lower()
             if key in seen:
                 continue
             seen.add(key)
             candidates.append(request_url)
+            if any(nav_id.lower() in key for nav_id in navigation_ids):
+                synthetic_count += 1
             if len(candidates) >= MAX_FRAGMENT_URLS_PER_ROOT:
                 break
 
+        self.diagnostics["synthetic_widget_urls_found"] += synthetic_count
         return candidates
 
     def _extract_supported_sitemap_anchors(self, html: str) -> list[dict[str, Any]]:
@@ -2046,6 +2123,10 @@ class ShopwareAdapter(RetailerAdapter):
                                 request_headers={
                                     "X-Requested-With": "XMLHttpRequest",
                                     "Accept": "text/html,*/*;q=0.8",
+                                    "Referer": url,
+                                    "Sec-Fetch-Dest": "empty",
+                                    "Sec-Fetch-Mode": "cors",
+                                    "Sec-Fetch-Site": "same-origin",
                                 },
                             )
                             if (
@@ -2056,11 +2137,37 @@ class ShopwareAdapter(RetailerAdapter):
                                 continue
 
                             self.diagnostics["listing_fragment_pages_successful"] += 1
+                            self.diagnostics["synthetic_widget_pages_successful"] += 1
+
+                            fragment_lower = fragment_html.lower()
+                            if any(
+                                marker in fragment_lower
+                                for marker in (
+                                    "pokemon tcg", "pokémon tcg", "one piece tcg",
+                                    "gundam card game", "riftbound", "fusion world",
+                                    "palworld", "cyberpunk tcg", "azuki tcg",
+                                    "hellbreak tcg",
+                                )
+                            ):
+                                self.diagnostics[
+                                    "synthetic_widget_pages_with_game_text"
+                                ] += 1
+                            if (
+                                "add to cart" in fragment_lower
+                                or "add to basket" in fragment_lower
+                            ):
+                                self.diagnostics[
+                                    "synthetic_widget_pages_with_add_to_cart"
+                                ] += 1
+
                             parsed_fragment_cards = self._parse_listing_page(
                                 fragment_html,
                                 preorder_page=preorder_page,
                             )
                             self.diagnostics["listing_fragment_cards_seen"] += len(
+                                parsed_fragment_cards
+                            )
+                            self.diagnostics["synthetic_widget_cards_seen"] += len(
                                 parsed_fragment_cards
                             )
                             fragment_cards.extend(parsed_fragment_cards)
