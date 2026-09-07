@@ -188,6 +188,16 @@ from app.retailer_platform_detector import (
 
 
 # =========================================================
+# OFFICIAL PRODUCT FEEDS
+# Step 6J-3F12
+# =========================================================
+
+from app.affiliate_feeds import (
+    probe_official_feed,
+)
+
+
+# =========================================================
 # STORE HEALTH
 # =========================================================
 
@@ -3522,6 +3532,189 @@ async def detectretailer(
 
 
 # =========================================================
+# /FEEDSTATUS
+# Step 6J-3F12 — Official Product Feed Diagnostic
+# =========================================================
+
+@bot.tree.command(
+    name="feedstatus",
+    description="Check an official retailer product-feed integration.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def feedstatus(
+    interaction,
+    store_id: int,
+):
+    await interaction.response.defer(ephemeral=True)
+
+    if SessionLocal is None:
+        await interaction.followup.send(
+            "❌ PostgreSQL is unavailable.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        async with SessionLocal() as session:
+            result = await session.execute(
+                select(Store)
+                .where(Store.id == store_id)
+                .limit(1)
+            )
+            store = result.scalar_one_or_none()
+
+        if store is None:
+            await interaction.followup.send(
+                "❌ Retailer Store ID not found.",
+                ephemeral=True,
+            )
+            return
+
+        probe = await probe_official_feed(
+            store.domain,
+            store_name=store.name,
+        )
+
+        if not probe.get("supported"):
+            embed = discord.Embed(
+                title="ℹ️ No Official Feed Integration",
+                description=(
+                    f"Lotus does not currently have an approved official "
+                    f"product-feed source configured for **{store.name}**."
+                ),
+            )
+            embed.add_field(name="Store ID", value=f"`{store.id}`", inline=True)
+            embed.add_field(
+                name="Platform",
+                value=f"`{platform_display_name(store.platform)}`",
+                inline=True,
+            )
+            embed.add_field(name="Domain", value=f"`{store.domain}`", inline=False)
+            embed.set_footer(
+                text="Lotus Universal Retailer Foundation • 6J-3F12 Official Feeds"
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        configured = bool(probe.get("api_key_configured"))
+        catalog_found = bool(probe.get("merchant_catalog_found"))
+        sample_products = int(probe.get("sample_products", 0) or 0)
+        sample_price_hits = int(probe.get("sample_price_hits", 0) or 0)
+        feed_ready = configured and catalog_found and sample_products > 0
+
+        embed = discord.Embed(
+            title=(
+                "✅ Official Product Feed Ready"
+                if feed_ready
+                else "⚠️ Official Product Feed Needs Setup"
+            ),
+            description=(
+                f"Official-feed diagnostic completed for **{store.name}**. "
+                "This check is read-only and cannot activate the retailer or "
+                "send product alerts."
+            ),
+        )
+
+        embed.add_field(name="Store ID", value=f"`{store.id}`", inline=True)
+        embed.add_field(
+            name="Storefront",
+            value=f"`{platform_display_name(store.platform)}`",
+            inline=True,
+        )
+        embed.add_field(
+            name="Provider",
+            value=f"`{probe.get('provider') or 'Unknown'}`",
+            inline=True,
+        )
+        embed.add_field(name="Domain", value=f"`{store.domain}`", inline=False)
+        embed.add_field(
+            name="Feed Enabled",
+            value="✅ Yes" if probe.get("enabled") else "❌ No",
+            inline=True,
+        )
+        embed.add_field(
+            name="API Key",
+            value="✅ Configured" if configured else "❌ Missing",
+            inline=True,
+        )
+        embed.add_field(
+            name="Merchant Catalog",
+            value="✅ Found" if catalog_found else "❌ Not Found",
+            inline=True,
+        )
+        embed.add_field(
+            name="Merchant ID",
+            value=f"`{probe.get('merchant_id') or 'AUTO / UNKNOWN'}`",
+            inline=True,
+        )
+        embed.add_field(
+            name="Sample Products",
+            value=f"`{sample_products}`",
+            inline=True,
+        )
+        embed.add_field(
+            name="Sample Price Hits",
+            value=f"`{sample_price_hits}`",
+            inline=True,
+        )
+        embed.add_field(
+            name="Stock Capability",
+            value=(
+                "✅ Verified"
+                if probe.get("stock_capability_verified")
+                else "🔒 Unverified — stock alerts capability-gated"
+            ),
+            inline=False,
+        )
+
+        last_error = probe.get("last_error")
+        if last_error:
+            embed.add_field(
+                name="Feed Note / Error",
+                value=f"`{str(last_error)[:900]}`",
+                inline=False,
+            )
+
+        if feed_ready:
+            next_step = (
+                f"Run `/scanretailer store_id:{store.id}` for a forced-silent "
+                "feed-backed baseline/review. Keep the retailer inactive until "
+                "catalog and price coverage are verified."
+            )
+        elif not configured:
+            next_step = (
+                "Add `LINKCONNECTOR_API_KEY` in Railway after your LinkConnector "
+                "account and Miniature Market campaign are approved, then rerun "
+                f"`/feedstatus store_id:{store.id}`."
+            )
+        else:
+            next_step = (
+                "Confirm that the Miniature Market campaign/product catalog is "
+                "available to this LinkConnector account. You may also provide "
+                "`LINKCONNECTOR_MINIATURE_MARKET_MERCHANT_ID` if known, then "
+                f"rerun `/feedstatus store_id:{store.id}`."
+            )
+
+        embed.add_field(name="Next Step", value=next_step, inline=False)
+        embed.set_footer(
+            text="Lotus Universal Retailer Foundation • 6J-3F12 Official Feed Diagnostic"
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        await interaction.followup.send(
+            (
+                "❌ Official-feed diagnostic failed.\n\n"
+                f"`{type(error).__name__}: {error}`"
+            ),
+            ephemeral=True,
+        )
+
+
+# =========================================================
 # UNIVERSAL VALIDATION DIAGNOSTIC FORMATTER
 # Step 6J-3F2
 # =========================================================
@@ -3531,7 +3724,40 @@ def format_universal_discovery_diagnostics(value) -> str:
     if not diagnostics:
         return "No adapter diagnostics were returned."
 
-    keys = (
+    feed_active = bool(diagnostics.get("official_feed_active"))
+    feed_provider = diagnostics.get("official_feed_provider")
+
+    feed_keys = []
+    if feed_active:
+        feed_keys = [
+            ("official_feed_provider", "Official feed provider"),
+            ("official_feed_enabled", "Official feed enabled"),
+            ("official_feed_configured", "Official feed configured"),
+            ("official_feed_active", "Official feed active"),
+            ("official_feed_cache_hit", "Official feed cache hit"),
+            ("official_feed_merchant_id", "Official feed merchant ID"),
+            ("official_feed_api_calls", "Official feed API calls"),
+            ("official_feed_search_calls", "Official feed search calls"),
+            ("official_feed_rows_seen", "Official feed rows seen"),
+            ("official_feed_rows_deduped", "Official feed rows deduped"),
+            ("official_feed_products", "Official feed products"),
+            ("official_feed_supported_products", "Official feed supported TCG"),
+            ("official_feed_price_hits", "Official feed price hits"),
+            ("official_feed_stock_hits", "Official feed stock hits"),
+            ("official_feed_keywords_completed", "Official feed keywords done"),
+            ("official_feed_truncated", "Official feed bounded/truncated"),
+        ]
+    elif feed_provider:
+        # When the feed is not active, keep this compact so the existing
+        # Shopware fallback diagnostics remain visible in Discord.
+        feed_keys = [
+            ("official_feed_provider", "Official feed provider"),
+            ("official_feed_enabled", "Official feed enabled"),
+            ("official_feed_configured", "Official feed configured"),
+            ("official_feed_merchant_id", "Official feed merchant ID"),
+        ]
+
+    keys = tuple(feed_keys) + (
         ("pages_checked", "Pages checked"),
         ("pages_successful", "Pages OK"),
         ("listing_roots_found", "Listing roots"),
@@ -3585,14 +3811,18 @@ def format_universal_discovery_diagnostics(value) -> str:
 
     lines = []
     for key, label in keys:
-        if key in diagnostics:
+        if key in diagnostics and diagnostics.get(key) is not None:
             lines.append(f"**{label}:** `{diagnostics.get(key)}`")
+
+    feed_error = diagnostics.get("official_feed_last_error")
+    if feed_error:
+        lines.append(f"**Official feed note:** `{str(feed_error)[:220]}`")
 
     last_error = diagnostics.get("last_error")
     if last_error:
         lines.append(f"**Adapter error:** `{str(last_error)[:220]}`")
 
-    return "\n".join(lines[:34]) or "Adapter diagnostics were empty."
+    return "\n".join(lines[:48]) or "Adapter diagnostics were empty."
 
 
 # =========================================================
@@ -5239,32 +5469,60 @@ async def scanretailer(
             inline=True,
         )
 
-        # F9: a technically successful Shopware scan can still be incomplete
-        # (for example only a few discovery-only URLs with no price/stock).
-        # Surface adapter diagnostics on success whenever coverage is weak so
-        # administrators do not mistake a partial baseline for production-ready
-        # monitoring.
+        # F12: Shopware retailers may use an approved official product feed
+        # for authoritative discovery + price data while stock remains
+        # capability-gated. Unknown availability is therefore expected for
+        # feed-backed products and must never be interpreted as sold out.
+        shopware_diagnostics = (
+            scan_result.get("diagnostics")
+            if isinstance(scan_result.get("diagnostics"), dict)
+            else {}
+        )
+        official_feed_active = bool(
+            shopware_diagnostics.get("official_feed_active")
+        )
+
         if platform == "shopware" and (
-            int(scan_result.get("products", 0) or 0) < 40
+            official_feed_active
+            or int(scan_result.get("products", 0) or 0) < 40
             or unknown_stock > 0
             or missing_prices > 0
         ):
             embed.add_field(
-                name="Shopware Discovery Diagnostics",
+                name=(
+                    "Official Feed + Shopware Diagnostics"
+                    if official_feed_active
+                    else "Shopware Discovery Diagnostics"
+                ),
                 value=format_universal_discovery_diagnostics(
-                    scan_result.get("diagnostics")
+                    shopware_diagnostics
                 )[:1000],
                 inline=False,
             )
-            embed.add_field(
-                name="Shopware Readiness",
-                value=(
-                    "⚠️ Discovery is working, but this retailer is still in "
-                    "compatibility review. Keep it inactive until product "
-                    "coverage plus price/availability quality are verified."
-                ),
-                inline=False,
-            )
+
+            if official_feed_active:
+                embed.add_field(
+                    name="Official Feed Readiness",
+                    value=(
+                        "🟡 The approved product feed is supplying discovery "
+                        "and price intelligence. Availability remains "
+                        "**UNKNOWN by design** until an independently verified "
+                        "stock source exists, so restock/sold-out/stock alerts "
+                        "remain capability-gated. Keep this retailer inactive "
+                        "until feed catalog and price coverage are reviewed."
+                    ),
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="Shopware Readiness",
+                    value=(
+                        "⚠️ Discovery is working, but this retailer is still in "
+                        "compatibility review. Keep it inactive until product "
+                        "coverage plus price/availability quality are verified."
+                    ),
+                    inline=False,
+                )
 
         embed.add_field(
 
