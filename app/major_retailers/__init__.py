@@ -1,4 +1,4 @@
-"""Lotus Step 6K-1B major-retailer package."""
+"""Lotus Step 6K-1C major-retailer package."""
 
 from .catalog import load_builtin_major_retailer_definitions
 
@@ -31,5 +31,5 @@ from .registry import (  # noqa: E402,F401
     register_major_retailer_adapter,
 )
 
-VERSION = "1.1.0"
-STEP = "6K-1B"
+VERSION = "1.2.0"
+STEP = "6K-1C"
