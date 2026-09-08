@@ -1,4 +1,4 @@
-"""Major-retailer registry for Lotus Step 6K-1B."""
+"""Major-retailer registry for Lotus Step 6K-1A2."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Type
 
 from .base import MajorRetailerAdapter, MajorRetailerDefinition
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 _DEFINITIONS: dict[str, MajorRetailerDefinition] = {}
 _ADAPTERS: dict[str, Type[MajorRetailerAdapter]] = {}
@@ -24,6 +24,14 @@ def normalize_retailer_key(value: str | None) -> str:
         "game stop": "gamestop",
         "game-stop": "gamestop",
         "gamestop.com": "gamestop",
+        "premium bandai": "premium_bandai",
+        "premium-bandai": "premium_bandai",
+        "p bandai": "premium_bandai",
+        "p-bandai": "premium_bandai",
+        "p-bandai.com": "premium_bandai",
+        "p-bandai.com/us": "premium_bandai",
+        "www.p-bandai.com": "premium_bandai",
+        "www.p-bandai.com/us": "premium_bandai",
         "box lunch": "boxlunch",
         "box-lunch": "boxlunch",
         "box_lunch": "boxlunch",
