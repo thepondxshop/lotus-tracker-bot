@@ -3729,7 +3729,7 @@ async def feedstatus(
 
 # =========================================================
 # /MAJORSTATUS
-# Step 6K-1C1 — Target Silent Validation
+# Step 6K-1C2 — Target Silent Validation
 # =========================================================
 
 @bot.tree.command(
@@ -3749,7 +3749,7 @@ async def majorstatus(interaction):
         title="🏬 Major Retailer Foundation",
         description=(
             "Lotus's dedicated major-retailer framework is installed. "
-            "Step 6K-1C1 adds the Target adapter for controlled silent validation. "
+            "Step 6K-1C2 adds the Target adapter for controlled silent validation. "
             "No background major-retailer polling, database writes, or product alerts are enabled yet."
         ),
     )
@@ -3779,7 +3779,7 @@ async def majorstatus(interaction):
         value="🟡 **Adapter installed** — run `/majorprobe retailer:target`, then `/majorscan retailer:target`",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C1")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -3826,7 +3826,7 @@ async def majorretailers(interaction):
         ),
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C1")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -3864,7 +3864,7 @@ async def majorprobe(interaction, retailer: str):
         embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
         embed.add_field(name="Network Requests", value="`0`", inline=True)
         embed.add_field(name="Next Step", value="Build and silently validate the retailer adapter.", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C1")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -3898,13 +3898,13 @@ async def majorprobe(interaction, retailer: str):
     )
     if result.get("error"):
         embed.add_field(name="Error", value=f"`{str(result.get('error'))[:900]}`", inline=False)
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C1")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # =========================================================
 # /MAJORSCAN
-# Step 6K-1C1 — Controlled Silent Major-Retailer Scan
+# Step 6K-1C2 — Controlled Silent Major-Retailer Scan
 # =========================================================
 
 @bot.tree.command(
@@ -3942,7 +3942,7 @@ async def majorscan(
         embed.add_field(name="Retailer Key", value=f"`{result.get('retailer_key')}`", inline=True)
         embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
         embed.add_field(name="Discord Alerts", value="🔇 Disabled", inline=True)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C1")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -3954,7 +3954,7 @@ async def majorscan(
         embed.add_field(name="Retailer", value=f"`{result.get('retailer_key') or retailer}`", inline=True)
         embed.add_field(name="Reason", value=f"`{str(result.get('error') or 'UNKNOWN')[:900]}`", inline=False)
         embed.add_field(name="Safety", value="🔇 No database writes or Discord product alerts were allowed.", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C1")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -4012,6 +4012,15 @@ async def majorscan(
         f"Redsky search requests: `{diagnostics.get('redsky_search_requests', 0)}`",
         f"Redsky search OK: `{diagnostics.get('redsky_search_http_ok', 0)}`",
         f"Redsky HTTP 206: `{diagnostics.get('redsky_search_http_206', 0)}`",
+        f"Redsky non-success: `{diagnostics.get('redsky_search_http_non_success', 0)}`",
+        f"Redsky HTTP 400/401/403/404/429/5xx: `"
+        f"{diagnostics.get('redsky_search_http_400', 0)}/"
+        f"{diagnostics.get('redsky_search_http_401', 0)}/"
+        f"{diagnostics.get('redsky_search_http_403', 0)}/"
+        f"{diagnostics.get('redsky_search_http_404', 0)}/"
+        f"{diagnostics.get('redsky_search_http_429', 0)}/"
+        f"{diagnostics.get('redsky_search_http_5xx', 0)}`",
+        f"Redsky pricing store: `{diagnostics.get('redsky_pricing_store_id') or 'UNKNOWN'}`",
         f"Redsky rows seen: `{diagnostics.get('redsky_search_rows_seen', 0)}`",
         f"Redsky supported: `{diagnostics.get('redsky_supported_candidates', 0)}`",
         f"Redsky detail requests: `{diagnostics.get('redsky_detail_requests', 0)}`",
@@ -4020,6 +4029,7 @@ async def majorscan(
         f"Redsky image hits: `{diagnostics.get('redsky_image_hits', 0)}`",
         f"Redsky marketplace rejected: `{diagnostics.get('redsky_marketplace_rejections', 0)}`",
         f"Redsky key rejected: `{diagnostics.get('redsky_key_rejected', 0)}`",
+        f"Redsky last failure: `{diagnostics.get('redsky_last_non_success_status') or 'NONE'}`",
         f"Category requests: `{diagnostics.get('category_requests', 0)}`",
         f"Category HTTP 200: `{diagnostics.get('category_http_ok', 0)}`",
         f"Category anchors: `{diagnostics.get('category_anchor_candidates', 0)}`",
@@ -4044,6 +4054,10 @@ async def majorscan(
     ]
     if diagnostics.get("last_error"):
         diag_lines.append(f"Last error: `{str(diagnostics.get('last_error'))[:700]}`")
+    if diagnostics.get("redsky_last_non_success_body"):
+        diag_lines.append(
+            f"Redsky failure body: `{str(diagnostics.get('redsky_last_non_success_body'))[:180]}`"
+        )
     embed.add_field(name="Adapter Diagnostics", value="\
 ".join(diag_lines), inline=False)
 
@@ -4067,7 +4081,7 @@ async def majorscan(
         value="🔇 Forced silent validation — no database persistence and no Discord product alerts.",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C1 Target Adapter")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2 Target Adapter")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
