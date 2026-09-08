@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Target Dedicated Major-Retailer Adapter
-Step 6K-1B
+Step 6K-1C
 
 Purpose
 -------
@@ -22,13 +22,15 @@ Safety
 from __future__ import annotations
 
 import asyncio
+import gzip
 import html as html_lib
 import json
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Iterable
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import aiohttp
 
@@ -40,8 +42,8 @@ from .base import (
 )
 from .registry import major_retailer_adapter
 
-VERSION = "1.1.0"
-STEP = "6K-1B"
+VERSION = "1.2.0"
+STEP = "6K-1C"
 BASE_URL = "https://www.target.com"
 REQUEST_TIMEOUT_SECONDS = 18
 MAX_RESPONSE_BYTES = 3_500_000
@@ -50,7 +52,7 @@ MAX_PRODUCT_PAGES = 40
 
 # Transparent crawler identity. We intentionally do not spoof a browser or
 # attempt to evade retailer controls.
-USER_AGENT = "LotusTracker/1.1 (+https://thepondx.com; public Target monitoring)"
+USER_AGENT = "LotusTracker/1.2 (+https://thepondx.com; public Target monitoring)"
 
 SEARCH_TERMS = (
     "pokemon tcg",
@@ -59,6 +61,30 @@ SEARCH_TERMS = (
     "dragon ball fusion world",
     "riftbound tcg",
     "tcg cards",
+)
+
+# Canonical Target taxonomy pages are preferred over free-text search because
+# they are public SEO/crawl surfaces and can expose product links differently
+# from /s/... search responses.
+CATEGORY_URLS = (
+    ("trading_card_games", f"{BASE_URL}/c/trading-card-games-cards-toys/-/N-d4gjq"),
+    ("pokemon", f"{BASE_URL}/c/pokemon-trading-cards-card-games-toys/-/N-6llsh"),
+    ("one_piece", f"{BASE_URL}/c/one-piece-trading-cards-card-games-toys/-/N-m64pf"),
+    ("dragon_ball", f"{BASE_URL}/c/dragon-ball-z-trading-cards-card-games-toys/-/N-y80jp"),
+)
+
+# Target publishes this sitemap endpoint in robots.txt. Sitemap discovery is
+# a bounded public fallback only; it does not crawl the full Target catalog.
+PDP_SITEMAP_INDEX = f"{BASE_URL}/sitemap_pdp-index.xml.gz"
+MAX_SITEMAP_INDEX_BYTES = 8_000_000
+MAX_SITEMAP_DOC_BYTES = 10_000_000
+MAX_SITEMAP_CHILDREN = 4
+
+# Product URLs can appear in rendered anchors or serialized page state.
+RAW_PRODUCT_URL_RE = re.compile(
+    r"(?:https?:\/\/www\.target\.com|https?://www\.target\.com)?"
+    r"(?P<path>/p/[^\"'<>\s]{3,500}?/-/A-(?P<tcin>\d{6,14}))",
+    re.I,
 )
 
 PRODUCT_URL_RE = re.compile(r"/-/A-(\d{6,14})(?:[/?#]|$)", re.I)
@@ -286,6 +312,91 @@ def _title_from_anchor(anchor: dict[str, str]) -> str:
         if text and len(text) >= 5:
             return text
     return ""
+
+
+def _candidate_title_from_url(url: str) -> str:
+    """Recover a useful title hint from a Target PDP slug."""
+    try:
+        path = unquote(urlparse(url).path)
+    except Exception:
+        path = url or ""
+    match = re.search(r"/p/([^/]+)/-/A-\d{6,14}", path, re.I)
+    if not match:
+        return ""
+    slug = match.group(1)
+    slug = slug.replace("-", " ").replace("_", " ")
+    slug = re.sub(r"\b821[0-9]{1,3}\b", " ", slug)
+    return _clean(slug)
+
+
+def _normalize_serialized_target_url(raw: str) -> str:
+    value = html_lib.unescape(str(raw or ""))
+    value = value.replace("\\/", "/")
+    if value.startswith("/p/"):
+        value = urljoin(BASE_URL, value)
+    return value.split("?")[0].split("#")[0]
+
+
+def _extract_raw_product_candidates(
+    html_text: str,
+    source_label: str,
+) -> list[_Candidate]:
+    """Extract PDP URLs from raw/serialized HTML without relying on <a>."""
+    normalized = (html_text or "").replace("\\/", "/")
+    found: dict[str, _Candidate] = {}
+    for match in RAW_PRODUCT_URL_RE.finditer(normalized):
+        path = match.group("path")
+        tcin = match.group("tcin")
+        url = _normalize_serialized_target_url(path)
+        if not _is_target_url(url):
+            continue
+        title_hint = _candidate_title_from_url(url)
+        if not classify_game(title_hint):
+            continue
+        found.setdefault(
+            tcin,
+            _Candidate(
+                tcin=tcin,
+                url=url,
+                title_hint=title_hint,
+                search_term=source_label,
+            ),
+        )
+    return list(found.values())
+
+
+def _decode_xml_payload(payload: bytes) -> str | None:
+    if not payload:
+        return None
+    try:
+        if payload[:2] == b"\x1f\x8b":
+            payload = gzip.decompress(payload)
+    except Exception:
+        return None
+    try:
+        return payload.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+def _xml_locations(xml_text: str) -> list[str]:
+    if not xml_text:
+        return []
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return [
+            html_lib.unescape(x.strip())
+            for x in re.findall(r"<loc>\s*(.*?)\s*</loc>", xml_text, re.I | re.S)
+            if x.strip()
+        ]
+    locations: list[str] = []
+    for element in root.iter():
+        if str(element.tag).lower().endswith("loc") and element.text:
+            value = html_lib.unescape(element.text.strip())
+            if value:
+                locations.append(value)
+    return locations
 
 
 def classify_game(title: str) -> str | None:
@@ -617,6 +728,23 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
             "search_http_ok": 0,
             "search_http_non_200": 0,
             "search_bytes_max": 0,
+            "category_requests": 0,
+            "category_http_ok": 0,
+            "category_http_non_200": 0,
+            "category_bytes_max": 0,
+            "category_anchor_candidates": 0,
+            "raw_url_candidates": 0,
+            "raw_url_supported": 0,
+            "sitemap_index_requests": 0,
+            "sitemap_index_http_ok": 0,
+            "sitemap_index_http_non_200": 0,
+            "sitemap_child_urls": 0,
+            "sitemap_child_requests": 0,
+            "sitemap_child_http_ok": 0,
+            "sitemap_child_http_non_200": 0,
+            "sitemap_locations_seen": 0,
+            "sitemap_tcg_candidates": 0,
+            "discovery_source": None,
             "product_anchor_candidates": 0,
             "target_urls_deduped": 0,
             "supported_title_candidates": 0,
@@ -645,11 +773,26 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         }
 
     async def _get(self, session: aiohttp.ClientSession, url: str, *, kind: str):
-        if kind == "search":
-            self.diagnostics["search_requests"] += 1
-        else:
-            self.diagnostics["product_requests"] += 1
+        counter_prefix = {
+            "search": "search",
+            "category": "category",
+            "product": "product",
+            "sitemap_index": "sitemap_index",
+            "sitemap_child": "sitemap_child",
+        }.get(kind, kind)
+
+        request_key = f"{counter_prefix}_requests"
+        if request_key in self.diagnostics:
+            self.diagnostics[request_key] += 1
         self.diagnostics["last_url"] = url
+
+        max_bytes = (
+            MAX_SITEMAP_INDEX_BYTES
+            if kind == "sitemap_index"
+            else MAX_SITEMAP_DOC_BYTES
+            if kind == "sitemap_child"
+            else MAX_RESPONSE_BYTES
+        )
 
         try:
             async with session.get(
@@ -660,28 +803,29 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
                 self.diagnostics["last_http_status"] = response.status
                 final_url = str(response.url)
                 if response.status != 200:
-                    if kind == "search":
-                        self.diagnostics["search_http_non_200"] += 1
-                    else:
-                        self.diagnostics["product_http_non_200"] += 1
+                    non_200_key = f"{counter_prefix}_http_non_200"
+                    if non_200_key in self.diagnostics:
+                        self.diagnostics[non_200_key] += 1
                     return None, response.status, final_url
 
-                body = await response.content.read(MAX_RESPONSE_BYTES + 1)
-                if len(body) > MAX_RESPONSE_BYTES:
+                body = await response.content.read(max_bytes + 1)
+                if len(body) > max_bytes:
                     self.diagnostics["last_error"] = f"{kind.upper()}_BODY_TOO_LARGE"
                     return None, response.status, final_url
 
+                ok_key = f"{counter_prefix}_http_ok"
+                if ok_key in self.diagnostics:
+                    self.diagnostics[ok_key] += 1
+
                 byte_count = len(body)
-                if kind == "search":
-                    self.diagnostics["search_http_ok"] += 1
-                    self.diagnostics["search_bytes_max"] = max(
-                        self.diagnostics["search_bytes_max"], byte_count
+                byte_key = f"{counter_prefix}_bytes_max"
+                if byte_key in self.diagnostics:
+                    self.diagnostics[byte_key] = max(
+                        int(self.diagnostics.get(byte_key, 0) or 0), byte_count
                     )
-                else:
-                    self.diagnostics["product_http_ok"] += 1
-                    self.diagnostics["product_bytes_max"] = max(
-                        self.diagnostics["product_bytes_max"], byte_count
-                    )
+
+                if kind in {"sitemap_index", "sitemap_child"}:
+                    return body, response.status, final_url
                 return body.decode(response.charset or "utf-8", errors="ignore"), response.status, final_url
         except asyncio.CancelledError:
             raise
@@ -689,7 +833,13 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
             self.diagnostics["last_error"] = f"FETCH_ERROR:{type(error).__name__}:{error}"
             return None, None, url
 
-    def _parse_search_candidates(self, html_text: str, search_term: str) -> list[_Candidate]:
+    def _parse_page_candidates(
+        self,
+        html_text: str,
+        source_label: str,
+        *,
+        source_kind: str,
+    ) -> list[_Candidate]:
         parser = _TargetHTMLParser()
         try:
             parser.feed(html_text or "")
@@ -708,56 +858,136 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
             if not tcin:
                 continue
             self.diagnostics["product_anchor_candidates"] += 1
-            title_hint = _title_from_anchor(anchor)
+            if source_kind == "category":
+                self.diagnostics["category_anchor_candidates"] += 1
+            title_hint = _title_from_anchor(anchor) or _candidate_title_from_url(url)
             game = classify_game(title_hint)
             if not game:
                 self.diagnostics["unsupported_title_rejections"] += 1
                 continue
             self.diagnostics["supported_title_candidates"] += 1
-            if tcin not in result:
-                result[tcin] = _Candidate(
+            result.setdefault(
+                tcin,
+                _Candidate(
                     tcin=tcin,
                     url=url.split("?")[0],
                     title_hint=title_hint,
-                    search_term=search_term,
-                )
+                    search_term=source_label,
+                ),
+            )
+
+        raw_candidates = _extract_raw_product_candidates(html_text, source_label)
+        self.diagnostics["raw_url_candidates"] += len(raw_candidates)
+        for candidate in raw_candidates:
+            self.diagnostics["raw_url_supported"] += 1
+            result.setdefault(candidate.tcin, candidate)
+
         self.diagnostics["target_urls_deduped"] += len(result)
         return list(result.values())
+
+    async def _discover_from_sitemaps(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        max_candidates: int,
+    ) -> list[_Candidate]:
+        index_payload, _, _ = await self._get(
+            session, PDP_SITEMAP_INDEX, kind="sitemap_index"
+        )
+        if not isinstance(index_payload, (bytes, bytearray)):
+            return []
+        index_text = _decode_xml_payload(bytes(index_payload))
+        child_urls = [
+            url
+            for url in _xml_locations(index_text or "")
+            if _is_target_url(url)
+        ]
+        self.diagnostics["sitemap_child_urls"] = len(child_urls)
+        if not child_urls:
+            return []
+
+        # Bounded sample: newest/end shards plus start shards.
+        selected: list[str] = []
+        for url in child_urls[-MAX_SITEMAP_CHILDREN:] + child_urls[:MAX_SITEMAP_CHILDREN]:
+            if url not in selected:
+                selected.append(url)
+            if len(selected) >= MAX_SITEMAP_CHILDREN:
+                break
+
+        found: dict[str, _Candidate] = {}
+        for child_url in selected:
+            payload, _, _ = await self._get(session, child_url, kind="sitemap_child")
+            if not isinstance(payload, (bytes, bytearray)):
+                continue
+            xml_text = _decode_xml_payload(bytes(payload))
+            locations = _xml_locations(xml_text or "")
+            self.diagnostics["sitemap_locations_seen"] += len(locations)
+            for url in locations:
+                if not _is_target_url(url):
+                    continue
+                tcin = _tcin_from_url(url)
+                if not tcin:
+                    continue
+                title_hint = _candidate_title_from_url(url)
+                if not classify_game(title_hint):
+                    continue
+                found.setdefault(
+                    tcin,
+                    _Candidate(
+                        tcin=tcin,
+                        url=url.split("?")[0],
+                        title_hint=title_hint,
+                        search_term="target_pdp_sitemap",
+                    ),
+                )
+                if len(found) >= max_candidates:
+                    break
+            if len(found) >= max_candidates:
+                break
+            await asyncio.sleep(DEFAULT_REQUEST_DELAY)
+
+        self.diagnostics["sitemap_tcg_candidates"] += len(found)
+        return list(found.values())
 
     async def healthcheck(self) -> MajorRetailerProbe:
         self._reset_diagnostics()
         headers = {
             "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
             "Accept-Language": "en-US,en;q=0.8",
         }
-        url = f"{BASE_URL}/s/{quote('tcg cards', safe='')}"
+
+        candidates: list[_Candidate] = []
+        status = None
+        final_url = None
         async with aiohttp.ClientSession(headers=headers) as session:
-            body, status, final_url = await self._get(session, url, kind="search")
+            label, url = CATEGORY_URLS[0]
+            body, status, final_url = await self._get(session, url, kind="category")
+            if isinstance(body, str):
+                candidates = self._parse_page_candidates(
+                    body, label, source_kind="category"
+                )
+                if candidates:
+                    self.diagnostics["discovery_source"] = "CATEGORY_PAGE"
 
-        if body is None:
-            return MajorRetailerProbe(
-                retailer_key=self.retailer_key,
-                success=False,
-                source_name="Target public search",
-                confidence="LOW",
-                http_status=status,
-                message=self.diagnostics.get("last_error") or "TARGET_SEARCH_UNAVAILABLE",
-                diagnostics=self.get_diagnostics(),
-            )
+            if not candidates:
+                candidates = await self._discover_from_sitemaps(
+                    session, max_candidates=8
+                )
+                if candidates:
+                    self.diagnostics["discovery_source"] = "PDP_SITEMAP"
 
-        candidates = self._parse_search_candidates(body, "tcg cards")
         success = len(candidates) > 0
         return MajorRetailerProbe(
             retailer_key=self.retailer_key,
             success=success,
-            source_name="Target public search/product pages",
+            source_name="Target taxonomy + public PDP sitemap",
             confidence="HIGH" if success else "LOW",
             http_status=status,
             message=(
-                f"TARGET_PUBLIC_SEARCH_CONFIRMED:{len(candidates)}_SUPPORTED_PRODUCT_URLS"
+                f"TARGET_DISCOVERY_CONFIRMED:{len(candidates)}_SUPPORTED_PRODUCT_URLS"
                 if success
-                else "TARGET_SEARCH_HTTP_OK_BUT_NO_SUPPORTED_PRODUCT_URLS"
+                else "TARGET_PUBLIC_PAGES_REACHABLE_BUT_DISCOVERY_EMPTY"
             ),
             diagnostics={
                 **self.get_diagnostics(),
@@ -771,7 +1001,7 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         limit = max(1, min(int(limit or 50), MAX_PRODUCT_PAGES))
         headers = {
             "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
             "Accept-Language": "en-US,en;q=0.8",
         }
 
@@ -779,19 +1009,51 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         products: list[MajorRetailerProduct] = []
 
         async with aiohttp.ClientSession(headers=headers) as session:
-            for term in SEARCH_TERMS:
-                search_url = f"{BASE_URL}/s/{quote(term, safe='')}"
-                body, _, _ = await self._get(session, search_url, kind="search")
-                if body:
-                    for candidate in self._parse_search_candidates(body, term):
+            # 1) Canonical TCG taxonomy/category pages.
+            for label, category_url in CATEGORY_URLS:
+                body, _, _ = await self._get(session, category_url, kind="category")
+                if isinstance(body, str):
+                    for candidate in self._parse_page_candidates(
+                        body, label, source_kind="category"
+                    ):
                         candidates.setdefault(candidate.tcin, candidate)
                 if len(candidates) >= max(limit * 2, 24):
                     break
                 await asyncio.sleep(DEFAULT_REQUEST_DELAY)
 
+            if candidates:
+                self.diagnostics["discovery_source"] = "CATEGORY_PAGE"
+
+            # 2) Existing free-text search, now with raw serialized URL parsing.
+            if len(candidates) < limit:
+                for term in SEARCH_TERMS:
+                    search_url = f"{BASE_URL}/s/{quote(term, safe='')}"
+                    body, _, _ = await self._get(session, search_url, kind="search")
+                    if isinstance(body, str):
+                        for candidate in self._parse_page_candidates(
+                            body, term, source_kind="search"
+                        ):
+                            candidates.setdefault(candidate.tcin, candidate)
+                    if len(candidates) >= max(limit * 2, 24):
+                        break
+                    await asyncio.sleep(DEFAULT_REQUEST_DELAY)
+
+                if candidates and not self.diagnostics.get("discovery_source"):
+                    self.diagnostics["discovery_source"] = "SEARCH_PAGE"
+
+            # 3) robots.txt-declared Target PDP sitemap fallback.
+            if len(candidates) < limit:
+                sitemap_candidates = await self._discover_from_sitemaps(
+                    session, max_candidates=max(limit * 2, 24)
+                )
+                for candidate in sitemap_candidates:
+                    candidates.setdefault(candidate.tcin, candidate)
+                if sitemap_candidates and not self.diagnostics.get("discovery_source"):
+                    self.diagnostics["discovery_source"] = "PDP_SITEMAP"
+
             for candidate in list(candidates.values())[:limit]:
                 body, _, final_url = await self._get(session, candidate.url, kind="product")
-                if not body:
+                if not isinstance(body, str):
                     await asyncio.sleep(DEFAULT_REQUEST_DELAY)
                     continue
 
@@ -876,7 +1138,7 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
                         "price_source": parsed.get("price_source"),
                         "availability_source": parsed.get("availability_source"),
                         "purchase_limit_detected_but_not_enabled": parsed.get("purchase_limit_detected"),
-                        "search_term": candidate.search_term,
+                        "discovery_source": candidate.search_term,
                         "target_adapter_version": VERSION,
                         "target_adapter_step": STEP,
                     },
