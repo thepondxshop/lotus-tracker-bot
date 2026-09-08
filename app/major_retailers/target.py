@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Target Dedicated Major-Retailer Adapter
-Step 6K-1C
+Step 6K-1C2
 
 Purpose
 -------
@@ -43,8 +43,8 @@ from .base import (
 )
 from .registry import major_retailer_adapter
 
-VERSION = "1.3.0"
-STEP = "6K-1C1"
+VERSION = "1.3.1"
+STEP = "6K-1C2"
 BASE_URL = "https://www.target.com"
 REQUEST_TIMEOUT_SECONDS = 18
 MAX_RESPONSE_BYTES = 3_500_000
@@ -62,6 +62,10 @@ REDSKY_DETAIL_ENDPOINT = f"{REDSKY_BASE_URL}/redsky_aggregations/v1/web/pdp_clie
 DEFAULT_REDSKY_KEY = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
 REDSKY_SEARCH_COUNT = 24
 REDSKY_REQUEST_DELAY = 0.18
+DEFAULT_REDSKY_PRICING_STORE_ID = "2281"
+DEFAULT_REDSKY_SEARCH_PAGE = "/s/search"
+TARGET_TCG_CATEGORY_ID = "d4gjq"
+TARGET_TCG_CATEGORY_PAGE = "/c/trading-card-games-cards-toys/-/N-d4gjq"
 
 
 # Transparent crawler identity. We intentionally do not spoof a browser or
@@ -927,6 +931,15 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
             "redsky_search_http_ok": 0,
             "redsky_search_http_206": 0,
             "redsky_search_http_non_success": 0,
+            "redsky_search_http_400": 0,
+            "redsky_search_http_401": 0,
+            "redsky_search_http_403": 0,
+            "redsky_search_http_404": 0,
+            "redsky_search_http_429": 0,
+            "redsky_search_http_5xx": 0,
+            "redsky_last_non_success_status": None,
+            "redsky_last_non_success_body": None,
+            "redsky_pricing_store_id": _clean(os.getenv("TARGET_PRICING_STORE_ID") or DEFAULT_REDSKY_PRICING_STORE_ID),
             "redsky_search_rows_seen": 0,
             "redsky_supported_candidates": 0,
             "redsky_detail_requests": 0,
@@ -1085,6 +1098,29 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
                 if status in {401, 403}:
                     self.diagnostics["redsky_key_rejected"] += 1
                 if not success:
+                    if kind == "search":
+                        if status == 400:
+                            self.diagnostics["redsky_search_http_400"] += 1
+                        elif status == 401:
+                            self.diagnostics["redsky_search_http_401"] += 1
+                        elif status == 403:
+                            self.diagnostics["redsky_search_http_403"] += 1
+                        elif status == 404:
+                            self.diagnostics["redsky_search_http_404"] += 1
+                        elif status == 429:
+                            self.diagnostics["redsky_search_http_429"] += 1
+                        elif 500 <= status <= 599:
+                            self.diagnostics["redsky_search_http_5xx"] += 1
+                        self.diagnostics["redsky_last_non_success_status"] = status
+                        try:
+                            body_preview = await response.text(errors="ignore")
+                        except Exception:
+                            body_preview = ""
+                        body_preview = re.sub(r"\s+", " ", body_preview or "").strip()[:240]
+                        public_key = self._redsky_key()
+                        if public_key and body_preview:
+                            body_preview = body_preview.replace(public_key, "<redacted-public-key>")
+                        self.diagnostics["redsky_last_non_success_body"] = body_preview or None
                     return None, status
                 try:
                     payload = await response.json(content_type=None)
@@ -1105,15 +1141,21 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         return _clean(os.getenv("TARGET_REDSKY_KEY") or DEFAULT_REDSKY_KEY)
 
     def _redsky_common_params(self) -> dict[str, str]:
-        params = {
+        # Redsky search currently expects a pricing context even when Lotus is
+        # using the response only for nationwide discovery. Keep that context
+        # deterministic and overridable rather than silently depending on an
+        # unset environment variable. This is public storefront context, not
+        # an account/session credential.
+        pricing_store = _clean(
+            os.getenv("TARGET_PRICING_STORE_ID")
+            or DEFAULT_REDSKY_PRICING_STORE_ID
+        )
+        return {
             "key": self._redsky_key(),
             "channel": "WEB",
             "visitor_id": "0000000000000000000000000000000000",
+            "pricing_store_id": pricing_store,
         }
-        pricing_store = _clean(os.getenv("TARGET_PRICING_STORE_ID"))
-        if pricing_store:
-            params["pricing_store_id"] = pricing_store
-        return params
 
     async def _discover_redsky_candidates(
         self,
@@ -1131,6 +1173,10 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
                 "offset": 0,
                 "default_purchasability_filter": "false",
                 "include_sponsored": "false",
+                "new_search": "true",
+                "spellcheck": "true",
+                "platform": "desktop",
+                "page": DEFAULT_REDSKY_SEARCH_PAGE,
             }
             payload, _ = await self._get_redsky_json(
                 session, REDSKY_SEARCH_ENDPOINT, params=params, kind="search"
@@ -1165,6 +1211,54 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
             if len(found) >= max(limit * 2, 24):
                 break
             await asyncio.sleep(REDSKY_REQUEST_DELAY)
+
+        # If keyword search is empty, make one bounded call against Target's
+        # canonical Trading Card Games taxonomy. This stays on the same public
+        # read-only Redsky endpoint and avoids broad crawling.
+        if not found:
+            category_params: dict[str, Any] = {
+                **self._redsky_common_params(),
+                "category": TARGET_TCG_CATEGORY_ID,
+                "count": REDSKY_SEARCH_COUNT,
+                "offset": 0,
+                "default_purchasability_filter": "false",
+                "include_sponsored": "false",
+                "platform": "desktop",
+                "page": TARGET_TCG_CATEGORY_PAGE,
+            }
+            payload, _ = await self._get_redsky_json(
+                session, REDSKY_SEARCH_ENDPOINT, params=category_params, kind="search"
+            )
+            if payload:
+                rows = _redsky_rows(payload)
+                self.diagnostics["redsky_search_rows_seen"] += len(rows)
+                for row in rows:
+                    tcin = _redsky_tcin(row)
+                    title = _redsky_title(row)
+                    if not tcin or not title:
+                        continue
+                    game = classify_game(title)
+                    if not game:
+                        continue
+                    seller = _redsky_explicit_seller(row)
+                    if seller:
+                        self.diagnostics["redsky_seller_hits"] += 1
+                        if seller.lower() not in {"target", "target.com", "target corporation"}:
+                            self.diagnostics["redsky_marketplace_rejections"] += 1
+                            continue
+                    found.setdefault(tcin, {
+                        "tcin": tcin,
+                        "title": title,
+                        "game": game,
+                        "row": row,
+                        "search_term": "target_tcg_category",
+                        "seller": seller,
+                    })
+                    if len(found) >= max(limit * 2, 24):
+                        break
+                if found:
+                    self.diagnostics["discovery_source"] = "REDSKY_TCG_CATEGORY"
+
         self.diagnostics["redsky_supported_candidates"] = len(found)
         return list(found.values())
 
