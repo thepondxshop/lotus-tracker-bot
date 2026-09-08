@@ -1,9 +1,9 @@
-"""Planned major-retailer catalog for Lotus Step 6K-1A."""
+"""Major-retailer catalog for Lotus Step 6K-1B."""
 
 from .base import MajorRetailerDefinition
 from .registry import register_major_retailer_definition
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # These are definitions only. No retailer is activated by this file and no
 # network requests are performed. Retailer-specific adapters are added and
@@ -15,7 +15,7 @@ BUILTIN_MAJOR_RETAILERS = (
         domain="target.com",
         region="US",
         enabled=False,
-        notes="First Step 6K production adapter; online/nationwide scope before local-store inventory.",
+        notes="Target adapter installed for controlled silent validation; online/nationwide scope only. Local-store inventory remains disabled.",
     ),
     MajorRetailerDefinition(
         key="walmart",
@@ -37,6 +37,22 @@ BUILTIN_MAJOR_RETAILERS = (
         domain="gamestop.com",
         region="US",
         enabled=False,
+    ),
+    MajorRetailerDefinition(
+        key="boxlunch",
+        display_name="BoxLunch",
+        domain="boxlunch.com",
+        region="US",
+        enabled=False,
+        notes="Dedicated collectibles retailer adapter planned; remains inactive until silent validation passes.",
+    ),
+    MajorRetailerDefinition(
+        key="hot_topic",
+        display_name="Hot Topic",
+        domain="hottopic.com",
+        region="US",
+        enabled=False,
+        notes="Dedicated collectibles retailer adapter planned; remains inactive until silent validation passes.",
     ),
     MajorRetailerDefinition(
         key="costco",
