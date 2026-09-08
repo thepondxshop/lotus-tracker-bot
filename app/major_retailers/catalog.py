@@ -1,13 +1,11 @@
-"""Major-retailer catalog for Lotus Step 6K-1B."""
+"""Major-retailer catalog for Lotus Step 6K-1A2."""
 
 from .base import MajorRetailerDefinition
 from .registry import register_major_retailer_definition
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
-# These are definitions only. No retailer is activated by this file and no
-# network requests are performed. Retailer-specific adapters are added and
-# validated one milestone at a time.
+# Definitions only. Nothing here activates a retailer or performs network requests.
 BUILTIN_MAJOR_RETAILERS = (
     MajorRetailerDefinition(
         key="target",
@@ -15,7 +13,7 @@ BUILTIN_MAJOR_RETAILERS = (
         domain="target.com",
         region="US",
         enabled=False,
-        notes="Target adapter installed for controlled silent validation; online/nationwide scope only. Local-store inventory remains disabled.",
+        notes="Target integration parked pending an approved official feed/partner path.",
     ),
     MajorRetailerDefinition(
         key="walmart",
@@ -37,6 +35,18 @@ BUILTIN_MAJOR_RETAILERS = (
         domain="gamestop.com",
         region="US",
         enabled=False,
+    ),
+    MajorRetailerDefinition(
+        key="premium_bandai",
+        display_name="Premium Bandai",
+        domain="p-bandai.com",
+        region="US",
+        enabled=False,
+        notes=(
+            "Official Bandai direct storefront. Dedicated adapter planned for "
+            "TCG/collectibles preorders, limited releases, closing-soon windows, "
+            "page-live detection, and verified availability."
+        ),
     ),
     MajorRetailerDefinition(
         key="boxlunch",
