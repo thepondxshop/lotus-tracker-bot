@@ -1,8 +1,11 @@
-"""Lotus Step 6K-1A major-retailer package."""
+"""Lotus Step 6K-1B major-retailer package."""
 
 from .catalog import load_builtin_major_retailer_definitions
 
 load_builtin_major_retailer_definitions()
+
+# Register retailer-specific adapters only after definitions exist.
+from . import target as _target  # noqa: E402,F401
 
 from .base import (  # noqa: E402,F401
     MajorRetailerAdapter,
@@ -28,5 +31,5 @@ from .registry import (  # noqa: E402,F401
     register_major_retailer_adapter,
 )
 
-VERSION = "1.0.0"
-STEP = "6K-1A"
+VERSION = "1.1.0"
+STEP = "6K-1B"
