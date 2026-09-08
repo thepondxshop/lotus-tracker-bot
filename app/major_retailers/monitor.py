@@ -1,6 +1,6 @@
 """
 Lotus Major Retailer Monitor Foundation
-Step 6K-1C
+Step 6K-1C1
 
 This milestone intentionally does not start background polling. It provides
 registry, normalization, safety validation, health/probe orchestration and a
@@ -24,8 +24,8 @@ from .registry import (
     normalize_retailer_key,
 )
 
-VERSION = "1.2.0"
-FRAMEWORK_STEP = "6K-1C"
+VERSION = "1.3.0"
+FRAMEWORK_STEP = "6K-1C1"
 DEFAULT_SCAN_TIMEOUT_SECONDS = 75
 MAX_SCAN_PRODUCTS = 200
 
@@ -137,7 +137,7 @@ async def scan_major_retailer(
     """
     Controlled adapter scan contract.
 
-    Step 6K-1C validates and normalizes retailer output only. It does not
+    Step 6K-1C1 validates and normalizes retailer output only. It does not
     persist products or publish Discord events. Persistence/event wiring is
     enabled retailer-by-retailer after silent validation.
     """
