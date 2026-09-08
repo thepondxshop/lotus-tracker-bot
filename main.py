@@ -3729,7 +3729,7 @@ async def feedstatus(
 
 # =========================================================
 # /MAJORSTATUS
-# Step 6K-1B — Target Silent Validation
+# Step 6K-1C — Target Silent Validation
 # =========================================================
 
 @bot.tree.command(
@@ -3749,7 +3749,7 @@ async def majorstatus(interaction):
         title="🏬 Major Retailer Foundation",
         description=(
             "Lotus's dedicated major-retailer framework is installed. "
-            "Step 6K-1B adds the Target adapter for controlled silent validation. "
+            "Step 6K-1C adds the Target adapter for controlled silent validation. "
             "No background major-retailer polling, database writes, or product alerts are enabled yet."
         ),
     )
@@ -3779,7 +3779,7 @@ async def majorstatus(interaction):
         value="🟡 **Adapter installed** — run `/majorprobe retailer:target`, then `/majorscan retailer:target`",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -3826,7 +3826,7 @@ async def majorretailers(interaction):
         ),
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -3864,7 +3864,7 @@ async def majorprobe(interaction, retailer: str):
         embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
         embed.add_field(name="Network Requests", value="`0`", inline=True)
         embed.add_field(name="Next Step", value="Build and silently validate the retailer adapter.", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -3898,13 +3898,13 @@ async def majorprobe(interaction, retailer: str):
     )
     if result.get("error"):
         embed.add_field(name="Error", value=f"`{str(result.get('error'))[:900]}`", inline=False)
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # =========================================================
 # /MAJORSCAN
-# Step 6K-1B — Controlled Silent Major-Retailer Scan
+# Step 6K-1C — Controlled Silent Major-Retailer Scan
 # =========================================================
 
 @bot.tree.command(
@@ -3942,7 +3942,7 @@ async def majorscan(
         embed.add_field(name="Retailer Key", value=f"`{result.get('retailer_key')}`", inline=True)
         embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
         embed.add_field(name="Discord Alerts", value="🔇 Disabled", inline=True)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -3954,7 +3954,7 @@ async def majorscan(
         embed.add_field(name="Retailer", value=f"`{result.get('retailer_key') or retailer}`", inline=True)
         embed.add_field(name="Reason", value=f"`{str(result.get('error') or 'UNKNOWN')[:900]}`", inline=False)
         embed.add_field(name="Safety", value="🔇 No database writes or Discord product alerts were allowed.", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -4007,10 +4007,21 @@ async def majorscan(
     embed.add_field(name="Preorders", value=f"`{preorders}`", inline=True)
 
     diag_lines = [
+        f"Discovery source: `{diagnostics.get('discovery_source') or 'NONE'}`",
+        f"Category requests: `{diagnostics.get('category_requests', 0)}`",
+        f"Category HTTP 200: `{diagnostics.get('category_http_ok', 0)}`",
+        f"Category anchors: `{diagnostics.get('category_anchor_candidates', 0)}`",
         f"Search requests: `{diagnostics.get('search_requests', 0)}`",
         f"Search HTTP 200: `{diagnostics.get('search_http_ok', 0)}`",
-        f"Product anchors: `{diagnostics.get('product_anchor_candidates', 0)}`",
+        f"All product anchors: `{diagnostics.get('product_anchor_candidates', 0)}`",
+        f"Raw PDP URL hits: `{diagnostics.get('raw_url_candidates', 0)}`",
+        f"Raw supported: `{diagnostics.get('raw_url_supported', 0)}`",
         f"Supported candidates: `{diagnostics.get('supported_title_candidates', 0)}`",
+        f"Sitemap index HTTP 200: `{diagnostics.get('sitemap_index_http_ok', 0)}`",
+        f"Sitemap child URLs: `{diagnostics.get('sitemap_child_urls', 0)}`",
+        f"Sitemap children HTTP 200: `{diagnostics.get('sitemap_child_http_ok', 0)}`",
+        f"Sitemap URLs seen: `{diagnostics.get('sitemap_locations_seen', 0)}`",
+        f"Sitemap TCG candidates: `{diagnostics.get('sitemap_tcg_candidates', 0)}`",
         f"Product requests: `{diagnostics.get('product_requests', 0)}`",
         f"Product HTTP 200: `{diagnostics.get('product_http_ok', 0)}`",
         f"JSON-LD hits: `{diagnostics.get('json_ld_hits', 0)}`",
@@ -4044,7 +4055,7 @@ async def majorscan(
         value="🔇 Forced silent validation — no database persistence and no Discord product alerts.",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B Target Adapter")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C Target Adapter")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
