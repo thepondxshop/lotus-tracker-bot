@@ -198,6 +198,18 @@ from app.affiliate_feeds import (
 
 
 # =========================================================
+# MAJOR RETAILER FOUNDATION
+# Step 6K-1A
+# =========================================================
+
+from app.major_retailers import (
+    get_major_retailer_catalog_status,
+    get_major_retailer_framework_status,
+    probe_major_retailer,
+)
+
+
+# =========================================================
 # STORE HEALTH
 # =========================================================
 
@@ -3712,6 +3724,181 @@ async def feedstatus(
             ),
             ephemeral=True,
         )
+
+
+# =========================================================
+# /MAJORSTATUS
+# Step 6K-1A — Major Retailer Core Framework
+# =========================================================
+
+@bot.tree.command(
+    name="majorstatus",
+    description="View the dedicated major-retailer framework status.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorstatus(interaction):
+    status = get_major_retailer_framework_status()
+    catalog = get_major_retailer_catalog_status()
+
+    definitions = int(status.get("definitions_loaded", 0) or 0)
+    adapters = int(status.get("adapters_registered", 0) or 0)
+    production_ready = sum(1 for item in catalog if item.get("production_ready"))
+
+    embed = discord.Embed(
+        title="🏬 Major Retailer Foundation",
+        description=(
+            "Lotus's dedicated major-retailer framework is installed. "
+            "Step 6K-1A is infrastructure-only: no major-retailer polling, "
+            "database writes, or product alerts are enabled yet."
+        ),
+    )
+    embed.add_field(name="Framework", value="✅ READY", inline=True)
+    embed.add_field(name="Version", value=f"`{status.get('version', '1.0.0')}`", inline=True)
+    embed.add_field(name="Milestone", value=f"`{status.get('step', '6K-1A')}`", inline=True)
+    embed.add_field(name="Retailer Definitions", value=f"`{definitions}`", inline=True)
+    embed.add_field(name="Adapters Registered", value=f"`{adapters}`", inline=True)
+    embed.add_field(name="Production Ready", value=f"`{production_ready}`", inline=True)
+    embed.add_field(
+        name="Background Monitoring",
+        value="🔒 Disabled by design",
+        inline=True,
+    )
+    embed.add_field(
+        name="Stock Safety",
+        value="✅ Unknown availability stays unknown",
+        inline=True,
+    )
+    embed.add_field(
+        name="Inventory Separation",
+        value="✅ Online stock and local-store stock are separate capabilities",
+        inline=False,
+    )
+    embed.add_field(
+        name="Next Adapter",
+        value="🎯 **Target** — Step `6K-1B`",
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# /MAJORRETAILERS
+# Step 6K-1A — Planned Dedicated Retailers
+# =========================================================
+
+@bot.tree.command(
+    name="majorretailers",
+    description="List major retailers planned for dedicated Lotus adapters.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorretailers(interaction):
+    catalog = get_major_retailer_catalog_status()
+
+    lines = []
+    for item in catalog:
+        adapter_ready = bool(item.get("adapter_registered"))
+        enabled = bool(item.get("enabled"))
+        if adapter_ready and enabled:
+            state = "🟢 Production Ready"
+        elif adapter_ready:
+            state = "🟡 Adapter / Validation Pending"
+        else:
+            state = "⚪ Planned"
+
+        lines.append(
+            f"**{item.get('display_name')}** — `{item.get('domain')}`\n"
+            f"{state} • Region `{item.get('region')}`"
+        )
+
+    embed = discord.Embed(
+        title="🏪 Lotus Major Retailers",
+        description="\n\n".join(lines) if lines else "No retailer definitions loaded.",
+    )
+    embed.add_field(
+        name="Safety",
+        value=(
+            "Retailers are not activated by appearing in this list. Each one "
+            "must receive its own adapter, controlled silent validation, and "
+            "explicit production enablement."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# /MAJORPROBE
+# Step 6K-1A — Read-Only Adapter Probe
+# =========================================================
+
+@bot.tree.command(
+    name="majorprobe",
+    description="Run a read-only health probe for a dedicated major-retailer adapter.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorprobe(interaction, retailer: str):
+    await interaction.response.defer(ephemeral=True)
+    result = await probe_major_retailer(retailer)
+
+    if result.get("error") == "UNKNOWN_RETAILER":
+        await interaction.followup.send(
+            "❌ Unknown major retailer key. Use `/majorretailers` to view planned retailers.",
+            ephemeral=True,
+        )
+        return
+
+    if result.get("error") == "ADAPTER_NOT_REGISTERED":
+        embed = discord.Embed(
+            title="⚪ Major Retailer Adapter Pending",
+            description=(
+                f"**{result.get('display_name') or retailer}** is registered in "
+                "the 6K framework, but its retailer-specific adapter has not "
+                "been installed yet."
+            ),
+        )
+        embed.add_field(name="Retailer Key", value=f"`{result.get('retailer_key')}`", inline=True)
+        embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
+        embed.add_field(name="Network Requests", value="`0`", inline=True)
+        embed.add_field(name="Next Step", value="Build and silently validate the retailer adapter.", inline=False)
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    probe = result.get("probe") or {}
+    capabilities = result.get("capabilities") or {}
+    embed = discord.Embed(
+        title=(
+            "✅ Major Retailer Probe Passed"
+            if result.get("success")
+            else "⚠️ Major Retailer Probe Needs Review"
+        ),
+        description=f"Read-only probe completed for **{result.get('display_name') or retailer}**.",
+    )
+    embed.add_field(name="Retailer Key", value=f"`{result.get('retailer_key')}`", inline=True)
+    embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
+    embed.add_field(name="Confidence", value=f"`{probe.get('confidence') or 'UNKNOWN'}`", inline=True)
+    embed.add_field(
+        name="Capability",
+        value=f"`{capabilities.get('availability_capability') or 'DISCOVERY_ONLY'}`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Online Availability",
+        value="✅ Verified" if capabilities.get("online_availability") else "🔒 Not verified",
+        inline=True,
+    )
+    embed.add_field(
+        name="Local Store Availability",
+        value="✅ Verified" if capabilities.get("local_store_availability") else "🔒 Separate / not verified",
+        inline=True,
+    )
+    if result.get("error"):
+        embed.add_field(name="Error", value=f"`{str(result.get('error'))[:900]}`", inline=False)
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # =========================================================
