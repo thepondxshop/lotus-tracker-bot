@@ -206,6 +206,7 @@ from app.major_retailers import (
     get_major_retailer_catalog_status,
     get_major_retailer_framework_status,
     probe_major_retailer,
+    scan_major_retailer,
 )
 
 
@@ -3728,7 +3729,7 @@ async def feedstatus(
 
 # =========================================================
 # /MAJORSTATUS
-# Step 6K-1A — Major Retailer Core Framework
+# Step 6K-1B — Target Silent Validation
 # =========================================================
 
 @bot.tree.command(
@@ -3748,8 +3749,8 @@ async def majorstatus(interaction):
         title="🏬 Major Retailer Foundation",
         description=(
             "Lotus's dedicated major-retailer framework is installed. "
-            "Step 6K-1A is infrastructure-only: no major-retailer polling, "
-            "database writes, or product alerts are enabled yet."
+            "Step 6K-1B adds the Target adapter for controlled silent validation. "
+            "No background major-retailer polling, database writes, or product alerts are enabled yet."
         ),
     )
     embed.add_field(name="Framework", value="✅ READY", inline=True)
@@ -3774,11 +3775,11 @@ async def majorstatus(interaction):
         inline=False,
     )
     embed.add_field(
-        name="Next Adapter",
-        value="🎯 **Target** — Step `6K-1B`",
+        name="Target",
+        value="🟡 **Adapter installed** — run `/majorprobe retailer:target`, then `/majorscan retailer:target`",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -3825,7 +3826,7 @@ async def majorretailers(interaction):
         ),
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -3863,7 +3864,7 @@ async def majorprobe(interaction, retailer: str):
         embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
         embed.add_field(name="Network Requests", value="`0`", inline=True)
         embed.add_field(name="Next Step", value="Build and silently validate the retailer adapter.", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -3897,7 +3898,153 @@ async def majorprobe(interaction, retailer: str):
     )
     if result.get("error"):
         embed.add_field(name="Error", value=f"`{str(result.get('error'))[:900]}`", inline=False)
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1A")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# /MAJORSCAN
+# Step 6K-1B — Controlled Silent Major-Retailer Scan
+# =========================================================
+
+@bot.tree.command(
+    name="majorscan",
+    description="Run a controlled silent scan for a dedicated major-retailer adapter.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorscan(
+    interaction,
+    retailer: str,
+    limit: app_commands.Range[int, 1, 40] = 20,
+):
+    await interaction.response.defer(ephemeral=True)
+    result = await scan_major_retailer(
+        retailer,
+        limit=int(limit),
+        suppress_events=True,
+    )
+
+    if result.get("error") == "UNKNOWN_RETAILER":
+        await interaction.followup.send(
+            "❌ Unknown major retailer key. Use `/majorretailers` to view planned retailers.",
+            ephemeral=True,
+        )
+        return
+
+    if result.get("error") == "ADAPTER_NOT_REGISTERED":
+        embed = discord.Embed(
+            title="⚪ Major Retailer Adapter Pending",
+            description=(
+                f"**{result.get('display_name') or retailer}** is registered in "
+                "the major-retailer framework, but its adapter has not been installed yet."
+            ),
+        )
+        embed.add_field(name="Retailer Key", value=f"`{result.get('retailer_key')}`", inline=True)
+        embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
+        embed.add_field(name="Discord Alerts", value="🔇 Disabled", inline=True)
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    if not result.get("success"):
+        embed = discord.Embed(
+            title="❌ Major Retailer Silent Scan Failed",
+            description=f"Controlled scan failed for **{result.get('display_name') or retailer}**.",
+        )
+        embed.add_field(name="Retailer", value=f"`{result.get('retailer_key') or retailer}`", inline=True)
+        embed.add_field(name="Reason", value=f"`{str(result.get('error') or 'UNKNOWN')[:900]}`", inline=False)
+        embed.add_field(name="Safety", value="🔇 No database writes or Discord product alerts were allowed.", inline=False)
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    products = list(result.get("normalized_products") or [])
+    diagnostics = dict(result.get("diagnostics") or {})
+
+    price_hits = sum(1 for item in products if item.get("price") is not None)
+    known_stock = sum(
+        1
+        for item in products
+        if bool((item.get("platform_data") or {}).get("availability_known"))
+    )
+    in_stock = sum(
+        1
+        for item in products
+        if (item.get("platform_data") or {}).get("availability_state") == "IN_STOCK"
+    )
+    out_stock = sum(
+        1
+        for item in products
+        if (item.get("platform_data") or {}).get("availability_state") == "OUT_OF_STOCK"
+    )
+    preorders = sum(
+        1
+        for item in products
+        if (
+            (item.get("platform_data") or {}).get("availability_state") == "PREORDER"
+            or (item.get("platform_data") or {}).get("lifecycle_state") == "PREORDER"
+        )
+    )
+
+    embed = discord.Embed(
+        title="🏬 Major Retailer Silent Scan",
+        description=(
+            f"Controlled scan completed for **{result.get('display_name') or retailer}**. "
+            "This milestone validates adapter output only; nothing was persisted or sent as a product alert."
+        ),
+    )
+    embed.add_field(name="Retailer", value=f"`{result.get('retailer_key')}`", inline=True)
+    embed.add_field(name="Region", value=f"`{result.get('region') or 'US'}`", inline=True)
+    embed.add_field(name="Production", value="🔒 Disabled", inline=True)
+    embed.add_field(name="Raw Products", value=f"`{result.get('products', 0)}`", inline=True)
+    embed.add_field(name="Accepted", value=f"`{result.get('accepted', 0)}`", inline=True)
+    embed.add_field(name="Rejected", value=f"`{result.get('rejected', 0)}`", inline=True)
+    embed.add_field(name="Price Hits", value=f"`{price_hits}`", inline=True)
+    embed.add_field(name="Known Online Stock", value=f"`{known_stock}`", inline=True)
+    embed.add_field(name="Unknown Online Stock", value=f"`{max(len(products) - known_stock, 0)}`", inline=True)
+    embed.add_field(name="In Stock", value=f"`{in_stock}`", inline=True)
+    embed.add_field(name="Out of Stock", value=f"`{out_stock}`", inline=True)
+    embed.add_field(name="Preorders", value=f"`{preorders}`", inline=True)
+
+    diag_lines = [
+        f"Search requests: `{diagnostics.get('search_requests', 0)}`",
+        f"Search HTTP 200: `{diagnostics.get('search_http_ok', 0)}`",
+        f"Product anchors: `{diagnostics.get('product_anchor_candidates', 0)}`",
+        f"Supported candidates: `{diagnostics.get('supported_title_candidates', 0)}`",
+        f"Product requests: `{diagnostics.get('product_requests', 0)}`",
+        f"Product HTTP 200: `{diagnostics.get('product_http_ok', 0)}`",
+        f"JSON-LD hits: `{diagnostics.get('json_ld_hits', 0)}`",
+        f"Marketplace rejected: `{diagnostics.get('marketplace_rejections', 0)}`",
+        f"Missing prices: `{diagnostics.get('missing_prices', 0)}`",
+        f"Availability known: `{diagnostics.get('availability_known', 0)}`",
+        f"Availability unknown: `{diagnostics.get('availability_unknown', 0)}`",
+    ]
+    if diagnostics.get("last_error"):
+        diag_lines.append(f"Last error: `{str(diagnostics.get('last_error'))[:700]}`")
+    embed.add_field(name="Adapter Diagnostics", value="\
+".join(diag_lines), inline=False)
+
+    if products:
+        sample_lines = []
+        for item in products[:5]:
+            pdata = item.get("platform_data") or {}
+            price = item.get("price")
+            price_text = f"${price:.2f}" if isinstance(price, (int, float)) else "price ?"
+            stock = pdata.get("availability_state") or "UNKNOWN"
+            sample_lines.append(
+                f"• **{str(item.get('title') or 'Unknown')[:120]}**\
+"
+                f"  `{item.get('external_product_id')}` • `{price_text}` • `{stock}`"
+            )
+        embed.add_field(name="Sample", value="\
+".join(sample_lines)[:1000], inline=False)
+
+    embed.add_field(
+        name="Safety",
+        value="🔇 Forced silent validation — no database persistence and no Discord product alerts.",
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1B Target Adapter")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
