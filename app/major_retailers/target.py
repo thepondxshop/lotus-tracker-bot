@@ -25,6 +25,7 @@ import asyncio
 import gzip
 import html as html_lib
 import json
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -42,13 +43,26 @@ from .base import (
 )
 from .registry import major_retailer_adapter
 
-VERSION = "1.2.0"
-STEP = "6K-1C"
+VERSION = "1.3.0"
+STEP = "6K-1C1"
 BASE_URL = "https://www.target.com"
 REQUEST_TIMEOUT_SECONDS = 18
 MAX_RESPONSE_BYTES = 3_500_000
 DEFAULT_REQUEST_DELAY = 0.45
 MAX_PRODUCT_PAGES = 40
+
+# Target's own engineering team describes Redsky as the aggregation layer
+# serving Target.com/mobile clients. This adapter only uses read-only GETs.
+REDSKY_BASE_URL = "https://redsky.target.com"
+REDSKY_SEARCH_ENDPOINT = f"{REDSKY_BASE_URL}/redsky_aggregations/v1/web/plp_search_v2"
+REDSKY_DETAIL_ENDPOINT = f"{REDSKY_BASE_URL}/redsky_aggregations/v1/web/pdp_client_v1"
+# Public web-client key currently embedded in Target's frontend ecosystem.
+# Keep an env override so Lotus can recover from a normal frontend-key rotation
+# without a code deployment. This is not an account credential.
+DEFAULT_REDSKY_KEY = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
+REDSKY_SEARCH_COUNT = 24
+REDSKY_REQUEST_DELAY = 0.18
+
 
 # Transparent crawler identity. We intentionally do not spoof a browser or
 # attempt to evade retailer controls.
@@ -399,6 +413,190 @@ def _xml_locations(xml_text: str) -> list[str]:
     return locations
 
 
+def _dig(value: Any, *path: str) -> Any:
+    current = value
+    for part in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _first_nonempty(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _redsky_rows(payload: Any) -> list[dict[str, Any]]:
+    """Recover Target product rows while tolerating minor Redsky schema drift."""
+    if not isinstance(payload, dict):
+        return []
+
+    direct = (
+        _dig(payload, "data", "search", "products"),
+        _dig(payload, "data", "search", "items"),
+        _dig(payload, "data", "products"),
+        payload.get("products"),
+    )
+    for value in direct:
+        if isinstance(value, list) and any(isinstance(x, dict) for x in value):
+            return [x for x in value if isinstance(x, dict)]
+
+    # Fallback for harmless response-envelope changes: collect dictionaries
+    # that look like product summaries and dedupe by TCIN.
+    found: dict[str, dict[str, Any]] = {}
+    stack = [payload]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            tcin = _clean(current.get("tcin"))
+            title = _clean(
+                _first_nonempty(
+                    _dig(current, "item", "product_description", "title"),
+                    _dig(current, "product_description", "title"),
+                    current.get("title"),
+                )
+            )
+            if tcin and title:
+                found.setdefault(tcin, current)
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return list(found.values())
+
+
+def _redsky_product(payload_or_row: Any) -> dict[str, Any] | None:
+    if not isinstance(payload_or_row, dict):
+        return None
+    product = _dig(payload_or_row, "data", "product")
+    if isinstance(product, dict):
+        return product
+    if _clean(payload_or_row.get("tcin")):
+        return payload_or_row
+    return None
+
+
+def _redsky_title(row: dict[str, Any]) -> str:
+    return _clean(
+        _first_nonempty(
+            _dig(row, "item", "product_description", "title"),
+            _dig(row, "product_description", "title"),
+            row.get("title"),
+            row.get("name"),
+        )
+    )
+
+
+def _redsky_tcin(row: dict[str, Any]) -> str:
+    return _clean(_first_nonempty(row.get("tcin"), _dig(row, "item", "tcin")))
+
+
+def _redsky_price(row: dict[str, Any]) -> float | None:
+    candidates = (
+        _dig(row, "price", "current_retail"),
+        _dig(row, "price", "current_retail_min"),
+        _dig(row, "price", "formatted_current_price"),
+        _dig(row, "price", "reg_retail"),
+        row.get("current_retail"),
+        row.get("formatted_current_price"),
+    )
+    for value in candidates:
+        price = _safe_price(value)
+        if price is not None:
+            return price
+    return None
+
+
+def _redsky_image(row: dict[str, Any]) -> str | None:
+    candidates = (
+        _dig(row, "item", "enrichment", "images", "primary_image_url"),
+        _dig(row, "item", "enrichment", "images", "primary_image"),
+        _dig(row, "enrichment", "images", "primary_image_url"),
+        row.get("image_url"),
+    )
+    for value in candidates:
+        text = _clean(value)
+        if text.startswith("http://") or text.startswith("https://"):
+            return text
+    return None
+
+
+def _redsky_url(row: dict[str, Any], tcin: str) -> str:
+    candidates = (
+        _dig(row, "item", "enrichment", "buy_url"),
+        _dig(row, "enrichment", "buy_url"),
+        row.get("url"),
+    )
+    for value in candidates:
+        text = _clean(value)
+        if text:
+            if text.startswith("/"):
+                text = urljoin(BASE_URL, text)
+            if _is_target_url(text):
+                return text.split("?")[0]
+    return f"{BASE_URL}/p/-/A-{tcin}"
+
+
+def _redsky_upc(row: dict[str, Any]) -> str | None:
+    candidates = (
+        _dig(row, "item", "primary_barcode"),
+        row.get("primary_barcode"),
+        row.get("upc"),
+    )
+    for value in candidates:
+        text = _clean(value)
+        if text.isdigit() and 8 <= len(text) <= 18:
+            return text
+    return None
+
+
+def _redsky_dpci(row: dict[str, Any]) -> str | None:
+    for value in (row.get("dpci"), _dig(row, "item", "dpci")):
+        text = _clean(value)
+        if text:
+            return text
+    return None
+
+
+def _redsky_explicit_seller(row: dict[str, Any]) -> str | None:
+    """Return only explicit seller/merchant fields; manufacturer/vendor is ignored."""
+    seller_keys = {
+        "seller", "seller_name", "sellername", "merchant", "merchant_name",
+        "merchantname", "sold_by", "soldby", "seller_display_name",
+    }
+    stack = [row]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                normalized = str(key or "").strip().lower()
+                if normalized in seller_keys:
+                    if isinstance(value, dict):
+                        text = _clean(_first_nonempty(value.get("name"), value.get("display_name")))
+                    else:
+                        text = _clean(value)
+                    if text:
+                        return text
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(current)
+    return None
+
+
+def _redsky_lifecycle(row: dict[str, Any], title: str) -> tuple[str, str]:
+    text = (title or "").lower()
+    # Use only explicit preorder wording. Do not infer from dates.
+    if "pre-order" in text or "preorder" in text:
+        return "PREORDER", "MEDIUM"
+    return "PAGE_LIVE", "HIGH"
+
+
 def classify_game(title: str) -> str | None:
     text = _clean(title).lower()
     if not text:
@@ -713,7 +911,7 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
             price=True,
             page_live=True,
             preorder=True,
-            online_availability=True,
+            online_availability=False,
             local_store_availability=False,
             exact_inventory=False,
             purchase_limit=False,
@@ -724,6 +922,21 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         self.diagnostics = {
             "version": VERSION,
             "step": STEP,
+            "redsky_key_source": "ENV" if os.getenv("TARGET_REDSKY_KEY") else "PUBLIC_WEB_DEFAULT",
+            "redsky_search_requests": 0,
+            "redsky_search_http_ok": 0,
+            "redsky_search_http_206": 0,
+            "redsky_search_http_non_success": 0,
+            "redsky_search_rows_seen": 0,
+            "redsky_supported_candidates": 0,
+            "redsky_detail_requests": 0,
+            "redsky_detail_http_ok": 0,
+            "redsky_detail_http_non_success": 0,
+            "redsky_price_hits": 0,
+            "redsky_image_hits": 0,
+            "redsky_seller_hits": 0,
+            "redsky_marketplace_rejections": 0,
+            "redsky_key_rejected": 0,
             "search_requests": 0,
             "search_http_ok": 0,
             "search_http_non_200": 0,
@@ -832,6 +1045,147 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         except Exception as error:
             self.diagnostics["last_error"] = f"FETCH_ERROR:{type(error).__name__}:{error}"
             return None, None, url
+
+    async def _get_redsky_json(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        *,
+        params: dict[str, Any],
+        kind: str,
+    ) -> tuple[dict[str, Any] | None, int | None]:
+        if kind == "search":
+            self.diagnostics["redsky_search_requests"] += 1
+        else:
+            self.diagnostics["redsky_detail_requests"] += 1
+        self.diagnostics["last_url"] = url
+        try:
+            async with session.get(
+                url,
+                params=params,
+                allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
+                headers={"Accept": "application/json"},
+            ) as response:
+                status = int(response.status)
+                self.diagnostics["last_http_status"] = status
+                success = status in {200, 206}
+                if kind == "search":
+                    if success:
+                        self.diagnostics["redsky_search_http_ok"] += 1
+                        if status == 206:
+                            self.diagnostics["redsky_search_http_206"] += 1
+                    else:
+                        self.diagnostics["redsky_search_http_non_success"] += 1
+                else:
+                    if success:
+                        self.diagnostics["redsky_detail_http_ok"] += 1
+                    else:
+                        self.diagnostics["redsky_detail_http_non_success"] += 1
+                if status in {401, 403}:
+                    self.diagnostics["redsky_key_rejected"] += 1
+                if not success:
+                    return None, status
+                try:
+                    payload = await response.json(content_type=None)
+                except Exception as error:
+                    self.diagnostics["last_error"] = f"REDSKY_JSON_ERROR:{type(error).__name__}:{error}"
+                    return None, status
+                if not isinstance(payload, dict):
+                    self.diagnostics["last_error"] = "REDSKY_JSON_NOT_OBJECT"
+                    return None, status
+                return payload, status
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.diagnostics["last_error"] = f"REDSKY_FETCH_ERROR:{type(error).__name__}:{error}"
+            return None, None
+
+    def _redsky_key(self) -> str:
+        return _clean(os.getenv("TARGET_REDSKY_KEY") or DEFAULT_REDSKY_KEY)
+
+    def _redsky_common_params(self) -> dict[str, str]:
+        params = {
+            "key": self._redsky_key(),
+            "channel": "WEB",
+            "visitor_id": "0000000000000000000000000000000000",
+        }
+        pricing_store = _clean(os.getenv("TARGET_PRICING_STORE_ID"))
+        if pricing_store:
+            params["pricing_store_id"] = pricing_store
+        return params
+
+    async def _discover_redsky_candidates(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        limit: int,
+        terms: tuple[str, ...] = SEARCH_TERMS,
+    ) -> list[dict[str, Any]]:
+        found: dict[str, dict[str, Any]] = {}
+        for term in terms:
+            params: dict[str, Any] = {
+                **self._redsky_common_params(),
+                "keyword": term,
+                "count": REDSKY_SEARCH_COUNT,
+                "offset": 0,
+                "default_purchasability_filter": "false",
+                "include_sponsored": "false",
+            }
+            payload, _ = await self._get_redsky_json(
+                session, REDSKY_SEARCH_ENDPOINT, params=params, kind="search"
+            )
+            if payload:
+                rows = _redsky_rows(payload)
+                self.diagnostics["redsky_search_rows_seen"] += len(rows)
+                for row in rows:
+                    tcin = _redsky_tcin(row)
+                    title = _redsky_title(row)
+                    if not tcin or not title:
+                        continue
+                    game = classify_game(title)
+                    if not game:
+                        continue
+                    seller = _redsky_explicit_seller(row)
+                    if seller:
+                        self.diagnostics["redsky_seller_hits"] += 1
+                        if seller.lower() not in {"target", "target.com", "target corporation"}:
+                            self.diagnostics["redsky_marketplace_rejections"] += 1
+                            continue
+                    found.setdefault(tcin, {
+                        "tcin": tcin,
+                        "title": title,
+                        "game": game,
+                        "row": row,
+                        "search_term": term,
+                        "seller": seller,
+                    })
+                    if len(found) >= max(limit * 2, 24):
+                        break
+            if len(found) >= max(limit * 2, 24):
+                break
+            await asyncio.sleep(REDSKY_REQUEST_DELAY)
+        self.diagnostics["redsky_supported_candidates"] = len(found)
+        return list(found.values())
+
+    async def _redsky_detail(
+        self,
+        session: aiohttp.ClientSession,
+        tcin: str,
+    ) -> dict[str, Any] | None:
+        params: dict[str, Any] = {
+            **self._redsky_common_params(),
+            "tcin": tcin,
+            "page": f"/p/A-{tcin}",
+        }
+        pricing_store = _clean(os.getenv("TARGET_PRICING_STORE_ID"))
+        if pricing_store:
+            params["store_id"] = pricing_store
+            params["has_pricing_store_id"] = "true"
+        payload, _ = await self._get_redsky_json(
+            session, REDSKY_DETAIL_ENDPOINT, params=params, kind="detail"
+        )
+        return _redsky_product(payload) if payload else None
 
     def _parse_page_candidates(
         self,
@@ -953,46 +1307,50 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         self._reset_diagnostics()
         headers = {
             "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
             "Accept-Language": "en-US,en;q=0.8",
         }
-
-        candidates: list[_Candidate] = []
         status = None
-        final_url = None
+        candidates: list[dict[str, Any]] = []
         async with aiohttp.ClientSession(headers=headers) as session:
-            label, url = CATEGORY_URLS[0]
-            body, status, final_url = await self._get(session, url, kind="category")
-            if isinstance(body, str):
-                candidates = self._parse_page_candidates(
-                    body, label, source_kind="category"
-                )
-                if candidates:
-                    self.diagnostics["discovery_source"] = "CATEGORY_PAGE"
+            candidates = await self._discover_redsky_candidates(
+                session, limit=8, terms=("pokemon tcg",)
+            )
+            status = self.diagnostics.get("last_http_status")
 
+            # Keep the old public-page path only as a diagnostic fallback.
             if not candidates:
-                candidates = await self._discover_from_sitemaps(
-                    session, max_candidates=8
-                )
-                if candidates:
-                    self.diagnostics["discovery_source"] = "PDP_SITEMAP"
+                label, url = CATEGORY_URLS[0]
+                body, status, final_url = await self._get(session, url, kind="category")
+                page_candidates = []
+                if isinstance(body, str):
+                    page_candidates = self._parse_page_candidates(
+                        body, label, source_kind="category"
+                    )
+                if page_candidates:
+                    self.diagnostics["discovery_source"] = "CATEGORY_PAGE_FALLBACK"
+                    candidates = [
+                        {"tcin": c.tcin, "title": c.title_hint, "game": classify_game(c.title_hint)}
+                        for c in page_candidates
+                    ]
 
         success = len(candidates) > 0
+        if success and not self.diagnostics.get("discovery_source"):
+            self.diagnostics["discovery_source"] = "REDSKY_SEARCH"
+
         return MajorRetailerProbe(
             retailer_key=self.retailer_key,
             success=success,
-            source_name="Target taxonomy + public PDP sitemap",
+            source_name="Target Redsky read-only product aggregation",
             confidence="HIGH" if success else "LOW",
-            http_status=status,
+            http_status=int(status) if status is not None else None,
             message=(
-                f"TARGET_DISCOVERY_CONFIRMED:{len(candidates)}_SUPPORTED_PRODUCT_URLS"
+                f"TARGET_REDSKY_DISCOVERY_CONFIRMED:{len(candidates)}_SUPPORTED_PRODUCTS"
                 if success
-                else "TARGET_PUBLIC_PAGES_REACHABLE_BUT_DISCOVERY_EMPTY"
+                else "TARGET_REDSKY_AND_PUBLIC_PAGE_DISCOVERY_EMPTY"
             ),
             diagnostics={
                 **self.get_diagnostics(),
-                "final_url": final_url,
-                "sample_tcin": candidates[0].tcin if candidates else None,
+                "sample_tcin": candidates[0].get("tcin") if candidates else None,
             },
         )
 
@@ -1001,107 +1359,94 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
         limit = max(1, min(int(limit or 50), MAX_PRODUCT_PAGES))
         headers = {
             "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
             "Accept-Language": "en-US,en;q=0.8",
         }
-
-        candidates: dict[str, _Candidate] = {}
         products: list[MajorRetailerProduct] = []
 
         async with aiohttp.ClientSession(headers=headers) as session:
-            # 1) Canonical TCG taxonomy/category pages.
-            for label, category_url in CATEGORY_URLS:
-                body, _, _ = await self._get(session, category_url, kind="category")
-                if isinstance(body, str):
-                    for candidate in self._parse_page_candidates(
-                        body, label, source_kind="category"
-                    ):
-                        candidates.setdefault(candidate.tcin, candidate)
-                if len(candidates) >= max(limit * 2, 24):
-                    break
-                await asyncio.sleep(DEFAULT_REQUEST_DELAY)
-
+            candidates = await self._discover_redsky_candidates(session, limit=limit)
             if candidates:
-                self.diagnostics["discovery_source"] = "CATEGORY_PAGE"
+                self.diagnostics["discovery_source"] = "REDSKY_SEARCH"
 
-            # 2) Existing free-text search, now with raw serialized URL parsing.
-            if len(candidates) < limit:
-                for term in SEARCH_TERMS:
-                    search_url = f"{BASE_URL}/s/{quote(term, safe='')}"
-                    body, _, _ = await self._get(session, search_url, kind="search")
+            # If Redsky ever rotates or becomes unavailable, retain the existing
+            # HTML/sitemap code as a bounded diagnostic fallback rather than
+            # failing silently. It does not claim stock capability.
+            if not candidates:
+                legacy: dict[str, _Candidate] = {}
+                for label, category_url in CATEGORY_URLS:
+                    body, _, _ = await self._get(session, category_url, kind="category")
                     if isinstance(body, str):
                         for candidate in self._parse_page_candidates(
-                            body, term, source_kind="search"
+                            body, label, source_kind="category"
                         ):
-                            candidates.setdefault(candidate.tcin, candidate)
-                    if len(candidates) >= max(limit * 2, 24):
-                        break
+                            legacy.setdefault(candidate.tcin, candidate)
                     await asyncio.sleep(DEFAULT_REQUEST_DELAY)
+                if len(legacy) < limit:
+                    sitemap_candidates = await self._discover_from_sitemaps(
+                        session, max_candidates=max(limit * 2, 24)
+                    )
+                    for candidate in sitemap_candidates:
+                        legacy.setdefault(candidate.tcin, candidate)
+                candidates = [
+                    {
+                        "tcin": c.tcin,
+                        "title": c.title_hint,
+                        "game": classify_game(c.title_hint),
+                        "row": {},
+                        "search_term": c.search_term,
+                        "seller": None,
+                    }
+                    for c in legacy.values()
+                    if classify_game(c.title_hint)
+                ]
+                if candidates:
+                    self.diagnostics["discovery_source"] = "PUBLIC_PAGE_FALLBACK"
 
-                if candidates and not self.diagnostics.get("discovery_source"):
-                    self.diagnostics["discovery_source"] = "SEARCH_PAGE"
+            for candidate in candidates[:limit]:
+                tcin = _clean(candidate.get("tcin"))
+                base_row = candidate.get("row") if isinstance(candidate.get("row"), dict) else {}
+                detail = await self._redsky_detail(session, tcin) if tcin else None
+                row = detail if isinstance(detail, dict) else base_row
 
-            # 3) robots.txt-declared Target PDP sitemap fallback.
-            if len(candidates) < limit:
-                sitemap_candidates = await self._discover_from_sitemaps(
-                    session, max_candidates=max(limit * 2, 24)
-                )
-                for candidate in sitemap_candidates:
-                    candidates.setdefault(candidate.tcin, candidate)
-                if sitemap_candidates and not self.diagnostics.get("discovery_source"):
-                    self.diagnostics["discovery_source"] = "PDP_SITEMAP"
-
-            for candidate in list(candidates.values())[:limit]:
-                body, _, final_url = await self._get(session, candidate.url, kind="product")
-                if not isinstance(body, str):
-                    await asyncio.sleep(DEFAULT_REQUEST_DELAY)
-                    continue
-
-                parsed = _parse_product_page(body, final_url or candidate.url, candidate)
-                self.diagnostics["products_parsed"] += 1
-                if parsed.get("json_ld_product"):
-                    self.diagnostics["json_ld_hits"] += 1
-                if parsed.get("h1_found"):
-                    self.diagnostics["h1_hits"] += 1
-                if parsed.get("tcin"):
-                    self.diagnostics["tcin_hits"] += 1
-                if parsed.get("upc"):
-                    self.diagnostics["upc_hits"] += 1
-                if parsed.get("purchase_limit_detected"):
-                    self.diagnostics["purchase_limit_signals"] += 1
-
-                title = _clean(parsed.get("title"))
+                title = _redsky_title(row) or _clean(candidate.get("title"))
                 game = classify_game(title)
-                if not game:
+                if not tcin or not title or not game:
                     self.diagnostics["unsupported_title_rejections"] += 1
-                    await asyncio.sleep(DEFAULT_REQUEST_DELAY)
                     continue
 
-                seller = _clean(parsed.get("seller"))
-                if seller and seller.lower() not in {"target", "target.com"}:
-                    self.diagnostics["marketplace_rejections"] += 1
-                    await asyncio.sleep(DEFAULT_REQUEST_DELAY)
-                    continue
+                seller = _redsky_explicit_seller(row) or _clean(candidate.get("seller"))
+                if seller:
+                    self.diagnostics["redsky_seller_hits"] += 1
+                    if seller.lower() not in {"target", "target.com", "target corporation"}:
+                        self.diagnostics["redsky_marketplace_rejections"] += 1
+                        self.diagnostics["marketplace_rejections"] += 1
+                        continue
 
-                price = parsed.get("price")
-                if price is None:
+                price = _redsky_price(row)
+                if price is None and row is not base_row:
+                    price = _redsky_price(base_row)
+                if price is not None:
+                    self.diagnostics["redsky_price_hits"] += 1
+                else:
                     self.diagnostics["missing_prices"] += 1
 
-                availability_known = bool(parsed.get("availability_known"))
-                availability_state = _clean(parsed.get("availability_state") or "UNKNOWN").upper()
-                if availability_known:
-                    self.diagnostics["availability_known"] += 1
-                    if availability_state == "IN_STOCK":
-                        self.diagnostics["in_stock"] += 1
-                    elif availability_state == "OUT_OF_STOCK":
-                        self.diagnostics["out_of_stock"] += 1
-                    elif availability_state == "PREORDER":
-                        self.diagnostics["preorders"] += 1
-                else:
-                    self.diagnostics["availability_unknown"] += 1
+                image_url = _redsky_image(row) or _redsky_image(base_row)
+                if image_url:
+                    self.diagnostics["redsky_image_hits"] += 1
 
-                tcin = _clean(parsed.get("tcin") or candidate.tcin)
-                product_url = final_url if _is_target_url(final_url or "") else candidate.url
+                product_url = _redsky_url(row, tcin)
+                if product_url.endswith(f"/A-{tcin}") and base_row:
+                    product_url = _redsky_url(base_row, tcin)
+
+                upc = _redsky_upc(row) or _redsky_upc(base_row)
+                dpci = _redsky_dpci(row) or _redsky_dpci(base_row)
+                lifecycle_state, lifecycle_confidence = _redsky_lifecycle(row, title)
+                if lifecycle_state == "PREORDER":
+                    self.diagnostics["preorders"] += 1
+
+                # 6K-1C1 deliberately does not claim online availability yet.
+                # Discovery + price are now verified; stock validation is 6K-1D.
+                self.diagnostics["availability_unknown"] += 1
 
                 product = MajorRetailerProduct(
                     retailer_key="target",
@@ -1111,43 +1456,39 @@ class TargetMajorRetailerAdapter(MajorRetailerAdapter):
                     url=product_url,
                     price=price,
                     currency="USD",
-                    availability_state=availability_state,
-                    availability_known=availability_known,
-                    availability_confidence=_clean(parsed.get("availability_confidence") or "UNKNOWN").upper(),
-                    lifecycle_state=_clean(parsed.get("lifecycle_state") or "PAGE_LIVE").upper(),
-                    lifecycle_confidence=_clean(parsed.get("lifecycle_confidence") or "MEDIUM").upper(),
+                    availability_state="UNKNOWN",
+                    availability_known=False,
+                    availability_confidence="UNKNOWN",
+                    lifecycle_state=lifecycle_state,
+                    lifecycle_confidence=lifecycle_confidence,
                     product_type="TCG Product",
                     product_category=classify_category(title),
                     product_family=classify_family(title),
-                    image_url=parsed.get("image_url"),
-                    sku=parsed.get("dpci"),
-                    upc=parsed.get("upc"),
+                    image_url=image_url,
+                    sku=dpci,
+                    upc=upc,
                     offer_id=tcin,
                     purchase_limit=None,
-                    source_name="target_public_storefront",
-                    source_confidence=(
-                        "HIGH"
-                        if parsed.get("json_ld_product") or (parsed.get("h1_found") and tcin)
-                        else "MEDIUM"
-                    ),
+                    source_name="target_redsky_readonly",
+                    source_confidence="HIGH" if detail else "MEDIUM",
                     extra={
                         "tcin": tcin,
-                        "dpci": parsed.get("dpci"),
+                        "dpci": dpci,
                         "seller": seller or None,
                         "seller_signal": "EXPLICIT" if seller else "NOT_EXPOSED",
-                        "price_source": parsed.get("price_source"),
-                        "availability_source": parsed.get("availability_source"),
-                        "purchase_limit_detected_but_not_enabled": parsed.get("purchase_limit_detected"),
-                        "discovery_source": candidate.search_term,
+                        "price_source": "REDSKY_DETAIL" if detail and price is not None else "REDSKY_SEARCH",
+                        "availability_source": None,
+                        "discovery_source": self.diagnostics.get("discovery_source"),
+                        "search_term": candidate.get("search_term"),
                         "target_adapter_version": VERSION,
                         "target_adapter_step": STEP,
                     },
                 )
                 products.append(product)
+                self.diagnostics["products_parsed"] += 1
                 self.diagnostics["products_accepted"] += 1
-
                 if len(products) >= limit:
                     break
-                await asyncio.sleep(DEFAULT_REQUEST_DELAY)
+                await asyncio.sleep(REDSKY_REQUEST_DELAY)
 
         return products
