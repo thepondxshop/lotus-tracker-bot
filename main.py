@@ -4058,8 +4058,40 @@ async def majorscan(
         diag_lines.append(
             f"Redsky failure body: `{str(diagnostics.get('redsky_last_non_success_body'))[:180]}`"
         )
-    embed.add_field(name="Adapter Diagnostics", value="\
-".join(diag_lines), inline=False)
+    # Discord limits every embed field value to 1024 characters.
+    # Keep diagnostics readable and split them across bounded fields rather than
+    # allowing a successful scan to fail while Discord renders the response.
+    diagnostic_chunks = []
+    current_chunk = []
+    current_length = 0
+
+    for line in diag_lines:
+        line = str(line or "")
+        # A single diagnostic line should never consume the entire Discord field.
+        if len(line) > 960:
+            line = line[:957] + "..."
+
+        added_length = len(line) + (1 if current_chunk else 0)
+        if current_chunk and current_length + added_length > 1000:
+            diagnostic_chunks.append("\n".join(current_chunk))
+            current_chunk = [line]
+            current_length = len(line)
+        else:
+            current_chunk.append(line)
+            current_length += added_length
+
+    if current_chunk:
+        diagnostic_chunks.append("\n".join(current_chunk))
+
+    # Leave room under Discord's 25-field embed limit for Sample + Safety.
+    diagnostic_chunks = diagnostic_chunks[:6]
+    for index, chunk in enumerate(diagnostic_chunks):
+        field_name = (
+            "Adapter Diagnostics"
+            if index == 0
+            else f"Adapter Diagnostics ({index + 1})"
+        )
+        embed.add_field(name=field_name, value=chunk or "No diagnostics.", inline=False)
 
     if products:
         sample_lines = []
@@ -4069,12 +4101,10 @@ async def majorscan(
             price_text = f"${price:.2f}" if isinstance(price, (int, float)) else "price ?"
             stock = pdata.get("availability_state") or "UNKNOWN"
             sample_lines.append(
-                f"• **{str(item.get('title') or 'Unknown')[:120]}**\
-"
+                f"• **{str(item.get('title') or 'Unknown')[:120]}**\n"
                 f"  `{item.get('external_product_id')}` • `{price_text}` • `{stock}`"
             )
-        embed.add_field(name="Sample", value="\
-".join(sample_lines)[:1000], inline=False)
+        embed.add_field(name="Sample", value="\n".join(sample_lines)[:1000], inline=False)
 
     embed.add_field(
         name="Safety",
