@@ -1,9 +1,9 @@
-"""Major-retailer catalog for Lotus Step 6K-1A2."""
+"""Major-retailer catalog for Lotus Step 6K-2A."""
 
 from .base import MajorRetailerDefinition
 from .registry import register_major_retailer_definition
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 # Definitions only. Nothing here activates a retailer or performs network requests.
 BUILTIN_MAJOR_RETAILERS = (
