@@ -1,4 +1,4 @@
-"""Lotus Step 6K-1C2 major-retailer package."""
+"""Lotus Step 6K-2A major-retailer package."""
 
 from .catalog import load_builtin_major_retailer_definitions
 
@@ -14,11 +14,22 @@ from .base import (  # noqa: E402,F401
     MajorRetailerProbe,
     MajorRetailerProduct,
 )
+from .families import (  # noqa: E402,F401
+    list_adapter_families,
+    recommend_adapter_family,
+)
 from .monitor import (  # noqa: E402,F401
     get_major_retailer_catalog_status,
     get_major_retailer_framework_status,
     probe_major_retailer,
     scan_major_retailer,
+)
+from .onboarding import (  # noqa: E402,F401
+    detect_major_retailer,
+    get_major_retailer_onboarding_status,
+    list_staged_major_retailers,
+    normalize_major_domain,
+    stage_major_retailer,
 )
 from .registry import (  # noqa: E402,F401
     build_major_retailer_adapter,
@@ -31,5 +42,5 @@ from .registry import (  # noqa: E402,F401
     register_major_retailer_adapter,
 )
 
-VERSION = "1.3.1"
-STEP = "6K-1C2"
+VERSION = "1.4.0"
+STEP = "6K-2A"
