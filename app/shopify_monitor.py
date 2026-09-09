@@ -186,6 +186,15 @@ MONITOR_STATUS = {
     "scan_in_progress":
         False,
 
+    "scan_started_at":
+        None,
+
+    "scan_finished_at":
+        None,
+
+    "scan_duration_seconds":
+        None,
+
     "scan_skipped_overlap":
         0,
 
@@ -3433,8 +3442,13 @@ async def scan_all_shopify_stores():
         return []
 
     async with _SHOPIFY_SCAN_LOCK:
+        started_monotonic = time.monotonic()
         MONITOR_STATUS["scan_in_progress"] = True
+        MONITOR_STATUS["scan_started_at"] = datetime.utcnow().isoformat()
+        MONITOR_STATUS["scan_finished_at"] = None
+        MONITOR_STATUS["scan_duration_seconds"] = None
         MONITOR_STATUS["last_scan_outcome"] = "RUNNING"
+
         try:
             results = await _scan_all_shopify_stores_unlocked()
             MONITOR_STATUS["last_scan_outcome"] = (
@@ -3443,6 +3457,11 @@ async def scan_all_shopify_stores():
             return results
         finally:
             MONITOR_STATUS["scan_in_progress"] = False
+            MONITOR_STATUS["scan_finished_at"] = datetime.utcnow().isoformat()
+            MONITOR_STATUS["scan_duration_seconds"] = round(
+                max(0.0, time.monotonic() - started_monotonic),
+                2,
+            )
 
 
 async def probe_shopify_store(
