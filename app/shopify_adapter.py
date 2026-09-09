@@ -1,4 +1,8 @@
+import asyncio
+import json
 import re
+import time
+import xml.etree.ElementTree as ET
 
 from urllib.parse import (
     urlparse,
@@ -14,8 +18,8 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Version 1.0.4
-# Step 6G-C1 - Shopify Discovery Backfill Guard
+# Component Version 1.0.6-C1
+# Step 6K-2C1 - Shopify Rate-Limit + Large-Catalog Hardening
 #
 # Strict Structured TCG Classification
 # Product Family Detection
@@ -1558,36 +1562,65 @@ def default_family_for_store_region(
 
 
 # =========================================================
-# PUBLIC PRIORITY COLLECTION DISCOVERY
+# STEP 6K-2C1 — SHOPIFY RATE-LIMIT + LARGE-CATALOG HARDENING
 #
-# Shopify storefronts can expose products in public collections
-# before they are easy to find in the general catalog feed.
-# Lotus uses only public GET endpoints and never accesses private
-# Admin/App APIs or authenticated sales-channel data.
+# Goals:
+# - serialize requests per storefront/domain
+# - respectful pacing + Retry-After / exponential 429 backoff
+# - scan high-value collections before the giant general feed
+# - cache collection discovery so large stores are not rediscovered
+#   every minute
+# - periodically refresh the general product feed rather than hammering it
+# - detect products newly entering an already-baselined priority collection
+# - never use missing data as a sold-out signal
 # =========================================================
 
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C1"
+SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
+SHOPIFY_MAX_429_RETRIES = 3
+SHOPIFY_MAX_5XX_RETRIES = 2
+SHOPIFY_MAX_BACKOFF_SECONDS = 30.0
+SHOPIFY_COLLECTION_CACHE_SECONDS = 30 * 60
+SHOPIFY_GENERAL_REFRESH_SECONDS = 10 * 60
+MAX_PRIORITY_COLLECTIONS = 12
+MAX_COLLECTION_PAGES = 2
+MAX_COLLECTION_SITEMAPS = 8
+MAX_COLLECTION_JSON_PAGES = 8
+
 PRIORITY_COLLECTION_TERMS = (
-    "preorder",
-    "pre-order",
-    "pre order",
-    "coming soon",
-    "coming-soon",
-    "new arrivals",
-    "new-arrivals",
-    "new products",
-    "new-products",
-    "one piece",
-    "one-piece",
-    "pokemon",
-    "pokÃ©mon",
+    "preorder", "pre-order", "pre order",
+    "coming soon", "coming-soon",
+    "new arrivals", "new-arrivals",
+    "new products", "new-products",
+    "one piece", "one-piece", "onepiece",
+    "pokemon", "pokémon",
     "gundam",
-    "riftbound",
-    "fusion world",
-    "fusion-world",
+    "dragon ball", "fusion world", "fusion-world",
+    "riftbound", "palworld", "naruto",
+    "cyberpunk", "azuki", "hellbreak",
+    "tcg", "trading card", "card game",
 )
 
-MAX_PRIORITY_COLLECTIONS = 20
-MAX_COLLECTION_PAGES = 4
+# Per-process coordination. The monitor also has scan-level locks; these
+# domain locks are the final protection against a health probe/manual scan
+# hitting the same Shopify storefront while another request is in flight.
+_DOMAIN_REQUEST_LOCKS = {}
+_DOMAIN_LAST_REQUEST_AT = {}
+_PRIORITY_COLLECTION_CACHE = {}
+_GENERAL_FEED_LAST_ATTEMPT_AT = {}
+_COLLECTION_MEMBERSHIP_CACHE = {}
+
+
+class ShopifyHTTPError(RuntimeError):
+    def __init__(self, status, message, *, url=None, purpose=None):
+        super().__init__(message)
+        self.status = status
+        self.url = url
+        self.purpose = purpose
+
+
+class ShopifyRateLimitError(ShopifyHTTPError):
+    pass
 
 
 def _append_discovery_source(product, source):
@@ -1599,6 +1632,18 @@ def _append_discovery_source(product, source):
     if source not in sources:
         sources.append(source)
     product["_lotus_discovery_sources"] = sources
+
+
+def _append_new_collection_membership(product, handle):
+    if not isinstance(product, dict):
+        return
+    memberships = product.get("_lotus_new_collection_memberships")
+    if not isinstance(memberships, list):
+        memberships = []
+    handle = str(handle or "").strip()
+    if handle and handle not in memberships:
+        memberships.append(handle)
+    product["_lotus_new_collection_memberships"] = memberships
 
 
 def _product_dedupe_key(product):
@@ -1613,6 +1658,78 @@ def _product_dedupe_key(product):
     return None
 
 
+def _xml_locations(xml_text):
+    if not xml_text:
+        return []
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return []
+    locations = []
+    for element in root.iter():
+        if str(element.tag).lower().endswith("loc") and element.text:
+            value = str(element.text).strip()
+            if value:
+                locations.append(value)
+    return locations
+
+
+def _collection_handle_from_url(url):
+    try:
+        path = urlparse(str(url or "")).path
+    except Exception:
+        return None
+    marker = "/collections/"
+    if marker not in path:
+        return None
+    handle = path.split(marker, 1)[1].strip("/").split("/", 1)[0]
+    return handle or None
+
+
+def _collection_score(handle, title=""):
+    probe = normalize_text(f"{title or ''} {handle or ''}")
+    if not probe:
+        return 0
+
+    score = 0
+    if "preorder" in probe or "pre-order" in probe or "pre order" in probe:
+        score += 120
+    if "coming soon" in probe or "coming-soon" in probe:
+        score += 100
+    if "new arrivals" in probe or "new-arrivals" in probe:
+        score += 45
+    if "new products" in probe or "new-products" in probe:
+        score += 40
+
+    game_terms = (
+        "one piece", "one-piece", "onepiece",
+        "pokemon", "pokémon", "gundam",
+        "dragon ball", "fusion world", "fusion-world",
+        "riftbound", "palworld", "naruto", "cyberpunk",
+        "azuki", "hellbreak",
+    )
+    for term in game_terms:
+        if term in probe:
+            score += 35
+
+    if "tcg" in probe or "trading card" in probe or "card game" in probe:
+        score += 15
+
+    return score
+
+
+def _retry_after_seconds(value, attempt):
+    try:
+        if value is not None:
+            parsed = float(str(value).strip())
+            if parsed >= 0:
+                return min(max(parsed, 1.0), SHOPIFY_MAX_BACKOFF_SECONDS)
+    except (TypeError, ValueError):
+        pass
+    # Respectful exponential fallback when Retry-After is absent/non-numeric.
+    return min(2.0 ** (attempt + 1), SHOPIFY_MAX_BACKOFF_SECONDS)
+
+
 class ShopifyAdapter:
 
     def __init__(
@@ -1620,404 +1737,495 @@ class ShopifyAdapter:
         domain,
         region="US",
     ):
+        self.domain = normalize_shopify_domain(domain)
+        self.region = (region or "US").upper()
+        self.base_url = f"https://{self.domain}"
+        self.currency = REGION_CURRENCY.get(self.region, "USD")
+        self.diagnostics = {
+            "requests_attempted": 0,
+            "http_200": 0,
+            "http_429": 0,
+            "http_5xx": 0,
+            "http_other": 0,
+            "retries": 0,
+            "backoff_seconds": 0.0,
+            "rate_limit_exhausted": 0,
+            "priority_collection_cache_hit": 0,
+            "collection_sitemaps_checked": 0,
+            "collection_index_pages": 0,
+            "collections_seen": 0,
+            "priority_collections": 0,
+            "priority_collection_handles": [],
+            "collection_pages_successful": 0,
+            "collection_products_seen": 0,
+            "new_collection_memberships": 0,
+            "general_pages_successful": 0,
+            "general_products_seen": 0,
+            "general_feed_skipped": 0,
+            "partial_due_to_rate_limit": 0,
+        }
 
-        self.domain = (
-            normalize_shopify_domain(
-                domain
-            )
+    def get_diagnostics(self):
+        return dict(self.diagnostics)
+
+    def _domain_lock(self):
+        lock = _DOMAIN_REQUEST_LOCKS.get(self.domain)
+        if lock is None:
+            lock = asyncio.Lock()
+            _DOMAIN_REQUEST_LOCKS[self.domain] = lock
+        return lock
+
+    async def _request(self, session, url, *, purpose, expect_json, required):
+        lock = self._domain_lock()
+
+        async with lock:
+            retry_429 = 0
+            retry_5xx = 0
+
+            while True:
+                last_request_at = _DOMAIN_LAST_REQUEST_AT.get(self.domain, 0.0)
+                elapsed = time.monotonic() - last_request_at
+                if elapsed < SHOPIFY_REQUEST_DELAY_SECONDS:
+                    await asyncio.sleep(SHOPIFY_REQUEST_DELAY_SECONDS - elapsed)
+
+                self.diagnostics["requests_attempted"] += 1
+
+                try:
+                    async with session.get(url, allow_redirects=True) as response:
+                        status = int(response.status)
+                        body = await response.text()
+                        _DOMAIN_LAST_REQUEST_AT[self.domain] = time.monotonic()
+
+                        if status == 200:
+                            self.diagnostics["http_200"] += 1
+                            if not expect_json:
+                                return body
+                            try:
+                                return json.loads(body)
+                            except Exception as error:
+                                if required:
+                                    raise ShopifyHTTPError(
+                                        200,
+                                        f"Shopify returned invalid JSON for {purpose}: {type(error).__name__}",
+                                        url=url,
+                                        purpose=purpose,
+                                    )
+                                return None
+
+                        if status == 429:
+                            self.diagnostics["http_429"] += 1
+                            if retry_429 < SHOPIFY_MAX_429_RETRIES:
+                                wait_seconds = _retry_after_seconds(
+                                    response.headers.get("Retry-After"),
+                                    retry_429,
+                                )
+                                retry_429 += 1
+                                self.diagnostics["retries"] += 1
+                                self.diagnostics["backoff_seconds"] += wait_seconds
+                                print(
+                                    "SHOPIFY RATE LIMIT BACKOFF | "
+                                    f"Store={self.domain} | Purpose={purpose} | "
+                                    f"Retry={retry_429}/{SHOPIFY_MAX_429_RETRIES} | "
+                                    f"Wait={wait_seconds:.1f}s"
+                                )
+                                await asyncio.sleep(wait_seconds)
+                                continue
+
+                            self.diagnostics["rate_limit_exhausted"] += 1
+                            self.diagnostics["partial_due_to_rate_limit"] = 1
+                            message = (
+                                f"Shopify HTTP 429 after {SHOPIFY_MAX_429_RETRIES} retries "
+                                f"for {purpose}"
+                            )
+                            if required:
+                                raise ShopifyRateLimitError(
+                                    429,
+                                    message,
+                                    url=url,
+                                    purpose=purpose,
+                                )
+                            print(
+                                "SHOPIFY OPTIONAL REQUEST RATE LIMITED | "
+                                f"Store={self.domain} | Purpose={purpose}"
+                            )
+                            return None
+
+                        if 500 <= status <= 599:
+                            self.diagnostics["http_5xx"] += 1
+                            if retry_5xx < SHOPIFY_MAX_5XX_RETRIES:
+                                wait_seconds = min(
+                                    2.0 ** (retry_5xx + 1),
+                                    SHOPIFY_MAX_BACKOFF_SECONDS,
+                                )
+                                retry_5xx += 1
+                                self.diagnostics["retries"] += 1
+                                self.diagnostics["backoff_seconds"] += wait_seconds
+                                await asyncio.sleep(wait_seconds)
+                                continue
+
+                        self.diagnostics["http_other"] += 1
+                        if required:
+                            raise ShopifyHTTPError(
+                                status,
+                                f"Shopify HTTP {status} for {purpose}",
+                                url=url,
+                                purpose=purpose,
+                            )
+                        return None
+
+                except asyncio.CancelledError:
+                    raise
+                except (ShopifyHTTPError, ShopifyRateLimitError):
+                    raise
+                except Exception as error:
+                    if required:
+                        raise ShopifyHTTPError(
+                            None,
+                            f"Shopify request failed for {purpose}: {type(error).__name__}: {error}",
+                            url=url,
+                            purpose=purpose,
+                        )
+                    return None
+
+    async def _get_json(self, session, url, *, purpose, required=False):
+        return await self._request(
+            session,
+            url,
+            purpose=purpose,
+            expect_json=True,
+            required=required,
         )
 
-        self.region = (
-            region
-            or "US"
-        ).upper()
-
-        self.base_url = (
-            f"https://{self.domain}"
+    async def _get_text(self, session, url, *, purpose, required=False):
+        return await self._request(
+            session,
+            url,
+            purpose=purpose,
+            expect_json=False,
+            required=required,
         )
 
-        self.currency = (
-            REGION_CURRENCY.get(
-                self.region,
-                "USD",
-            )
-        )
-
-
-    async def fetch_store_currency(
-        self,
-    ):
-
-        url = (
-            f"{self.base_url}/cart.js"
-        )
-
-        timeout = (
-            aiohttp.ClientTimeout(
-                total=10
-            )
-        )
+    async def fetch_store_currency(self):
+        url = f"{self.base_url}/cart.js"
+        timeout = aiohttp.ClientTimeout(total=20)
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "PonDeX-Trackers/1.0.6-C1",
+        }
 
         try:
-
-            async with aiohttp.ClientSession(
-                timeout=timeout
-            ) as session:
-
-                async with session.get(
-
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                data = await self._get_json(
+                    session,
                     url,
-
-                    headers={
-                        "Accept":
-                            "application/json",
-
-                        "User-Agent":
-                            "PonDeX-Trackers/1.0.4",
-                    },
-
-                ) as response:
-
-                    if response.status == 200:
-
-                        data = (
-                            await response.json(
-                                content_type=None
-                            )
-                        )
-
-                        currency = (
-                            data.get(
-                                "currency"
-                            )
-                        )
-
-                        if currency:
-
-                            self.currency = (
-                                str(
-                                    currency
-                                )
-                                .strip()
-                                .upper()
-                            )
-
-                            return (
-                                self.currency
-                            )
-
-        except Exception as error:
-
-            print(
-                (
-                    "SHOPIFY CURRENCY DETECTION ERROR | "
-                    f"{self.domain} | "
-                    f"{type(error).__name__}: "
-                    f"{error}"
+                    purpose="STORE_CURRENCY",
+                    required=False,
                 )
+                if isinstance(data, dict):
+                    currency = data.get("currency")
+                    if currency:
+                        self.currency = str(currency).strip().upper()
+        except Exception as error:
+            print(
+                "SHOPIFY CURRENCY DETECTION ERROR | "
+                f"{self.domain} | {type(error).__name__}: {error}"
             )
 
-        return (
-            self.currency
+        return self.currency
+
+    async def probe_storefront(self):
+        """One lightweight public request used by store-health recovery."""
+        timeout = aiohttp.ClientTimeout(total=20)
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "PonDeX-Trackers/1.0.6-C1",
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            data = await self._get_json(
+                session,
+                f"{self.base_url}/products.json?limit=1&page=1",
+                purpose="HEALTH_PROBE",
+                required=True,
+            )
+            if not isinstance(data, dict):
+                raise ShopifyHTTPError(
+                    200,
+                    "Shopify health probe returned an unexpected payload",
+                    purpose="HEALTH_PROBE",
+                )
+        return True
+
+    async def _discover_priority_collections(self, session):
+        now = time.monotonic()
+        cached = _PRIORITY_COLLECTION_CACHE.get(self.domain)
+        if cached and now - cached[0] < SHOPIFY_COLLECTION_CACHE_SECONDS:
+            self.diagnostics["priority_collection_cache_hit"] = 1
+            collections = list(cached[1])
+            self.diagnostics["priority_collections"] = len(collections)
+            self.diagnostics["priority_collection_handles"] = [c[1] for c in collections]
+            return collections
+
+        candidates = {}
+
+        def add_candidate(handle, title=""):
+            handle = str(handle or "").strip()
+            if not handle:
+                return
+            score = _collection_score(handle, title)
+            if score <= 0:
+                return
+            previous = candidates.get(handle)
+            row = (-score, handle, normalize_text(title) or handle)
+            if previous is None or row < previous:
+                candidates[handle] = row
+
+        # Preferred path: Shopify's public sitemap points directly to the
+        # collection sitemap(s), which is far cheaper than walking a giant
+        # /collections.json catalog page-by-page.
+        root_xml = await self._get_text(
+            session,
+            f"{self.base_url}/sitemap.xml",
+            purpose="SITEMAP_ROOT",
+            required=False,
         )
+        collection_sitemaps = []
+        for location in _xml_locations(root_xml):
+            if "sitemap_collections" in location.lower():
+                collection_sitemaps.append(location)
 
+        for sitemap_url in collection_sitemaps[:MAX_COLLECTION_SITEMAPS]:
+            xml_text = await self._get_text(
+                session,
+                sitemap_url,
+                purpose="SITEMAP_COLLECTIONS",
+                required=False,
+            )
+            if not xml_text:
+                continue
+            self.diagnostics["collection_sitemaps_checked"] += 1
+            for location in _xml_locations(xml_text):
+                handle = _collection_handle_from_url(location)
+                if handle:
+                    self.diagnostics["collections_seen"] += 1
+                    add_candidate(handle, handle.replace("-", " "))
 
-    async def fetch_products(
-        self,
-        max_pages=20,
-    ):
+        # Fallback for stores whose sitemap doesn't expose collection URLs.
+        if not candidates:
+            for page in range(1, MAX_COLLECTION_JSON_PAGES + 1):
+                data = await self._get_json(
+                    session,
+                    f"{self.base_url}/collections.json?limit=250&page={page}",
+                    purpose=f"COLLECTION_INDEX_PAGE_{page}",
+                    required=False,
+                )
+                if not isinstance(data, dict):
+                    break
+                collections = data.get("collections", []) or []
+                self.diagnostics["collection_index_pages"] += 1
+                self.diagnostics["collections_seen"] += len(collections)
+                if not collections:
+                    break
+                for collection in collections:
+                    if not isinstance(collection, dict):
+                        continue
+                    add_candidate(
+                        collection.get("handle"),
+                        collection.get("title"),
+                    )
+                if len(collections) < 250:
+                    break
 
+        ranked = sorted(candidates.values())[:MAX_PRIORITY_COLLECTIONS]
+        # Never cache an empty discovery result. An empty result may simply
+        # mean a transient 429/5xx response; caching it would blind the fast
+        # lane for the full cache window.
+        if ranked:
+            _PRIORITY_COLLECTION_CACHE[self.domain] = (now, list(ranked))
+        self.diagnostics["priority_collections"] = len(ranked)
+        self.diagnostics["priority_collection_handles"] = [row[1] for row in ranked]
+        return ranked
+
+    async def fetch_products(self, max_pages=20):
         products_by_key = {}
         anonymous_products = []
 
-        timeout = (
-            aiohttp.ClientTimeout(
-                total=30
-            )
-        )
-
+        timeout = aiohttp.ClientTimeout(total=45)
         headers = {
-
-            "Accept":
-                "application/json",
-
-            "User-Agent":
-                "PonDeX-Trackers/1.0.4",
+            "Accept": "application/json,text/plain,*/*",
+            "User-Agent": "PonDeX-Trackers/1.0.6-C1",
         }
 
         async def merge_products(page_products, source):
-            for product in page_products or []:
-                if not isinstance(product, dict):
+            for incoming in page_products or []:
+                if not isinstance(incoming, dict):
                     continue
-
+                product = dict(incoming)
+                _append_discovery_source(product, source)
                 key = _product_dedupe_key(product)
 
                 if key is None:
-                    product = dict(product)
-                    _append_discovery_source(product, source)
                     anonymous_products.append(product)
                     continue
 
                 existing = products_by_key.get(key)
-
                 if existing is None:
-                    product = dict(product)
-                    _append_discovery_source(product, source)
                     products_by_key[key] = product
                     continue
 
-                existing_sources = list(
-                    existing.get("_lotus_discovery_sources")
-                    or []
-                )
+                existing_sources = list(existing.get("_lotus_discovery_sources") or [])
+                incoming_sources = list(product.get("_lotus_discovery_sources") or [])
+                existing_memberships = list(existing.get("_lotus_new_collection_memberships") or [])
+                incoming_memberships = list(product.get("_lotus_new_collection_memberships") or [])
 
-                incoming_sources = list(
-                    product.get("_lotus_discovery_sources")
-                    or []
-                )
+                for value in incoming_sources:
+                    if value not in existing_sources:
+                        existing_sources.append(value)
+                for value in incoming_memberships:
+                    if value not in existing_memberships:
+                        existing_memberships.append(value)
 
-                for discovery_source in incoming_sources + [source]:
-                    if discovery_source not in existing_sources:
-                        existing_sources.append(discovery_source)
-
-                # Prefer the newest public payload for ordinary Shopify
-                # fields while preserving every discovery source.
                 existing.update(product)
                 existing["_lotus_discovery_sources"] = existing_sources
+                if existing_memberships:
+                    existing["_lotus_new_collection_memberships"] = existing_memberships
 
         async with aiohttp.ClientSession(
-
             timeout=timeout,
-
             headers=headers,
-
+            connector=aiohttp.TCPConnector(limit=4, limit_per_host=2),
         ) as session:
-
             # =================================================
-            # 1. GENERAL PUBLIC PRODUCT FEED
+            # 1. FAST LANE — PRIORITY COLLECTIONS FIRST
             # =================================================
+            priority_collections = await self._discover_priority_collections(session)
 
-            general_pages = 0
+            for _, handle, title in priority_collections:
+                source_label = "COLLECTION:" + handle
+                membership_key = (self.domain, handle)
+                previous_members = _COLLECTION_MEMBERSHIP_CACHE.get(membership_key)
+                current_members = set()
+                collection_complete = True
+                successful_pages = 0
 
-            for page in range(
-                1,
-                max_pages + 1,
-            ):
-
-                url = (
-                    f"{self.base_url}"
-                    f"/products.json"
-                    f"?limit=250"
-                    f"&page={page}"
-                )
-
-                async with session.get(
-
-                    url,
-
-                    allow_redirects=True,
-
-                ) as response:
-
-                    if response.status != 200:
-
-                        raise RuntimeError(
-                            (
-                                "Shopify HTTP "
-                                f"{response.status}"
-                            )
-                        )
-
-                    data = (
-                        await response.json(
-                            content_type=None
-                        )
+                for page in range(1, MAX_COLLECTION_PAGES + 1):
+                    data = await self._get_json(
+                        session,
+                        (
+                            f"{self.base_url}/collections/{handle}/products.json"
+                            f"?limit=250&page={page}"
+                        ),
+                        purpose=f"PRIORITY_COLLECTION:{handle}:PAGE:{page}",
+                        required=False,
                     )
+                    if not isinstance(data, dict):
+                        collection_complete = False
+                        break
 
-                    page_products = (
-                        data.get(
-                            "products",
-                            []
-                        )
-                    )
+                    page_products = data.get("products", []) or []
+                    successful_pages += 1
+                    self.diagnostics["collection_pages_successful"] += 1
+                    self.diagnostics["collection_products_seen"] += len(page_products)
 
                     if not page_products:
+                        break
 
+                    prepared = []
+                    for raw_product in page_products:
+                        if not isinstance(raw_product, dict):
+                            continue
+                        product = dict(raw_product)
+                        key = _product_dedupe_key(product)
+                        if key:
+                            current_members.add(key)
+                            if previous_members is not None and key not in previous_members:
+                                _append_new_collection_membership(product, handle)
+                                self.diagnostics["new_collection_memberships"] += 1
+                        prepared.append(product)
+
+                    await merge_products(prepared, source_label)
+
+                    if len(page_products) < 250:
+                        break
+                    if page == MAX_COLLECTION_PAGES:
+                        # We intentionally cap large collections. The first
+                        # 500 entries remain useful, but do not pretend this
+                        # was a complete membership snapshot.
+                        collection_complete = False
+
+                if successful_pages and collection_complete:
+                    _COLLECTION_MEMBERSHIP_CACHE[membership_key] = current_members
+                elif successful_pages and previous_members is None:
+                    # Baseline the observed slice only; additions to that
+                    # slice can still be detected on later scans.
+                    _COLLECTION_MEMBERSHIP_CACHE[membership_key] = current_members
+
+            # =================================================
+            # 2. GENERAL PRODUCT FEED — PERIODIC, NOT EVERY MINUTE
+            # =================================================
+            now = time.monotonic()
+            last_general = _GENERAL_FEED_LAST_ATTEMPT_AT.get(self.domain, 0.0)
+            run_general = (
+                max_pages <= 1
+                or not last_general
+                or now - last_general >= SHOPIFY_GENERAL_REFRESH_SECONDS
+            )
+
+            general_pages = 0
+            if run_general:
+                # Set this before requesting so a rate-limited general scan is
+                # not immediately retried by the next 60-second cycle.
+                _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = now
+
+                for page in range(1, max_pages + 1):
+                    existing_product_count = len(products_by_key) + len(anonymous_products)
+                    data = await self._get_json(
+                        session,
+                        f"{self.base_url}/products.json?limit=250&page={page}",
+                        purpose=f"GENERAL_PRODUCTS_PAGE_{page}",
+                        required=(existing_product_count == 0 and page == 1),
+                    )
+                    if not isinstance(data, dict):
+                        break
+
+                    page_products = data.get("products", []) or []
+                    if not page_products:
                         break
 
                     general_pages += 1
+                    self.diagnostics["general_pages_successful"] += 1
+                    self.diagnostics["general_products_seen"] += len(page_products)
+                    await merge_products(page_products, "PRODUCTS_JSON")
 
-                    await merge_products(
-                        page_products,
-                        "PRODUCTS_JSON",
-                    )
-
-                    if len(
-                        page_products
-                    ) < 250:
-
+                    if len(page_products) < 250:
                         break
+            else:
+                self.diagnostics["general_feed_skipped"] = 1
 
-            # =================================================
-            # 2. DISCOVER PUBLIC COLLECTIONS
-            # =================================================
+        products = list(products_by_key.values()) + anonymous_products
 
-            priority_collections = []
-
-            collections_url = (
-                f"{self.base_url}/collections.json?limit=250"
+        if not products and self.diagnostics["rate_limit_exhausted"]:
+            raise ShopifyRateLimitError(
+                429,
+                "Shopify rate limit prevented a usable product scan",
+                purpose="FETCH_PRODUCTS",
             )
-
-            try:
-                async with session.get(
-                    collections_url,
-                    allow_redirects=True,
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json(
-                            content_type=None
-                        )
-                        collections = data.get("collections", []) or []
-
-                        ranked = []
-
-                        for collection in collections:
-                            if not isinstance(collection, dict):
-                                continue
-
-                            handle = str(
-                                collection.get("handle")
-                                or ""
-                            ).strip()
-
-                            title = normalize_text(
-                                collection.get("title")
-                            )
-
-                            probe = normalize_text(
-                                f"{title} {handle}"
-                            )
-
-                            score = 0
-
-                            for term in PRIORITY_COLLECTION_TERMS:
-                                if normalize_text(term) in probe:
-                                    score += 10
-
-                            if "preorder" in probe or "pre-order" in probe:
-                                score += 50
-
-                            if "coming soon" in probe or "coming-soon" in probe:
-                                score += 40
-
-                            if score > 0 and handle:
-                                ranked.append((
-                                    -score,
-                                    handle,
-                                    title,
-                                ))
-
-                        ranked.sort()
-
-                        priority_collections = ranked[
-                            :MAX_PRIORITY_COLLECTIONS
-                        ]
-
-            except Exception as error:
-                print(
-                    (
-                        "SHOPIFY COLLECTION DISCOVERY ERROR | "
-                        f"Store={self.domain} | "
-                        f"{type(error).__name__}: {error}"
-                    )
-                )
-
-            collection_products_seen = 0
-
-            # =================================================
-            # 3. PRIORITY PUBLIC COLLECTION PRODUCT FEEDS
-            # =================================================
-
-            for _, handle, title in priority_collections:
-
-                for page in range(
-                    1,
-                    MAX_COLLECTION_PAGES + 1,
-                ):
-
-                    url = (
-                        f"{self.base_url}"
-                        f"/collections/{handle}/products.json"
-                        f"?limit=250&page={page}"
-                    )
-
-                    try:
-                        async with session.get(
-                            url,
-                            allow_redirects=True,
-                        ) as response:
-                            if response.status != 200:
-                                break
-
-                            data = await response.json(
-                                content_type=None
-                            )
-
-                            page_products = (
-                                data.get("products", [])
-                                or []
-                            )
-
-                            if not page_products:
-                                break
-
-                            source_label = (
-                                "COLLECTION:"
-                                + handle
-                            )
-
-                            await merge_products(
-                                page_products,
-                                source_label,
-                            )
-
-                            collection_products_seen += len(
-                                page_products
-                            )
-
-                            if len(page_products) < 250:
-                                break
-
-                    except Exception as error:
-                        print(
-                            (
-                                "SHOPIFY COLLECTION FETCH ERROR | "
-                                f"Store={self.domain} | "
-                                f"Collection={handle} | "
-                                f"{type(error).__name__}: {error}"
-                            )
-                        )
-                        break
-
-        products = (
-            list(products_by_key.values())
-            + anonymous_products
-        )
 
         print(
-            (
-                "SHOPIFY DISCOVERY COMPLETE | "
-                f"Store={self.domain} | "
-                f"GeneralPages={general_pages} | "
-                f"PriorityCollections={len(priority_collections)} | "
-                f"CollectionProductsSeen={collection_products_seen} | "
-                f"UniqueProducts={len(products)}"
-            )
+            "SHOPIFY DISCOVERY COMPLETE | "
+            f"Store={self.domain} | "
+            f"PriorityCollections={self.diagnostics['priority_collections']} | "
+            f"CollectionProductsSeen={self.diagnostics['collection_products_seen']} | "
+            f"GeneralPages={general_pages} | "
+            f"GeneralProductsSeen={self.diagnostics['general_products_seen']} | "
+            f"GeneralSkipped={self.diagnostics['general_feed_skipped']} | "
+            f"HTTP429={self.diagnostics['http_429']} | "
+            f"Retries={self.diagnostics['retries']} | "
+            f"BackoffSeconds={self.diagnostics['backoff_seconds']:.1f} | "
+            f"Partial={self.diagnostics['partial_due_to_rate_limit']} | "
+            f"UniqueProducts={len(products)}"
         )
 
-        return (
-            products
-        )
+        return products
 
 
     def normalize_product(
@@ -2255,23 +2463,46 @@ class ShopifyAdapter:
             title.lower()
         )
 
-        if (
-            "preorder"
-            in lower_title
+        discovery_sources = list(
+            product.get(
+                "_lotus_discovery_sources",
+                ["PRODUCTS_JSON"],
+            )
+            or ["PRODUCTS_JSON"]
+        )
 
-            or
-            "pre-order"
-            in lower_title
+        discovery_probe = normalize_text(
+            " ".join(str(value or "") for value in discovery_sources)
+        )
 
-            or
-            "pre order"
-            in lower_title
-        ):
+        preorder_signal = (
+            "preorder" in lower_title
+            or "pre-order" in lower_title
+            or "pre order" in lower_title
+            or "preorder" in discovery_probe
+            or "pre-order" in discovery_probe
+            or "pre order" in discovery_probe
+        )
+
+        coming_soon_signal = (
+            "coming soon" in lower_title
+            or "coming-soon" in lower_title
+            or "coming soon" in discovery_probe
+            or "coming-soon" in discovery_probe
+        )
+
+        if preorder_signal:
 
             product_state = (
                 "PREORDER_LIVE"
                 if available
                 else "PREORDER_PAGE"
+            )
+
+        elif coming_soon_signal and not available:
+
+            product_state = (
+                "COMING_SOON"
             )
 
         elif available:
@@ -2320,7 +2551,7 @@ class ShopifyAdapter:
                     f"InventoryQuantity={selected_inventory_quantity} | "
                     f"Price={selected_variant_price} | "
                     f"ProductAvailable={available} | "
-                    f"DiscoverySources={product.get('_lotus_discovery_sources', ['PRODUCTS_JSON'])}"
+                    f"DiscoverySources={discovery_sources}"
                 )
             )
 
@@ -2420,11 +2651,14 @@ class ShopifyAdapter:
                 product.get("updated_at"),
 
             "discovery_sources":
+                discovery_sources,
+
+            "new_collection_memberships":
                 list(
                     product.get(
-                        "_lotus_discovery_sources",
-                        ["PRODUCTS_JSON"],
+                        "_lotus_new_collection_memberships",
+                        [],
                     )
-                    or ["PRODUCTS_JSON"]
+                    or []
                 ),
         }
