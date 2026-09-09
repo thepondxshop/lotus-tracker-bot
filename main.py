@@ -7420,22 +7420,89 @@ async def scanshopify(
         ephemeral=True
     )
 
+    before = get_shopify_monitor_status()
+
+    if before.get("scan_in_progress"):
+
+        started = (
+            before.get("scan_started_at")
+            or "Unknown"
+        )
+
+        await interaction.followup.send(
+            (
+                "⏳ **A Shopify scan is already in progress.**\n\n"
+                "The manual scan was not started because Step 6K-2C1 "
+                "prevents overlapping scans.\n\n"
+                f"Started: `{started}`\n"
+                f"Active Shopify Stores: "
+                f"`{before.get('active_shopify_stores', 0)}`\n\n"
+                "Wait for the current cycle to finish, then check "
+                "`/shopifystatus`. This is not the same as having "
+                "zero active stores."
+            ),
+            ephemeral=True,
+        )
+        return
+
     results = (
         await scan_all_shopify_stores()
     )
 
+    after = get_shopify_monitor_status()
+
     if not results:
 
-        await interaction.followup.send(
-
-            (
-                "\u26a0\ufe0f No active stores "
-                "were successfully scanned."
-            ),
-
-            ephemeral=True,
+        outcome = (
+            after.get("last_scan_outcome")
+            or "UNKNOWN"
         )
 
+        if outcome == "SKIPPED_OVERLAP":
+
+            message = (
+                "⏳ **A Shopify scan started before this command could "
+                "acquire the scan lock.**\n\n"
+                "No second scan was started. Check `/shopifystatus` "
+                "for the current cycle."
+            )
+
+        elif int(after.get("active_shopify_stores", 0) or 0) == 0:
+
+            message = (
+                "⚠️ **No active Shopify stores are currently eligible "
+                "for scanning.**\n\n"
+                "Run `/stores` to review their Active/Platform state."
+            )
+
+        else:
+
+            last_error = (
+                after.get("last_error")
+                or "No specific error was recorded."
+            )
+
+            message = (
+                "⚠️ **The Shopify cycle finished, but no store "
+                "completed successfully.**\n\n"
+                f"Active Shopify Stores: "
+                f"`{after.get('active_shopify_stores', 0)}`\n"
+                f"Stores Failed: "
+                f"`{after.get('stores_failed', 0)}`\n"
+                f"HTTP 429 Responses: "
+                f"`{after.get('rate_limit_responses', 0)}`\n"
+                f"Retries: "
+                f"`{after.get('rate_limit_retries', 0)}`\n"
+                f"Backoff Seconds: "
+                f"`{after.get('rate_limit_backoff_seconds', 0)}`\n"
+                f"Outcome: `{outcome}`\n\n"
+                f"Last Error:\n`{str(last_error)[:900]}`"
+            )
+
+        await interaction.followup.send(
+            message,
+            ephemeral=True,
+        )
         return
 
     lines = []
@@ -7449,65 +7516,56 @@ async def scanshopify(
             )
         )
 
-        lines.append(
+        diagnostics = (
+            result.get("diagnostics")
+            or {}
+        )
 
+        lines.append(
             (
                 f"**{result['store']}**\n"
-
                 f"Currency: "
                 f"`{result.get('currency', 'Unknown')}`\n"
-
                 f"Relevant TCG Products: "
                 f"`{result['seen']}`\n"
-
                 f"New: "
                 f"`{result['new']}`\n"
-
                 f"Updated: "
                 f"`{result['updated']}`\n"
-
                 f"Events: "
                 f"`{result['events']}`\n"
-
                 f"Flickers: "
                 f"`{result['flickers']}`\n"
-
-                f"\U0001f30e Global: "
+                f"Priority Collections: "
+                f"`{diagnostics.get('priority_collections', 0)}`\n"
+                f"Collection Products: "
+                f"`{diagnostics.get('collection_products_seen', 0)}`\n"
+                f"General Products: "
+                f"`{diagnostics.get('general_products_seen', 0)}`\n"
+                f"HTTP 429s: "
+                f"`{diagnostics.get('rate_limit_responses', 0)}` | "
+                f"Retries: "
+                f"`{diagnostics.get('rate_limit_retries', 0)}`\n"
+                f"🌎 Global: "
                 f"`{families.get('GLOBAL_STANDARD', 0)}` | "
-
-                f"\U0001f1ef\U0001f1f5 JP: "
+                f"🇯🇵 JP: "
                 f"`{families.get('JP', 0)}` | "
-
-                f"\U0001f1f0\U0001f1f7 KR: "
+                f"🇰🇷 KR: "
                 f"`{families.get('KR', 0)}` | "
-
-                f"\U0001f1e8\U0001f1f3 CN: "
+                f"🇨🇳 CN: "
                 f"`{families.get('CN', 0)}` | "
-
-                f"\u2753 Unknown: "
+                f"❓ Unknown: "
                 f"`{families.get('UNKNOWN', 0)}`"
-
                 + (
-
-                    "\n\U0001f331 Initial baseline"
-
-                    if result[
-                        "initial_seed"
-                    ]
-
+                    "\n🌱 Initial baseline"
+                    if result["initial_seed"]
                     else ""
                 )
             )
         )
 
     await interaction.followup.send(
-
-        (
-            "\n\n".join(
-                lines
-            )
-        )[:1900],
-
+        ("\n\n".join(lines))[:1900],
         ephemeral=True,
     )
 
@@ -7529,96 +7587,102 @@ async def shopifystatus(
     )
 
     worker_online = (
-
         bot.shopify_monitor_task
         is not None
-
         and
-
         not bot.shopify_monitor_task.done()
     )
 
+    scan_in_progress = bool(
+        data.get("scan_in_progress")
+    )
+
     embed = discord.Embed(
-
-        title="\U0001f6cd\ufe0f Lotus Shopify Monitor",
-
+        title="🛍️ Lotus Shopify Monitor",
         description=(
-
             f"**Worker:** "
-            f"{'\u2705 Online' if worker_online else '\u274c Offline'}\n"
-
-            f"**Running:** "
-            f"{'\u2705' if data['running'] else '\u274c'}\n"
-
+            f"{'✅ Online' if worker_online else '❌ Offline'}\n"
+            f"**Monitor Loop:** "
+            f"{'✅ Running' if data.get('running') else '❌ Stopped'}\n"
+            f"**Scan In Progress:** "
+            f"{'🟡 Yes' if scan_in_progress else '⚪ No'}\n"
+            f"**Active Shopify Stores:** "
+            f"`{data.get('active_shopify_stores', 0)}`\n"
+            f"**Last Outcome:** "
+            f"`{data.get('last_scan_outcome', 'NOT_YET')}`\n"
             f"**Stores Scanned:** "
-            f"{data['stores_scanned']}\n"
-
+            f"`{data.get('stores_scanned', 0)}`\n"
+            f"**Stores Failed:** "
+            f"`{data.get('stores_failed', 0)}`\n"
             f"**TCG Products Seen:** "
-            f"{data['products_seen']}\n"
-
+            f"`{data.get('products_seen', 0)}`\n"
             f"**Events:** "
-            f"{data['events_created']}\n"
-
+            f"`{data.get('events_created', 0)}`\n"
             f"**Flickers:** "
-            f"{data['flickers_detected']}\n"
-
-            f"**Recovered Stores:** "
-            f"{data['stores_recovered']}\n\n"
-
-            "**Product Families:**\n"
-
-            f"\U0001f30e Global: "
-            f"`{data.get('global_family_products', 0)}`\n"
-
-            f"\U0001f1ef\U0001f1f5 Japanese: "
-            f"`{data.get('jp_family_products', 0)}`\n"
-
-            f"\U0001f1f0\U0001f1f7 Korean: "
-            f"`{data.get('kr_family_products', 0)}`\n"
-
-            f"\U0001f1e8\U0001f1f3 Chinese: "
-            f"`{data.get('cn_family_products', 0)}`\n"
-
-            f"\u2753 Unknown: "
-            f"`{data.get('unknown_family_products', 0)}`\n\n"
-
-            "**Routing:**\n"
-
-            "\U0001f4e1 Discovery/Page \u2192 Early Page Detection\n"
-
-            "\U0001f7e3 Preorders \u2192 Preorder Alerts\n"
-
-            "\U0001f7e2 Stock/Restocks \u2192 Shopify Drops\n"
-
-            "\U0001f525 Prices \u2192 Deals"
+            f"`{data.get('flickers_detected', 0)}`\n\n"
+            "**Rate Limit Protection:**\n"
+            f"429s: `{data.get('rate_limit_responses', 0)}` | "
+            f"Retries: `{data.get('rate_limit_retries', 0)}` | "
+            f"Backoff: "
+            f"`{data.get('rate_limit_backoff_seconds', 0)}s`\n"
+            f"Overlap Skips: "
+            f"`{data.get('scan_skipped_overlap', 0)}`\n\n"
+            "**Priority Discovery:**\n"
+            f"Collections: "
+            f"`{data.get('priority_collections', 0)}` | "
+            f"Collection Products: "
+            f"`{data.get('collection_products_seen', 0)}`\n"
+            f"General Products: "
+            f"`{data.get('general_products_seen', 0)}` | "
+            f"General Feed Skips: "
+            f"`{data.get('general_feed_skipped', 0)}`\n"
+            f"New Priority Memberships: "
+            f"`{data.get('new_priority_collection_memberships', 0)}` | "
+            f"Membership Alerts: "
+            f"`{data.get('priority_membership_alerts', 0)}`"
         ),
     )
 
     embed.add_field(
-
-        name="Last Scan",
-
+        name="Current Scan Started",
         value=(
-            data[
-                "last_scan"
-            ]
-            or "Not yet"
+            data.get("scan_started_at")
+            if scan_in_progress
+            else "Not scanning"
         ),
-
         inline=False,
     )
 
     embed.add_field(
-
-        name="Last Error",
-
+        name="Last Completed Scan",
         value=(
-            data[
-                "last_error"
-            ]
-            or "None \u2705"
+            data.get("last_scan")
+            or "Not yet"
         ),
+        inline=False,
+    )
 
+    duration = data.get(
+        "scan_duration_seconds"
+    )
+
+    embed.add_field(
+        name="Last Scan Duration",
+        value=(
+            f"{duration}s"
+            if duration is not None
+            else "Not yet"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Last Error",
+        value=(
+            str(data.get("last_error"))[:1000]
+            if data.get("last_error")
+            else "None ✅"
+        ),
         inline=False,
     )
 
