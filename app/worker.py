@@ -51,7 +51,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.5
+# Version 1.0.6
 #
 # Compact alert layout
 # Previous -> current price display
@@ -270,14 +270,30 @@ def determine_alert_route(event):
 
     # =====================================================
     # MAJOR RETAILER
+    #
+    # International major-retailer events are Premium and route through
+    # the International channel. The member preference layer then requires
+    # BOTH the INTERNATIONAL switch and the event-specific switch.
     # =====================================================
 
     if source_type == "major_retailer":
+        region = str(event.get("region") or "US").strip().upper()
+        is_international = region not in {"US", "USA", "UNITED STATES"}
+
+        # Premium+ routes remain Premium+ even for international stores.
+        if event_type == "INVENTORY_FLICKER":
+            return "inventory_flicker"
+
+        if event_type == "RELEASE_DATE_CHANGED":
+            return "release_radar"
+
+        if is_international:
+            return "international"
+
         if event_type == "PREORDER_LIVE":
             return "preorder"
 
         if event_type in {
-            "DISCOVERED",
             "PAGE_LIVE",
             "COMING_SOON",
         }:
@@ -290,10 +306,17 @@ def determine_alert_route(event):
         }:
             return "deal"
 
-        if event_type == "INVENTORY_FLICKER":
-            return "inventory_flicker"
+        # Major-retailer discoveries and verified online stock lifecycle
+        # events are part of the Free major-retailer route.
+        if event_type in {
+            "DISCOVERED",
+            "STOCK_AVAILABLE",
+            "RESTOCK",
+            "SOLD_OUT",
+        }:
+            return "major_retailer"
 
-        return "major_retailer"
+        return None
 
     if source_type == "simulation":
         return "major_retailer"
@@ -1100,6 +1123,7 @@ async def get_eligible_members(guild, event, alert_type, minimum_tier):
                 event_type=event_type,
                 alert_route=alert_type,
                 tier=tier,
+                region=event.get("region"),
             ):
                 continue
 
@@ -1384,7 +1408,7 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v1.0.5 started."
+        "Lotus Event Worker v1.0.6 started."
     )
 
     while not bot.is_closed():
