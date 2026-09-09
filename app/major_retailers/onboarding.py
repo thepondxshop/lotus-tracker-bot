@@ -34,7 +34,7 @@ from .registry import (
     normalize_retailer_key,
 )
 
-VERSION = "1.0.0"
+VERSION = "1.0.6"
 STEP = "6K-2A"
 STAGING_REASON = "MAJOR_RETAILER_STAGING"
 
