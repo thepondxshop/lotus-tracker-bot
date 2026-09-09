@@ -1,12 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
-Major Retailer Foundation
-Step 6K-1A
-
-This module defines the normalized contract for dedicated major-retailer
-integrations (Target, Walmart, Best Buy, GameStop, Costco, Sam's Club,
-Amazon, etc.). It deliberately does not contain retailer-specific scraping
-or API logic.
+Major Retailer normalized contract
+Step 6K-2C • Bot release 1.0.6
 
 Safety invariants:
 - UNKNOWN availability stays UNKNOWN.
@@ -23,7 +18,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
-VERSION = "1.0.0"
+VERSION = "1.0.6"
+STEP = "6K-2C"
 
 VALID_AVAILABILITY_STATES = {
     "IN_STOCK",
@@ -78,7 +74,7 @@ def _valid_http_url(value: Any) -> bool:
 
 @dataclass(frozen=True)
 class MajorRetailerCapabilityProfile:
-    """Capabilities verified for a specific retailer adapter/source."""
+    """Capabilities verified for a retailer adapter/source."""
 
     discovery: bool = False
     price: bool = False
@@ -89,6 +85,7 @@ class MajorRetailerCapabilityProfile:
     exact_inventory: bool = False
     purchase_limit: bool = False
     affiliate_links: bool = False
+    release_date: bool = False
 
     def availability_capability(self) -> str:
         if self.online_availability:
@@ -160,6 +157,7 @@ class MajorRetailerProduct:
     upc: str | None = None
     offer_id: str | None = None
     purchase_limit: int | None = None
+    release_date: str | None = None
 
     exact_inventory_quantity: int | None = None
     local_store_id: str | None = None
@@ -196,6 +194,10 @@ class MajorRetailerProduct:
         if availability_confidence not in VALID_CONFIDENCE:
             errors.append("INVALID_AVAILABILITY_CONFIDENCE")
 
+        lifecycle_confidence = _upper(self.lifecycle_confidence, "UNKNOWN")
+        if lifecycle_confidence not in VALID_CONFIDENCE:
+            errors.append("INVALID_LIFECYCLE_CONFIDENCE")
+
         source_confidence = _upper(self.source_confidence, "UNKNOWN")
         if source_confidence not in VALID_CONFIDENCE:
             errors.append("INVALID_SOURCE_CONFIDENCE")
@@ -227,6 +229,11 @@ class MajorRetailerProduct:
             except (TypeError, ValueError):
                 errors.append("INVALID_PURCHASE_LIMIT")
 
+        if self.release_date and not capabilities.release_date:
+            # Release-date metadata is capability gated just like stock. An
+            # adapter should not smuggle an unverified date into Release Radar.
+            errors.append("RELEASE_DATE_WITHOUT_VERIFIED_CAPABILITY")
+
         return errors
 
     def to_normalized_dict(
@@ -235,7 +242,7 @@ class MajorRetailerProduct:
         *,
         region: str = "US",
     ) -> dict[str, Any]:
-        """Convert into Lotus's existing normalized product/event contract."""
+        """Convert into Lotus's normalized product/event contract."""
 
         errors = self.validate(capabilities)
         if errors:
@@ -244,9 +251,11 @@ class MajorRetailerProduct:
         availability_state = _upper(self.availability_state, "UNKNOWN")
         lifecycle_state = _upper(self.lifecycle_state, "UNKNOWN")
 
-        # Capability gating is repeated here intentionally. A retailer adapter
-        # cannot force stock semantics simply by setting a field.
-        availability_known = bool(self.availability_known and capabilities.online_availability)
+        # Capability gating is repeated intentionally. An adapter cannot force
+        # stock semantics merely by populating fields.
+        availability_known = bool(
+            self.availability_known and capabilities.online_availability
+        )
         if not availability_known:
             availability_state = "UNKNOWN"
 
@@ -277,6 +286,11 @@ class MajorRetailerProduct:
             "major_retailer_key": _clean(self.retailer_key).lower(),
             "upc": _clean(self.upc) or None,
             "affiliate_url": _clean(self.affiliate_url) or None,
+            "release_date": (
+                _clean(self.release_date) or None
+                if capabilities.release_date
+                else None
+            ),
             "exact_inventory_quantity": (
                 int(self.exact_inventory_quantity)
                 if self.exact_inventory_quantity is not None and capabilities.exact_inventory
@@ -317,6 +331,11 @@ class MajorRetailerProduct:
                 else None
             ),
             "cart_base_url": None,
+            "release_date": (
+                _clean(self.release_date) or None
+                if capabilities.release_date
+                else None
+            ),
             "region": _upper(region, "US"),
             "source_type": "major_retailer",
             "retailer_key": _clean(self.retailer_key).lower(),
