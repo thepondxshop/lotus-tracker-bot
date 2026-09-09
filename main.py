@@ -216,14 +216,24 @@ from app.affiliate_feeds import (
 # =========================================================
 
 from app.major_retailers import (
+    demote_major_retailer,
     detect_major_retailer,
+    ensure_major_pipeline_schema,
+    get_major_pipeline_status,
+    get_major_promotion_gate,
     get_major_retailer_catalog_status,
     get_major_retailer_framework_status,
     get_major_retailer_onboarding_status,
+    list_major_pipeline_states,
     list_staged_major_retailers,
     probe_major_retailer,
+    promote_major_retailer,
+    run_major_retailer_monitor,
+    run_major_retailer_pipeline_scan,
     scan_major_retailer,
+    set_major_kill_switch,
     stage_major_retailer,
+    validate_major_retailer,
 )
 
 
@@ -267,7 +277,7 @@ from app.pokemon_center_products import (
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 1.0.5
+# Version 1.0.6
 #
 # Universal Retailer Foundation
 # Regional Product Families
@@ -1078,6 +1088,8 @@ class LotusTrackerBot(
 
         self.universal_retailer_monitor_task = None
 
+        self.major_retailer_monitor_task = None
+
 
     async def setup_hook(
         self,
@@ -1092,6 +1104,8 @@ class LotusTrackerBot(
             await init_database()
 
             await ensure_alert_preference_schema()
+
+            await ensure_major_pipeline_schema()
 
             self.database_ready = True
 
@@ -1194,6 +1208,20 @@ class LotusTrackerBot(
             "(capability-safe automatic mode)."
         )
 
+        # Step 6K-2C:
+        # The major-retailer worker is safe to start because it remains idle
+        # until a retailer passes validation and is explicitly promoted.
+        self.major_retailer_monitor_task = (
+            asyncio.create_task(
+                run_major_retailer_monitor()
+            )
+        )
+
+        print(
+            "Lotus Major Retailer Monitor task created "
+            "(promotion-gated; idle until production retailers exist)."
+        )
+
         synced = (
             await self.tree.sync()
         )
@@ -1228,7 +1256,7 @@ async def on_ready():
     )
 
     print(
-        "Version: 1.0.5"
+        "Version: 1.0.6"
     )
 
     print(
@@ -1270,7 +1298,7 @@ async def ping(
             f"Latency: "
             f"`{round(bot.latency * 1000)}ms`\n"
 
-            "**Version:** `1.0.5`"
+            "**Version:** `1.0.6`"
         ),
 
         ephemeral=True,
@@ -3302,7 +3330,7 @@ async def eventstatus(
 
             "**Auto Platform Fingerprinting:** \u2705\n\n"
 
-            "**Engine Version:** `1.0.5`"
+            "**Engine Version:** `1.0.6`"
         ),
     )
 
@@ -3353,7 +3381,7 @@ async def cleareventqueue(
 # =========================================================
 # UNIVERSAL RETAILER MANAGEMENT
 # PonDeX Trackers
-# Version 1.0.5
+# Version 1.0.6
 #
 # Current supported platform:
 # - Square / Weebly
@@ -3835,7 +3863,7 @@ async def feedstatus(
 
 # =========================================================
 # /MAJORSTATUS
-# Step 6K-2A — Major Retailer Auto-Onboarding Foundation
+# Step 6K-2C — Major Retailer Production Event Pipeline
 # =========================================================
 
 @bot.tree.command(
@@ -3847,23 +3875,23 @@ async def majorstatus(interaction):
     status = get_major_retailer_framework_status()
     catalog = get_major_retailer_catalog_status()
     onboarding = await get_major_retailer_onboarding_status()
+    pipeline = await get_major_pipeline_status()
 
     definitions = int(status.get("definitions_loaded", 0) or 0)
     adapters = int(status.get("adapters_registered", 0) or 0)
-    production_ready = sum(1 for item in catalog if item.get("production_ready"))
+    production_ready = int(pipeline.get("production_retailers", 0) or 0)
     staged = int(onboarding.get("staged_major_retailers", 0) or 0)
 
     embed = discord.Embed(
         title="🏬 Major Retailer Foundation",
         description=(
-            "Lotus now has a dedicated major-retailer framework plus safe domain "
-            "auto-detection and inactive staging. New major stores can be fingerprinted "
-            "and assigned a recommended adapter family without enabling monitoring."
+            "Lotus now has safe auto-onboarding plus a persistent production event pipeline. "
+            "Major retailers remain silent until they pass validation and are explicitly promoted."
         ),
     )
     embed.add_field(name="Framework", value="✅ READY", inline=True)
-    embed.add_field(name="Version", value=f"`{status.get('version', '1.4.0')}`", inline=True)
-    embed.add_field(name="Milestone", value=f"`{status.get('step', '6K-2A')}`", inline=True)
+    embed.add_field(name="Version", value=f"`{status.get('version', '1.0.6')}`", inline=True)
+    embed.add_field(name="Milestone", value=f"`{status.get('step', '6K-2C')}`", inline=True)
     embed.add_field(name="Retailer Definitions", value=f"`{definitions}`", inline=True)
     embed.add_field(name="Adapters Registered", value=f"`{adapters}`", inline=True)
     embed.add_field(name="Production Ready", value=f"`{production_ready}`", inline=True)
@@ -3880,7 +3908,7 @@ async def majorstatus(interaction):
     )
     embed.add_field(
         name="Background Monitoring",
-        value="🔒 Disabled for unvalidated major retailers",
+        value="✅ Promotion-gated • idle unless a retailer is in PRODUCTION",
         inline=True,
     )
     embed.add_field(
@@ -3903,7 +3931,17 @@ async def majorstatus(interaction):
         value="🎯 **Walmart** — dedicated controlled adapter milestone",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Auto-Onboarding")
+    embed.add_field(
+        name="Global Kill Switch",
+        value="🛑 ON" if pipeline.get("global_kill_switch") else "✅ OFF",
+        inline=True,
+    )
+    embed.add_field(
+        name="Promotion Rule",
+        value="Two clean persistent validations + health probe + staged store + unchanged adapter signature",
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2C Production Pipeline")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -3924,13 +3962,23 @@ async def majorretailers(interaction):
         staged_rows = await list_staged_major_retailers()
     except Exception:
         staged_rows = []
+    try:
+        pipeline_rows = await list_major_pipeline_states()
+    except Exception:
+        pipeline_rows = []
+    runtime_by_key = {str(row.get("retailer_key")): row for row in pipeline_rows}
 
     lines = []
     for item in catalog:
         adapter_ready = bool(item.get("adapter_registered"))
-        enabled = bool(item.get("enabled"))
-        if adapter_ready and enabled:
-            state = "🟢 Production Ready"
+        runtime = runtime_by_key.get(str(item.get("key"))) or {}
+        runtime_mode = str(runtime.get("mode") or "").upper()
+        if str(item.get("key")) == "target":
+            state = "⏸️ Parked — Official Source Required"
+        elif runtime_mode == "PRODUCTION" and not runtime.get("kill_switch"):
+            state = "🟢 Production"
+        elif runtime.get("kill_switch"):
+            state = "🛑 Kill Switch"
         elif adapter_ready:
             state = "🟡 Adapter / Validation Pending"
         else:
@@ -3987,7 +4035,7 @@ async def majorretailers(interaction):
         ),
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Auto-Onboarding")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2C Production Pipeline")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -4502,6 +4550,355 @@ async def majorscan(
         inline=False,
     )
     embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Controlled Scan")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# STEP 6K-2C — MAJOR RETAILER PRODUCTION EVENT PIPELINE
+# =========================================================
+
+def _major_gate_text(gate: dict) -> str:
+    if gate.get("ready"):
+        return "✅ READY FOR EXPLICIT PRODUCTION PROMOTION"
+    reasons = list(gate.get("reasons") or [])
+    if not reasons:
+        return "⚠️ Not ready"
+    return "\n".join(f"• `{reason}`" for reason in reasons[:12])
+
+
+@bot.tree.command(
+    name="majorpipeline",
+    description="View major-retailer production pipeline and promotion state.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorpipeline(
+    interaction,
+    retailer: str = "",
+):
+    await interaction.response.defer(ephemeral=True)
+    status = await get_major_pipeline_status()
+
+    if retailer.strip():
+        gate = await get_major_promotion_gate(retailer)
+        rows = await list_major_pipeline_states()
+        key = str(gate.get("retailer_key") or retailer)
+        row = next((item for item in rows if item.get("retailer_key") == key), {})
+
+        embed = discord.Embed(
+            title="🛡️ Major Retailer Production Gate",
+            description=f"Runtime state for **{gate.get('display_name') or key}**.",
+        )
+        embed.add_field(name="Retailer Key", value=f"`{key}`", inline=True)
+        embed.add_field(name="Mode", value=f"`{row.get('mode') or 'VALIDATION'}`", inline=True)
+        embed.add_field(
+            name="Kill Switch",
+            value="🛑 ON" if row.get("kill_switch") else "✅ OFF",
+            inline=True,
+        )
+        embed.add_field(
+            name="Baseline",
+            value="✅ Ready" if gate.get("baseline_ready") else "⚪ Not ready",
+            inline=True,
+        )
+        embed.add_field(
+            name="Validation Passes",
+            value=(
+                f"`{gate.get('validation_passes', 0)}/"
+                f"{gate.get('required_validation_passes', 2)}`"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Staged Store",
+            value=(f"`ID {gate.get('staged_store_id')}`" if gate.get("staged_store_id") else "⚪ Not staged"),
+            inline=True,
+        )
+        embed.add_field(name="Promotion Gate", value=_major_gate_text(gate)[:1024], inline=False)
+        embed.add_field(
+            name="Last Scan",
+            value=(
+                f"Accepted `{row.get('last_accepted', 0)}` • "
+                f"Rejected `{row.get('last_rejected', 0)}` • "
+                f"Candidate Events `{row.get('last_candidate_events', 0)}` • "
+                f"Emitted `{row.get('last_emitted_events', 0)}`"
+            ),
+            inline=False,
+        )
+        if row.get("last_error"):
+            embed.add_field(name="Last Note / Error", value=f"`{str(row.get('last_error'))[:950]}`", inline=False)
+        embed.set_footer(text="Lotus Major Retailer Pipeline • 6K-2C • v1.0.6")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    rows = await list_major_pipeline_states()
+    production = [
+        row for row in rows
+        if str(row.get("mode") or "").upper() == "PRODUCTION"
+        and not row.get("kill_switch")
+    ]
+    embed = discord.Embed(
+        title="🛡️ Major Retailer Production Pipeline",
+        description=(
+            "The worker is promotion-gated. Validation may persist safe baselines, "
+            "but product events are queued only for explicitly promoted retailers."
+        ),
+    )
+    embed.add_field(name="Pipeline", value="✅ READY", inline=True)
+    embed.add_field(name="Version", value=f"`{status.get('version', '1.0.6')}`", inline=True)
+    embed.add_field(name="Milestone", value=f"`{status.get('step', '6K-2C')}`", inline=True)
+    embed.add_field(
+        name="Global Kill Switch",
+        value="🛑 ON" if status.get("global_kill_switch") else "✅ OFF",
+        inline=True,
+    )
+    embed.add_field(name="Production Retailers", value=f"`{len(production)}`", inline=True)
+    embed.add_field(name="Runtime Rows", value=f"`{len(rows)}`", inline=True)
+    embed.add_field(name="Pending Event Outbox", value=f"`{status.get('pending_outbox_events', 0)}`", inline=True)
+    embed.add_field(
+        name="Safety Invariants",
+        value=(
+            "✅ Missing products never imply sold out\n"
+            "✅ UNKNOWN stock never emits stock lifecycle events\n"
+            "✅ Online/local inventory remain separate\n"
+            "✅ Adapter changes force revalidation\n"
+            "✅ 3 consecutive production failures auto-demote"
+        ),
+        inline=False,
+    )
+    if rows:
+        lines = []
+        for row in rows[:15]:
+            mode = str(row.get("mode") or "VALIDATION").upper()
+            icon = "🟢" if mode == "PRODUCTION" and not row.get("kill_switch") else "🟡"
+            if row.get("kill_switch"):
+                icon = "🛑"
+            lines.append(
+                f"{icon} `{row.get('retailer_key')}` • {mode} • "
+                f"validation `{row.get('validation_passes', 0)}/2`"
+            )
+        embed.add_field(name="Runtime Retailers", value="\n".join(lines)[:1024], inline=False)
+    embed.set_footer(text="Use /majorvalidate before /majorpromote")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="majorvalidate",
+    description="Persist a silent major-retailer baseline/validation scan. Never sends product alerts.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorvalidate(
+    interaction,
+    retailer: str,
+    limit: app_commands.Range[int, 1, 40] = 20,
+):
+    await interaction.response.defer(ephemeral=True)
+    result = await validate_major_retailer(retailer, limit=int(limit))
+
+    if not result.get("success"):
+        runtime = result.get("runtime") or {}
+        embed = discord.Embed(
+            title="⚠️ Major Retailer Validation Blocked",
+            description=f"Validation did not pass for `{result.get('retailer_key') or retailer}`.",
+        )
+        embed.add_field(name="Reason", value=f"`{str(result.get('error') or 'UNKNOWN')[:950]}`", inline=False)
+        if runtime:
+            embed.add_field(
+                name="Validation State",
+                value=f"Passes `{runtime.get('validation_passes', 0)}/2` • Baseline `{runtime.get('baseline_ready', False)}`",
+                inline=False,
+            )
+        probe = result.get("probe") or {}
+        if probe:
+            embed.add_field(
+                name="Health Probe",
+                value="✅ Passed" if probe.get("success") else "❌ Did not pass",
+                inline=True,
+            )
+        embed.add_field(name="Discord Product Alerts", value="🔇 `0` — validation is always silent", inline=False)
+        embed.set_footer(text="Lotus Major Retailer Pipeline • 6K-2C")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    runtime = result.get("runtime") or {}
+    gate = result.get("promotion_gate") or await get_major_promotion_gate(retailer)
+    embed = discord.Embed(
+        title="✅ Major Retailer Silent Validation",
+        description=(
+            f"Persistent validation completed for **{result.get('display_name') or retailer}**. "
+            "Snapshots were saved, but no product alerts were sent."
+        ),
+    )
+    embed.add_field(name="Accepted", value=f"`{result.get('accepted', 0)}`", inline=True)
+    embed.add_field(name="Rejected", value=f"`{result.get('rejected', 0)}`", inline=True)
+    embed.add_field(name="Snapshots Saved", value=f"`{result.get('snapshots_upserted', 0)}`", inline=True)
+    embed.add_field(
+        name="Initial Baseline",
+        value="🌱 Yes" if result.get("initial_baseline") else "No",
+        inline=True,
+    )
+    embed.add_field(
+        name="Validation Passes",
+        value=f"`{runtime.get('validation_passes', 0)}/2`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Candidate Events Suppressed",
+        value=f"`{result.get('events_suppressed_validation', 0)}`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Known Stock / Trusted Stock",
+        value=(
+            f"`{(result.get('quality_metrics') or {}).get('known_stock', 0)}` / "
+            f"`{(result.get('quality_metrics') or {}).get('trusted_stock', 0)}`"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Unknown Stock Safety",
+        value=(
+            f"`{result.get('unknown_stock_ignored', 0)}` known→unknown transitions ignored for sold-out logic"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Promotion Gate", value=_major_gate_text(gate)[:1024], inline=False)
+    embed.add_field(name="Discord Product Alerts", value="🔇 `0` — forced validation mode", inline=False)
+    embed.set_footer(text="Two clean validations + staged store + health probe are required before promotion")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="majorpromote",
+    description="Promote a fully validated major retailer to production monitoring.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorpromote(interaction, retailer: str):
+    await interaction.response.defer(ephemeral=True)
+    result = await promote_major_retailer(retailer)
+    if not result.get("success"):
+        gate = result.get("gate") or await get_major_promotion_gate(retailer)
+        embed = discord.Embed(
+            title="🔒 Major Retailer Promotion Blocked",
+            description="Lotus refused to activate this retailer because the production gate is not satisfied.",
+        )
+        embed.add_field(name="Retailer", value=f"`{result.get('retailer_key') or retailer}`", inline=True)
+        embed.add_field(name="Gate", value=_major_gate_text(gate)[:1024], inline=False)
+        embed.set_footer(text="There is no force/bypass promotion path in 6K-2C")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🟢 Major Retailer Promoted",
+        description=(
+            f"`{result.get('retailer_key')}` is now eligible for the background major-retailer worker. "
+            "Only capability-safe state changes can become Lotus events."
+        ),
+    )
+    embed.add_field(name="Mode", value="`PRODUCTION`", inline=True)
+    embed.add_field(name="Kill Switch", value="✅ OFF", inline=True)
+    embed.add_field(name="Missing Product Inference", value="🔒 Disabled", inline=True)
+    embed.set_footer(text="Use /majorkill immediately if a retailer source becomes unreliable")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="majordemote",
+    description="Return a major retailer to silent validation mode.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majordemote(
+    interaction,
+    retailer: str,
+    reason: str = "MANUAL_DEMOTION",
+):
+    await interaction.response.defer(ephemeral=True)
+    result = await demote_major_retailer(retailer, reason=reason)
+    await interaction.followup.send(
+        (
+            f"🟡 `{result.get('retailer_key') or retailer}` is now in `VALIDATION` mode.\n"
+            "Background production events are disabled; saved baselines are preserved."
+        ),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="majorkill",
+    description="Turn the major-retailer emergency kill switch on/off for one retailer or all.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorkill(
+    interaction,
+    retailer: str,
+    enabled: bool,
+):
+    await interaction.response.defer(ephemeral=True)
+    result = await set_major_kill_switch(retailer, enabled)
+    if not result.get("success"):
+        await interaction.followup.send(
+            f"❌ Kill-switch update failed: `{result.get('error') or 'UNKNOWN'}`",
+            ephemeral=True,
+        )
+        return
+    scope = result.get("scope")
+    target = "ALL MAJOR RETAILERS" if scope == "GLOBAL" else f"`{result.get('retailer_key')}`"
+    await interaction.followup.send(
+        f"{'🛑' if enabled else '✅'} Kill switch **{'ON' if enabled else 'OFF'}** for {target}.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="majorrun",
+    description="Run the persistent pipeline now; events emit only if the retailer is promoted.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def majorrun(
+    interaction,
+    retailer: str,
+    limit: app_commands.Range[int, 1, 40] = 20,
+):
+    await interaction.response.defer(ephemeral=True)
+    result = await run_major_retailer_pipeline_scan(
+        retailer,
+        limit=int(limit),
+        force_validation=False,
+    )
+    if not result.get("success"):
+        await interaction.followup.send(
+            (
+                "❌ Major pipeline scan failed.\n\n"
+                f"Retailer: `{result.get('retailer_key') or retailer}`\n"
+                f"Reason: `{str(result.get('error') or 'UNKNOWN')[:900]}`"
+            ),
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title="⚙️ Major Retailer Pipeline Run",
+        description=f"Completed for **{result.get('display_name') or retailer}**.",
+    )
+    embed.add_field(name="Mode", value=f"`{result.get('pipeline_mode')}`", inline=True)
+    embed.add_field(name="Accepted", value=f"`{result.get('accepted', 0)}`", inline=True)
+    embed.add_field(name="Snapshots", value=f"`{result.get('snapshots_upserted', 0)}`", inline=True)
+    embed.add_field(name="Candidate Events", value=f"`{result.get('candidate_events', 0)}`", inline=True)
+    embed.add_field(name="Events Emitted", value=f"`{result.get('events_emitted', 0)}`", inline=True)
+    embed.add_field(name="Outbox Pending", value=f"`{result.get('outbox_pending', 0)}`", inline=True)
+    embed.add_field(name="Validation-Suppressed", value=f"`{result.get('events_suppressed_validation', 0)}`", inline=True)
+    embed.add_field(name="Capability-Blocked", value=f"`{result.get('events_blocked_capability', 0)}`", inline=True)
+    embed.add_field(name="Confidence-Blocked", value=f"`{result.get('events_blocked_confidence', 0)}`", inline=True)
+    embed.add_field(name="Cooldown-Blocked", value=f"`{result.get('events_blocked_cooldown', 0)}`", inline=True)
+    embed.add_field(
+        name="Safety",
+        value=(
+            "Missing products → no stock inference\n"
+            "UNKNOWN availability → no stock lifecycle event\n"
+            "Local inventory → not mixed with online inventory"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Pipeline • 6K-2C • v1.0.6")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -8251,7 +8648,7 @@ async def testalert(
                 f"Route: "
                 f"`{alert_type}`\n"
 
-                "Version: `1.0.5`"
+                "Version: `1.0.6`"
             ),
         )
     )
@@ -8340,6 +8737,17 @@ async def status(
         bool(universal_status.get("running"))
     )
 
+    major_pipeline_status = await get_major_pipeline_status()
+
+    major_monitor_online = (
+        bot.major_retailer_monitor_task
+        is not None
+        and
+        not bot.major_retailer_monitor_task.done()
+        and
+        bool(major_pipeline_status.get("running"))
+    )
+
     embed = discord.Embed(
 
         title="\U0001f7e2 Lotus Tracker Bot Status",
@@ -8383,7 +8791,13 @@ async def status(
             f"**Universal Timeouts Last Cycle:** "
             f"`{universal_status.get('last_completed_store_timeouts', 0)}`\n"
             f"**Universal Stock Events Blocked Last Cycle:** "
-            f"`{universal_status.get('last_completed_stock_events_blocked', 0)}`\n\n"
+            f"`{universal_status.get('last_completed_stock_events_blocked', 0)}`\n"
+            f"**Major Retailer Monitor:** "
+            f"{'✅ Promotion-Gated' if major_monitor_online else '❌ Offline'}\n"
+            f"**Major Retailers in Production:** "
+            f"`{major_pipeline_status.get('production_retailers', 0)}`\n"
+            f"**Major Global Kill Switch:** "
+            f"{'🛑 ON' if major_pipeline_status.get('global_kill_switch') else '✅ OFF'}\n\n"
 
             "**Strict TCG Classification:** \u2705\n"
 
@@ -8450,7 +8864,7 @@ async def status(
             f"**Redis Queue:** "
             f"`{queue}`\n\n"
 
-            "**Version:** `1.0.5`"
+            "**Version:** `1.0.6`"
         ),
     )
 
