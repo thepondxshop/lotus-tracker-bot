@@ -83,6 +83,19 @@ from app.family_preference_service import (
 
 
 # =========================================================
+# TIER-AWARE ALERT-TYPE PREFERENCES
+# Step 6K-2B
+# =========================================================
+
+from app.alert_preference_service import (
+    ensure_alert_preference_schema,
+    get_alert_preferences,
+    get_available_alert_definitions,
+    save_alert_preferences_for_tier,
+)
+
+
+# =========================================================
 # PRICING REFERENCES
 # =========================================================
 
@@ -203,10 +216,14 @@ from app.affiliate_feeds import (
 # =========================================================
 
 from app.major_retailers import (
+    detect_major_retailer,
     get_major_retailer_catalog_status,
     get_major_retailer_framework_status,
+    get_major_retailer_onboarding_status,
+    list_staged_major_retailers,
     probe_major_retailer,
     scan_major_retailer,
+    stage_major_retailer,
 )
 
 
@@ -250,7 +267,7 @@ from app.pokemon_center_products import (
 # =========================================================
 # LOTUS TRACKER BOT
 # PonDeX Trackers
-# Version 1.0.4
+# Version 1.0.5
 #
 # Universal Retailer Foundation
 # Regional Product Families
@@ -1074,6 +1091,8 @@ class LotusTrackerBot(
 
             await init_database()
 
+            await ensure_alert_preference_schema()
+
             self.database_ready = True
 
             print(
@@ -1209,7 +1228,7 @@ async def on_ready():
     )
 
     print(
-        "Version: 1.0.4"
+        "Version: 1.0.5"
     )
 
     print(
@@ -1251,7 +1270,7 @@ async def ping(
             f"Latency: "
             f"`{round(bot.latency * 1000)}ms`\n"
 
-            "**Version:** `1.0.4`"
+            "**Version:** `1.0.5`"
         ),
 
         ephemeral=True,
@@ -1386,183 +1405,251 @@ async def setupgames(
 
 
 # =========================================================
+# TIER-AWARE ALERT PREFERENCE UI
+# Step 6K-2B
+#
+# Important Discord detail:
+# Slash-command boolean parameters are static for every member, so they
+# cannot truly hide Premium/Premium+ options from Free/Lite members.
+# The runtime Select menu below is generated after Lotus knows the member's
+# tier, which means unavailable controls genuinely do not appear.
+# =========================================================
+
+PRODUCT_PREF_LABELS = {
+    "SEALED": ("Sealed Products", "📦"),
+    "SINGLE": ("Singles", "🃏"),
+    "ACCESSORY": ("Accessories", "🧰"),
+    "UNKNOWN": ("Unknown Product Types", "❓"),
+}
+
+
+class LotusProductPreferenceSelect(discord.ui.Select):
+    def __init__(self, member: discord.Member, game: str, current: dict):
+        self.owner_id = member.id
+        self.game = game
+        options = []
+        for key, (label, emoji) in PRODUCT_PREF_LABELS.items():
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=key,
+                    emoji=emoji,
+                    default=bool(current.get(key, False)),
+                )
+            )
+        super().__init__(
+            placeholder="Product types — select everything you want...",
+            min_values=0,
+            max_values=len(options),
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ These preferences belong to another member.", ephemeral=True
+            )
+            return
+        selected = set(self.values)
+        preferences = {
+            key: key in selected
+            for key in PRODUCT_PREF_LABELS
+        }
+        try:
+            await save_product_preferences(
+                discord_user_id=self.owner_id,
+                game=self.game,
+                preferences=preferences,
+            )
+            role_errors = await apply_member_preference_roles(
+                interaction.user,
+                self.game,
+                preferences,
+            )
+            message = f"✅ **{self.game} product preferences saved.**"
+            if role_errors:
+                message += "\n\n⚠️ " + " • ".join(role_errors[:5])
+            await interaction.response.send_message(message, ephemeral=True)
+        except Exception as error:
+            await interaction.response.send_message(
+                f"❌ Product preferences could not be saved.\n`{type(error).__name__}: {error}`",
+                ephemeral=True,
+            )
+
+
+class LotusAlertTypePreferenceSelect(discord.ui.Select):
+    def __init__(
+        self,
+        member: discord.Member,
+        game: str,
+        tier: str,
+        current: dict,
+    ):
+        self.owner_id = member.id
+        self.game = game
+        self.panel_tier = tier
+        definitions = get_available_alert_definitions(tier)
+        options = [
+            discord.SelectOption(
+                label=item.label,
+                value=item.key,
+                description=item.description[:100],
+                emoji=item.emoji,
+                default=bool(current.get(item.key, True)),
+            )
+            for item in definitions
+        ]
+        self.visible_keys = {item.key for item in definitions}
+        super().__init__(
+            placeholder=f"Alert notifications available on {tier}...",
+            min_values=0,
+            max_values=len(options),
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ These preferences belong to another member.", ephemeral=True
+            )
+            return
+        current_tier = get_subscription(interaction.user)
+        selected = set(self.values)
+        try:
+            await save_alert_preferences_for_tier(
+                discord_user_id=self.owner_id,
+                game=self.game,
+                selected_keys=selected,
+                tier=current_tier,
+            )
+            if current_tier != self.panel_tier:
+                note = (
+                    f"\n\nℹ️ Your tier is now **{current_tier}**. "
+                    "Run `/alertprefs` again to refresh the visible options."
+                )
+            else:
+                note = ""
+            await interaction.response.send_message(
+                f"✅ **{self.game} alert notifications saved.**{note}",
+                ephemeral=True,
+            )
+        except Exception as error:
+            await interaction.response.send_message(
+                f"❌ Alert preferences could not be saved.\n`{type(error).__name__}: {error}`",
+                ephemeral=True,
+            )
+
+
+class LotusAlertPreferenceView(discord.ui.View):
+    def __init__(
+        self,
+        member: discord.Member,
+        game: str,
+        tier: str,
+        product_preferences: dict,
+        alert_preferences: dict,
+    ):
+        super().__init__(timeout=300)
+        self.add_item(
+            LotusProductPreferenceSelect(
+                member,
+                game,
+                product_preferences,
+            )
+        )
+        self.add_item(
+            LotusAlertTypePreferenceSelect(
+                member,
+                game,
+                tier,
+                alert_preferences,
+            )
+        )
+
+
+# =========================================================
 # /ALERTPREFS
 # =========================================================
 
 @bot.tree.command(
     name="alertprefs",
-    description="Choose which product types alert you for a TCG.",
+    description="Choose product and notification alerts for a TCG.",
 )
-@app_commands.choices(
-    game=GAME_CHOICES,
-)
+@app_commands.choices(game=GAME_CHOICES)
 async def alertprefs(
     interaction,
     game: app_commands.Choice[str],
-    sealed: bool = True,
-    singles: bool = False,
-    accessories: bool = False,
-    unknown: bool = True,
 ):
-
-    member = (
-        interaction.user
-    )
-
-    if not isinstance(
-        member,
-        discord.Member,
-    ):
-
+    member = interaction.user
+    if not isinstance(member, discord.Member):
         await interaction.response.send_message(
-
-            "\u274c Use this inside the server.",
-
-            ephemeral=True,
+            "❌ Use this inside the server.", ephemeral=True
         )
-
         return
 
-    await interaction.response.defer(
-        ephemeral=True
-    )
+    await interaction.response.defer(ephemeral=True)
 
-    followed_games = (
-        get_followed_games(
-            member
-        )
-    )
-
-    if (
-        game.value
-        not in followed_games
-    ):
-
+    if game.value not in get_followed_games(member):
         await interaction.followup.send(
-
-            (
-                f"\u274c You are not currently following "
-                f"**{game.value}**.\n\n"
-
-                "Use `/games` first."
-            ),
-
+            f"❌ You are not currently following **{game.value}**.\n\nUse `/games` first.",
             ephemeral=True,
         )
-
         return
-
-    preferences = {
-
-        "SEALED":
-            sealed,
-
-        "SINGLE":
-            singles,
-
-        "ACCESSORY":
-            accessories,
-
-        "UNKNOWN":
-            unknown,
-    }
 
     try:
+        tier = get_subscription(member)
+        product_preferences = await get_product_preferences(member.id, game.value)
+        alert_preferences = await get_alert_preferences(member.id, game.value)
+        visible = get_available_alert_definitions(tier)
 
-        await save_product_preferences(
-
-            discord_user_id=(
-                member.id
-            ),
-
-            game=(
-                game.value
-            ),
-
-            preferences=(
-                preferences
-            ),
+        enabled_count = sum(
+            1 for item in visible
+            if alert_preferences.get(item.key, True)
         )
 
-        role_errors = (
-            await apply_member_preference_roles(
+        embed = discord.Embed(
+            title=f"⚙️ {game.value} Alert Preferences",
+            description=(
+                f"**Subscription:** {tier}\n\n"
+                "Use the first menu for product types and the second menu for "
+                "notification types. Changes save immediately.\n\n"
+                "**Tier-aware controls:** Lotus only shows alert types included "
+                "with your current subscription. Hidden higher-tier settings are "
+                "still backend-blocked and are not erased if you downgrade."
+            ),
+        )
+        embed.add_field(
+            name="Notification Types",
+            value=f"`{enabled_count}/{len(visible)}` currently enabled",
+            inline=True,
+        )
+        embed.add_field(
+            name="Sold-Out Alerts",
+            value=(
+                "✅ On" if alert_preferences.get("SOLD_OUT", True) else "❌ Off"
+            ),
+            inline=True,
+        )
+        embed.set_footer(
+            text="Available + Enabled = Effective • Backend tier enforcement always applies"
+        )
 
+        await interaction.followup.send(
+            embed=embed,
+            view=LotusAlertPreferenceView(
                 member,
-
                 game.value,
-
-                preferences,
-            )
-        )
-
-        message = (
-
-            f"\u2699\ufe0f **{game.value} Product Preferences**\n\n"
-
-            f"{'\u2705' if sealed else '\u274c'} "
-            "Sealed Products\n"
-
-            f"{'\u2705' if singles else '\u274c'} "
-            "Singles\n"
-
-            f"{'\u2705' if accessories else '\u274c'} "
-            "Accessories\n"
-
-            f"{'\u2705' if unknown else '\u274c'} "
-            "Unknown Product Types\n\n"
-
-            "\U0001f4be Saved to Lotus.\n\n"
-
-            "Use `/familyprefs` to separately choose "
-            "English, Japanese, Korean, and Chinese products."
-        )
-
-        if role_errors:
-
-            message += (
-                "\n\n\u26a0\ufe0f **Role warnings:**\n"
-            )
-
-            message += "\n".join(
-
-                f"\u2022 {error}"
-
-                for error
-                in role_errors
-            )
-
-        await interaction.followup.send(
-
-            message,
-
-            ephemeral=True,
-        )
-
-    except discord.Forbidden:
-
-        await interaction.followup.send(
-
-            (
-                "\u274c Lotus cannot manage its alert roles.\n\n"
-
-                "Give the Lotus bot role **Manage Roles** "
-                "and place it above the Lotus alert roles."
+                tier,
+                product_preferences,
+                alert_preferences,
             ),
-
             ephemeral=True,
         )
-
     except Exception as error:
-
         await interaction.followup.send(
-
-            (
-                "\u274c Preferences could not be saved.\n\n"
-
-                f"`{type(error).__name__}: "
-                f"{error}`"
-            ),
-
+            f"❌ Preferences could not be loaded.\n`{type(error).__name__}: {error}`",
             ephemeral=True,
         )
 
@@ -1573,45 +1660,64 @@ async def alertprefs(
 
 @bot.tree.command(
     name="myprefs",
-    description="View your Lotus product-type preferences.",
+    description="View your Lotus preferences for a TCG.",
 )
-@app_commands.choices(
-    game=GAME_CHOICES,
-)
+@app_commands.choices(game=GAME_CHOICES)
 async def myprefs(
     interaction,
     game: app_commands.Choice[str],
 ):
-
-    preferences = (
-        await get_product_preferences(
-
-            interaction.user.id,
-
-            game.value,
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        await interaction.response.send_message(
+            "❌ Use this inside the server.", ephemeral=True
         )
-    )
+        return
 
-    await interaction.response.send_message(
+    await interaction.response.defer(ephemeral=True)
 
-        (
-            f"\u2699\ufe0f **{game.value} Product Preferences**\n\n"
+    try:
+        tier = get_subscription(member)
+        product_preferences = await get_product_preferences(member.id, game.value)
+        alert_preferences = await get_alert_preferences(member.id, game.value)
+        visible = get_available_alert_definitions(tier)
 
-            f"{'\u2705' if preferences['SEALED'] else '\u274c'} "
-            "Sealed Products\n"
+        product_lines = []
+        for key, (label, _) in PRODUCT_PREF_LABELS.items():
+            product_lines.append(
+                f"{'✅' if product_preferences.get(key, False) else '❌'} {label}"
+            )
 
-            f"{'\u2705' if preferences['SINGLE'] else '\u274c'} "
-            "Singles\n"
+        alert_lines = []
+        for item in visible:
+            alert_lines.append(
+                f"{'✅' if alert_preferences.get(item.key, True) else '❌'} "
+                f"{item.emoji} {item.label}"
+            )
 
-            f"{'\u2705' if preferences['ACCESSORY'] else '\u274c'} "
-            "Accessories\n"
-
-            f"{'\u2705' if preferences['UNKNOWN'] else '\u274c'} "
-            "Unknown Product Types"
-        ),
-
-        ephemeral=True,
-    )
+        embed = discord.Embed(
+            title=f"⚙️ {game.value} Preferences",
+            description=(
+                f"**Subscription:** {tier}\n"
+                "Only notification controls included with your tier are shown."
+            ),
+        )
+        embed.add_field(
+            name="Product Types",
+            value="\n".join(product_lines),
+            inline=False,
+        )
+        embed.add_field(
+            name="Alert Notifications",
+            value="\n".join(alert_lines) if alert_lines else "None available",
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as error:
+        await interaction.followup.send(
+            f"❌ Preferences could not be loaded.\n`{type(error).__name__}: {error}`",
+            ephemeral=True,
+        )
 
 
 # =========================================================
@@ -3196,7 +3302,7 @@ async def eventstatus(
 
             "**Auto Platform Fingerprinting:** \u2705\n\n"
 
-            "**Engine Version:** `1.0.4`"
+            "**Engine Version:** `1.0.5`"
         ),
     )
 
@@ -3247,7 +3353,7 @@ async def cleareventqueue(
 # =========================================================
 # UNIVERSAL RETAILER MANAGEMENT
 # PonDeX Trackers
-# Version 1.0.4
+# Version 1.0.5
 #
 # Current supported platform:
 # - Square / Weebly
@@ -3729,7 +3835,7 @@ async def feedstatus(
 
 # =========================================================
 # /MAJORSTATUS
-# Step 6K-1C2 — Target Silent Validation
+# Step 6K-2A — Major Retailer Auto-Onboarding Foundation
 # =========================================================
 
 @bot.tree.command(
@@ -3740,28 +3846,41 @@ async def feedstatus(
 async def majorstatus(interaction):
     status = get_major_retailer_framework_status()
     catalog = get_major_retailer_catalog_status()
+    onboarding = await get_major_retailer_onboarding_status()
 
     definitions = int(status.get("definitions_loaded", 0) or 0)
     adapters = int(status.get("adapters_registered", 0) or 0)
     production_ready = sum(1 for item in catalog if item.get("production_ready"))
+    staged = int(onboarding.get("staged_major_retailers", 0) or 0)
 
     embed = discord.Embed(
         title="🏬 Major Retailer Foundation",
         description=(
-            "Lotus's dedicated major-retailer framework is installed. "
-            "Step 6K-1C2 adds the Target adapter for controlled silent validation. "
-            "No background major-retailer polling, database writes, or product alerts are enabled yet."
+            "Lotus now has a dedicated major-retailer framework plus safe domain "
+            "auto-detection and inactive staging. New major stores can be fingerprinted "
+            "and assigned a recommended adapter family without enabling monitoring."
         ),
     )
     embed.add_field(name="Framework", value="✅ READY", inline=True)
-    embed.add_field(name="Version", value=f"`{status.get('version', '1.0.0')}`", inline=True)
-    embed.add_field(name="Milestone", value=f"`{status.get('step', '6K-1A')}`", inline=True)
+    embed.add_field(name="Version", value=f"`{status.get('version', '1.4.0')}`", inline=True)
+    embed.add_field(name="Milestone", value=f"`{status.get('step', '6K-2A')}`", inline=True)
     embed.add_field(name="Retailer Definitions", value=f"`{definitions}`", inline=True)
     embed.add_field(name="Adapters Registered", value=f"`{adapters}`", inline=True)
     embed.add_field(name="Production Ready", value=f"`{production_ready}`", inline=True)
+    embed.add_field(name="Database-Staged", value=f"`{staged}`", inline=True)
+    embed.add_field(
+        name="Auto Detection",
+        value="✅ Domain + storefront fingerprint + adapter-family recommendation",
+        inline=False,
+    )
+    embed.add_field(
+        name="Autonomous Shop Discovery",
+        value="🔒 Not enabled yet — candidate discovery from release/community intelligence comes later",
+        inline=False,
+    )
     embed.add_field(
         name="Background Monitoring",
-        value="🔒 Disabled by design",
+        value="🔒 Disabled for unvalidated major retailers",
         inline=True,
     )
     embed.add_field(
@@ -3771,31 +3890,40 @@ async def majorstatus(interaction):
     )
     embed.add_field(
         name="Inventory Separation",
-        value="✅ Online stock and local-store stock are separate capabilities",
+        value="✅ Online stock and local-store stock remain separate capabilities",
         inline=False,
     )
     embed.add_field(
         name="Target",
-        value="🟡 **Adapter installed** — run `/majorprobe retailer:target`, then `/majorscan retailer:target`",
+        value="⏸️ Parked — Redsky CAPTCHA path retired; official feed/partner path required later",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
+    embed.add_field(
+        name="Next Adapter",
+        value="🎯 **Walmart** — dedicated controlled adapter milestone",
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Auto-Onboarding")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # =========================================================
 # /MAJORRETAILERS
-# Step 6K-1A — Planned Dedicated Retailers
+# Step 6K-2A — Planned + Database-Staged Major Retailers
 # =========================================================
 
 @bot.tree.command(
     name="majorretailers",
-    description="List major retailers planned for dedicated Lotus adapters.",
+    description="List planned and staged major retailers.",
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def majorretailers(interaction):
     catalog = get_major_retailer_catalog_status()
+    try:
+        staged_rows = await list_staged_major_retailers()
+    except Exception:
+        staged_rows = []
 
     lines = []
     for item in catalog:
@@ -3817,17 +3945,279 @@ async def majorretailers(interaction):
         title="🏪 Lotus Major Retailers",
         description="\n\n".join(lines) if lines else "No retailer definitions loaded.",
     )
+
+    if staged_rows:
+        staged_lines = []
+        for row in staged_rows:
+            staged_lines.append(
+                f"**ID {row.get('store_id')} — {row.get('name')}** • `{row.get('domain')}` • "
+                f"`{row.get('region')}` • {'🟢 Active' if row.get('active') else '⚫ Inactive'}"
+            )
+
+        chunks = []
+        current = ""
+        for line in staged_lines:
+            candidate = line if not current else current + "\n" + line
+            if len(candidate) > 900:
+                if current:
+                    chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+
+        for index, chunk in enumerate(chunks[:4], start=1):
+            label = "Database-Staged Major Retailers" if index == 1 else f"Database-Staged ({index})"
+            embed.add_field(name=label, value=chunk, inline=False)
+
     embed.add_field(
-        name="Safety",
+        name="Quick Add",
         value=(
-            "Retailers are not activated by appearing in this list. Each one "
-            "must receive its own adapter, controlled silent validation, and "
-            "explicit production enablement."
+            "Use `/detectmajorretailer domain:<domain>` for a read-only fingerprint, then "
+            "`/addmajorretailer name:<name> domain:<domain> region:<region>` to stage it inactive."
         ),
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
+    embed.add_field(
+        name="Safety",
+        value=(
+            "Detection/staging never activates a retailer. Each retailer still needs an approved adapter/feed, "
+            "controlled silent validation, and explicit production enablement."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Auto-Onboarding")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# /DETECTMAJORRETAILER
+# Step 6K-2A — Read-Only Major Store Fingerprinting
+# =========================================================
+
+@bot.tree.command(
+    name="detectmajorretailer",
+    description="Fingerprint a major retailer domain and recommend its Lotus adapter strategy.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def detectmajorretailer(
+    interaction,
+    domain: str,
+    region: str = "US",
+):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        result = await detect_major_retailer(domain, region=region)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        await interaction.followup.send(
+            f"❌ Major retailer detection failed.\n\n`{type(error).__name__}: {str(error)[:850]}`",
+            ephemeral=True,
+        )
+        return
+
+    known = bool(result.get("known_retailer"))
+    adapter = bool(result.get("adapter_registered"))
+    reusable = bool(result.get("reusable_family"))
+
+    if adapter:
+        title = "✅ Major Retailer Adapter Recognized"
+    elif known:
+        title = "🧠 Known Major Retailer Detected"
+    elif reusable:
+        title = "🧩 Reusable Major Retailer Family Detected"
+    else:
+        title = "🔎 Major Retailer Needs Adapter Review"
+
+    embed = discord.Embed(
+        title=title,
+        description=(
+            "Read-only detection completed. No Store row was created and no monitoring or alerts were enabled."
+        ),
+    )
+    embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=False)
+    embed.add_field(
+        name="Catalog Match",
+        value=(
+            f"✅ {result.get('display_name')} (`{result.get('retailer_key')}`)"
+            if known
+            else "⚪ New / not in built-in catalog"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Underlying Platform",
+        value=f"`{result.get('underlying_platform_label') or 'Unknown'}`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Fingerprint",
+        value=f"`{result.get('platform_confidence')}` • Score `{result.get('platform_score', 0)}`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Homepage Probe",
+        value=(
+            f"HTTP `{result.get('homepage_status')}`"
+            if result.get("homepage_status") is not None
+            else "`UNKNOWN`"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Recommended Strategy",
+        value=f"`{result.get('recommended_strategy')}`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Adapter Family",
+        value=(
+            f"{'✅ Reusable' if reusable else '🛠️ Custom'} — "
+            f"**{result.get('adapter_family_name')}** (`{result.get('adapter_family_key')}`)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Dedicated Adapter",
+        value="✅ Registered" if adapter else "⚪ Not registered",
+        inline=True,
+    )
+    embed.add_field(
+        name="Affiliate Provider",
+        value=f"`{result.get('affiliate_provider') or 'UNKNOWN / NOT CONFIGURED'}`",
+        inline=True,
+    )
+
+    signals = [str(x) for x in (result.get("platform_signals") or [])[:6]]
+    if signals:
+        embed.add_field(
+            name="Fingerprint Signals",
+            value="\n".join(f"• {signal}" for signal in signals)[:1000],
+            inline=False,
+        )
+    errors = [str(x) for x in (result.get("platform_errors") or [])[:4]]
+    if errors:
+        embed.add_field(
+            name="Probe Notes",
+            value="\n".join(f"• {error}" for error in errors)[:1000],
+            inline=False,
+        )
+
+    embed.add_field(
+        name="Next Step",
+        value=str(result.get("next_step") or "Review the detection result.")[:1000],
+        inline=False,
+    )
+    embed.add_field(
+        name="Safety",
+        value="🔒 Read-only detection — no database write, background monitoring, or Discord product alert.",
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Detection")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# /ADDMAJORRETAILER
+# Step 6K-2A — Detect + Persist Inactive Major Retailer
+# =========================================================
+
+@bot.tree.command(
+    name="addmajorretailer",
+    description="Auto-detect and stage a major retailer inactive for adapter review.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def addmajorretailer(
+    interaction,
+    name: str,
+    domain: str,
+    region: str = "US",
+):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        result = await stage_major_retailer(name=name, domain=domain, region=region)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        await interaction.followup.send(
+            f"❌ Major retailer could not be staged.\n\n`{type(error).__name__}: {str(error)[:850]}`",
+            ephemeral=True,
+        )
+        return
+
+    detection = dict(result.get("detection") or {})
+    created = bool(result.get("created"))
+    adapter = bool(detection.get("adapter_registered"))
+
+    embed = discord.Embed(
+        title=(
+            "✅ Major Retailer Staged"
+            if created
+            else "⚠️ Retailer Already Registered"
+        ),
+        description=(
+            f"**{result.get('store_name')}** is stored in Lotus as an inactive major retailer. "
+            "Detection does not grant monitoring capability or send alerts."
+            if created
+            else "Lotus found an existing Store row for this domain, so no duplicate was created."
+        ),
+    )
+    embed.add_field(name="Store ID", value=f"`{result.get('store_id')}`", inline=True)
+    embed.add_field(name="Region", value=f"`{result.get('region')}`", inline=True)
+    embed.add_field(name="Monitoring", value="🔒 Inactive", inline=True)
+    embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=False)
+    embed.add_field(
+        name="Catalog Match",
+        value=(
+            f"✅ {detection.get('display_name')} (`{detection.get('retailer_key')}`)"
+            if detection.get("known_retailer")
+            else "⚪ New major retailer"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Underlying Platform",
+        value=f"`{detection.get('underlying_platform_label') or 'Unknown'}`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Adapter Strategy",
+        value=f"`{detection.get('recommended_strategy') or 'REVIEW'}`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Reusable Family",
+        value=(
+            f"✅ `{detection.get('adapter_family_key')}`"
+            if detection.get("reusable_family")
+            else f"🛠️ `{detection.get('adapter_family_key') or 'CUSTOM_MAJOR'}`"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Dedicated Adapter",
+        value="✅ Registered" if adapter else "⚪ Pending",
+        inline=True,
+    )
+    embed.add_field(name="Discord Alerts", value="🔇 Disabled", inline=True)
+    embed.add_field(name="Database Persistence", value="✅ Staging row only", inline=True)
+    embed.add_field(
+        name="Next Step",
+        value=str(detection.get("next_step") or "Build and silently validate an adapter.")[:1000],
+        inline=False,
+    )
+    embed.add_field(
+        name="Safety",
+        value=(
+            "No product polling starts from this command. New stores remain inactive until a trustworthy "
+            "adapter/feed is installed, silently validated, and explicitly enabled."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Safe Staging")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # =========================================================
@@ -3864,7 +4254,7 @@ async def majorprobe(interaction, retailer: str):
         embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
         embed.add_field(name="Network Requests", value="`0`", inline=True)
         embed.add_field(name="Next Step", value="Build and silently validate the retailer adapter.", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -3898,7 +4288,7 @@ async def majorprobe(interaction, retailer: str):
     )
     if result.get("error"):
         embed.add_field(name="Error", value=f"`{str(result.get('error'))[:900]}`", inline=False)
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -3942,7 +4332,7 @@ async def majorscan(
         embed.add_field(name="Retailer Key", value=f"`{result.get('retailer_key')}`", inline=True)
         embed.add_field(name="Domain", value=f"`{result.get('domain')}`", inline=True)
         embed.add_field(name="Discord Alerts", value="🔇 Disabled", inline=True)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -3954,7 +4344,7 @@ async def majorscan(
         embed.add_field(name="Retailer", value=f"`{result.get('retailer_key') or retailer}`", inline=True)
         embed.add_field(name="Reason", value=f"`{str(result.get('error') or 'UNKNOWN')[:900]}`", inline=False)
         embed.add_field(name="Safety", value="🔇 No database writes or Discord product alerts were allowed.", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2")
+        embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -4111,7 +4501,7 @@ async def majorscan(
         value="🔇 Forced silent validation — no database persistence and no Discord product alerts.",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-1C2 Target Adapter")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Controlled Scan")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -7861,7 +8251,7 @@ async def testalert(
                 f"Route: "
                 f"`{alert_type}`\n"
 
-                "Version: `1.0.4`"
+                "Version: `1.0.5`"
             ),
         )
     )
@@ -8060,7 +8450,7 @@ async def status(
             f"**Redis Queue:** "
             f"`{queue}`\n\n"
 
-            "**Version:** `1.0.4`"
+            "**Version:** `1.0.5`"
         ),
     )
 
