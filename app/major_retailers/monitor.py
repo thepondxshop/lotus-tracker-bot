@@ -1,11 +1,10 @@
 """
-Lotus Major Retailer Monitor Foundation
-Step 6K-2A
+Lotus Major Retailer adapter monitor/normalization layer.
+Step 6K-2C • Bot release 1.0.6
 
-This milestone intentionally does not start background polling. It provides
-registry, normalization, safety validation, health/probe orchestration and a
-controlled scan contract. Retailer adapters become active only after their
-own silent validation milestone.
+This module remains the raw controlled adapter scanner. It performs no product
+persistence and no Discord event publication by itself. Production state,
+baselelines and event generation live in pipeline.py.
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ from .registry import (
     normalize_retailer_key,
 )
 
-VERSION = "1.4.0"
-FRAMEWORK_STEP = "6K-2A"
+VERSION = "1.0.6"
+FRAMEWORK_STEP = "6K-2C"
 DEFAULT_SCAN_TIMEOUT_SECONDS = 75
 MAX_SCAN_PRODUCTS = 200
 
@@ -33,7 +32,7 @@ _STATUS: dict[str, Any] = {
     "version": VERSION,
     "step": FRAMEWORK_STEP,
     "running": False,
-    "background_monitor_enabled": False,
+    "background_monitor_enabled": True,
     "definitions_loaded": 0,
     "adapters_registered": 0,
     "last_probe_retailer": None,
@@ -45,6 +44,8 @@ _STATUS: dict[str, Any] = {
     "last_scan_rejected": 0,
     "stock_safety": "UNKNOWN_NEVER_BECOMES_STOCK_EVENT",
     "local_inventory_separated": True,
+    "raw_scan_persistence": False,
+    "raw_scan_alerts": False,
 }
 
 
@@ -65,7 +66,9 @@ def get_major_retailer_catalog_status() -> list[dict[str, Any]]:
         rows.append({
             **definition.to_dict(),
             "adapter_registered": definition.key in adapter_keys,
-            "production_ready": bool(definition.enabled and definition.key in adapter_keys),
+            # Runtime production promotion is intentionally NOT represented by
+            # definition.enabled anymore. pipeline.py is authoritative.
+            "production_ready": False,
         })
     return rows
 
@@ -111,6 +114,8 @@ async def probe_major_retailer(key: str) -> dict[str, Any]:
             "display_name": definition.display_name,
             "domain": definition.domain,
             "probe": probe.to_dict(),
+            "adapter_version": str(getattr(adapter, "version", "UNKNOWN")),
+            "adapter_class": adapter.__class__.__name__,
             "capabilities": adapter.capabilities.to_dict(),
             "diagnostics": adapter.get_diagnostics(),
         }
@@ -134,13 +139,7 @@ async def scan_major_retailer(
     limit: int = 50,
     suppress_events: bool = True,
 ) -> dict[str, Any]:
-    """
-    Controlled adapter scan contract.
-
-    Step 6K-2A validates and normalizes retailer output only. It does not
-    persist products or publish Discord events. Persistence/event wiring is
-    enabled retailer-by-retailer after silent validation.
-    """
+    """Controlled raw adapter scan and normalization contract."""
 
     started = time.monotonic()
     normalized = normalize_retailer_key(key)
@@ -230,16 +229,21 @@ async def scan_major_retailer(
         "display_name": definition.display_name,
         "domain": definition.domain,
         "region": definition.region,
-        "production_enabled": bool(definition.enabled),
-        "suppress_events": True,  # forced in foundation milestone
+        "production_enabled": False,
+        "suppress_events": True,
         "requested_limit": limit,
         "products": len(raw_products or []),
         "accepted": len(accepted),
         "rejected": len(rejected),
         "normalized_products": accepted,
         "rejections": rejected[:20],
+        "adapter_version": str(getattr(adapter, "version", "UNKNOWN")),
+        "adapter_class": adapter.__class__.__name__,
         "capabilities": adapter.capabilities.to_dict(),
         "diagnostics": adapter.get_diagnostics(),
         "elapsed_ms": int((time.monotonic() - started) * 1000),
-        "note": "6K-1B Target silent validation only; persistence and Discord events remain disabled.",
+        "note": (
+            "Raw major scan only. Step 6K-2C persistence/events are controlled "
+            "by the promotion-gated production pipeline."
+        ),
     }
