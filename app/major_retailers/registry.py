@@ -1,4 +1,4 @@
-"""Major-retailer registry for Lotus Step 6K-2A."""
+"""Major-retailer registry for Lotus Step 6K-2C • Bot release 1.0.6."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ from typing import Type
 
 from .base import MajorRetailerAdapter, MajorRetailerDefinition
 
-VERSION = "1.2.0"
+VERSION = "1.0.6"
+STEP = "6K-2C"
 
 _DEFINITIONS: dict[str, MajorRetailerDefinition] = {}
 _ADAPTERS: dict[str, Type[MajorRetailerAdapter]] = {}
@@ -32,6 +33,14 @@ def normalize_retailer_key(value: str | None) -> str:
         "p-bandai.com/us": "premium_bandai",
         "www.p-bandai.com": "premium_bandai",
         "www.p-bandai.com/us": "premium_bandai",
+        "five below": "five_below",
+        "fivebelow": "five_below",
+        "fivebelow.com": "five_below",
+        "dick's sporting goods": "dicks_sporting_goods",
+        "dicks sporting goods": "dicks_sporting_goods",
+        "dick's": "dicks_sporting_goods",
+        "dicks": "dicks_sporting_goods",
+        "dickssportinggoods.com": "dicks_sporting_goods",
         "box lunch": "boxlunch",
         "box-lunch": "boxlunch",
         "box_lunch": "boxlunch",
@@ -46,12 +55,27 @@ def normalize_retailer_key(value: str | None) -> str:
         "sam's": "sams_club",
         "sams": "sams_club",
         "samsclub.com": "sams_club",
+        "bj's": "bjs",
+        "bjs": "bjs",
+        "bj's wholesale club": "bjs",
+        "bjs.com": "bjs",
+        "walgreens.com": "walgreens",
+        "dollar general": "dollar_general",
+        "dollargeneral": "dollar_general",
+        "dollargeneral.com": "dollar_general",
+        "family dollar": "family_dollar",
+        "familydollar": "family_dollar",
+        "familydollar.com": "family_dollar",
         "amazon": "amazon_us",
         "amazon us": "amazon_us",
         "amazon.com": "amazon_us",
         "amazon japan": "amazon_jp",
         "amazon jp": "amazon_jp",
         "amazon.co.jp": "amazon_jp",
+        "rakuten": "rakuten_jp",
+        "rakuten japan": "rakuten_jp",
+        "rakuten jp": "rakuten_jp",
+        "rakuten.co.jp": "rakuten_jp",
     }
     return aliases.get(raw, raw.replace("-", "_").replace(" ", "_"))
 
