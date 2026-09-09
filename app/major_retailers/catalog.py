@@ -26,6 +26,11 @@ BUILTIN_MAJOR_RETAILERS = (
         domain="walmart.com",
         region="US",
         enabled=False,
+        notes=(
+            "Step 6K-3A public-storefront validation adapter installed. "
+            "Discovery, price, page-live and preorder are validation-capable; "
+            "online stock/local stock remain unverified and production is hard-blocked."
+        ),
     ),
     MajorRetailerDefinition(
         key="best_buy",
