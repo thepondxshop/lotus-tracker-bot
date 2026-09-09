@@ -3928,7 +3928,11 @@ async def majorstatus(interaction):
     )
     embed.add_field(
         name="Next Adapter",
-        value="🎯 **Walmart** — dedicated controlled adapter milestone",
+        value=(
+            "✅ **Walmart 6K-3A validation adapter installed**\n"
+            "🔒 Production blocked until online-stock validation passes\n"
+            "➡️ Next after Walmart validation: **Best Buy**"
+        ),
         inline=False,
     )
     embed.add_field(
@@ -4336,7 +4340,32 @@ async def majorprobe(interaction, retailer: str):
     )
     if result.get("error"):
         embed.add_field(name="Error", value=f"`{str(result.get('error'))[:900]}`", inline=False)
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A")
+    diagnostics = dict(result.get("diagnostics") or {})
+    if diagnostics:
+        probe_lines = []
+        for key in (
+            "integration_state",
+            "source_strategy",
+            "discovery_source",
+            "browse_requests",
+            "browse_http_ok",
+            "candidate_links",
+            "last_non_success_status",
+            "last_error",
+        ):
+            if key not in diagnostics:
+                continue
+            value = diagnostics.get(key)
+            probe_lines.append(
+                f"{key.replace('_', ' ').title()}: `{str(value)[:160]}`"
+            )
+        if probe_lines:
+            embed.add_field(
+                name="Adapter Diagnostics",
+                value="\n".join(probe_lines)[:1000],
+                inline=False,
+            )
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-3A")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -4444,58 +4473,75 @@ async def majorscan(
     embed.add_field(name="Out of Stock", value=f"`{out_stock}`", inline=True)
     embed.add_field(name="Preorders", value=f"`{preorders}`", inline=True)
 
-    diag_lines = [
-        f"Discovery source: `{diagnostics.get('discovery_source') or 'NONE'}`",
-        f"Redsky key source: `{diagnostics.get('redsky_key_source') or 'UNKNOWN'}`",
-        f"Redsky search requests: `{diagnostics.get('redsky_search_requests', 0)}`",
-        f"Redsky search OK: `{diagnostics.get('redsky_search_http_ok', 0)}`",
-        f"Redsky HTTP 206: `{diagnostics.get('redsky_search_http_206', 0)}`",
-        f"Redsky non-success: `{diagnostics.get('redsky_search_http_non_success', 0)}`",
-        f"Redsky HTTP 400/401/403/404/429/5xx: `"
-        f"{diagnostics.get('redsky_search_http_400', 0)}/"
-        f"{diagnostics.get('redsky_search_http_401', 0)}/"
-        f"{diagnostics.get('redsky_search_http_403', 0)}/"
-        f"{diagnostics.get('redsky_search_http_404', 0)}/"
-        f"{diagnostics.get('redsky_search_http_429', 0)}/"
-        f"{diagnostics.get('redsky_search_http_5xx', 0)}`",
-        f"Redsky pricing store: `{diagnostics.get('redsky_pricing_store_id') or 'UNKNOWN'}`",
-        f"Redsky rows seen: `{diagnostics.get('redsky_search_rows_seen', 0)}`",
-        f"Redsky supported: `{diagnostics.get('redsky_supported_candidates', 0)}`",
-        f"Redsky detail requests: `{diagnostics.get('redsky_detail_requests', 0)}`",
-        f"Redsky detail OK: `{diagnostics.get('redsky_detail_http_ok', 0)}`",
-        f"Redsky price hits: `{diagnostics.get('redsky_price_hits', 0)}`",
-        f"Redsky image hits: `{diagnostics.get('redsky_image_hits', 0)}`",
-        f"Redsky marketplace rejected: `{diagnostics.get('redsky_marketplace_rejections', 0)}`",
-        f"Redsky key rejected: `{diagnostics.get('redsky_key_rejected', 0)}`",
-        f"Redsky last failure: `{diagnostics.get('redsky_last_non_success_status') or 'NONE'}`",
-        f"Category requests: `{diagnostics.get('category_requests', 0)}`",
-        f"Category HTTP 200: `{diagnostics.get('category_http_ok', 0)}`",
-        f"Category anchors: `{diagnostics.get('category_anchor_candidates', 0)}`",
-        f"Search requests: `{diagnostics.get('search_requests', 0)}`",
-        f"Search HTTP 200: `{diagnostics.get('search_http_ok', 0)}`",
-        f"All product anchors: `{diagnostics.get('product_anchor_candidates', 0)}`",
-        f"Raw PDP URL hits: `{diagnostics.get('raw_url_candidates', 0)}`",
-        f"Raw supported: `{diagnostics.get('raw_url_supported', 0)}`",
-        f"Supported candidates: `{diagnostics.get('supported_title_candidates', 0)}`",
-        f"Sitemap index HTTP 200: `{diagnostics.get('sitemap_index_http_ok', 0)}`",
-        f"Sitemap child URLs: `{diagnostics.get('sitemap_child_urls', 0)}`",
-        f"Sitemap children HTTP 200: `{diagnostics.get('sitemap_child_http_ok', 0)}`",
-        f"Sitemap URLs seen: `{diagnostics.get('sitemap_locations_seen', 0)}`",
-        f"Sitemap TCG candidates: `{diagnostics.get('sitemap_tcg_candidates', 0)}`",
-        f"Product requests: `{diagnostics.get('product_requests', 0)}`",
-        f"Product HTTP 200: `{diagnostics.get('product_http_ok', 0)}`",
-        f"JSON-LD hits: `{diagnostics.get('json_ld_hits', 0)}`",
-        f"Marketplace rejected: `{diagnostics.get('marketplace_rejections', 0)}`",
-        f"Missing prices: `{diagnostics.get('missing_prices', 0)}`",
-        f"Availability known: `{diagnostics.get('availability_known', 0)}`",
-        f"Availability unknown: `{diagnostics.get('availability_unknown', 0)}`",
+    # Future-proof adapter diagnostics. Each retailer owns its diagnostic
+    # vocabulary; render values generically instead of hardcoding old
+    # Target/Redsky fields into every retailer scan.
+    preferred_diag_keys = [
+        "integration_state",
+        "source_strategy",
+        "discovery_source",
+        "browse_requests",
+        "browse_http_ok",
+        "browse_http_403",
+        "browse_http_429",
+        "browse_http_5xx",
+        "browse_challenge_pages",
+        "candidate_links",
+        "detail_requests",
+        "detail_http_ok",
+        "detail_http_403",
+        "detail_http_429",
+        "detail_http_5xx",
+        "detail_challenge_pages",
+        "direct_walmart_accepted",
+        "third_party_rejected",
+        "unknown_seller_rejected",
+        "unsupported_games_rejected",
+        "price_hits",
+        "missing_prices",
+        "preorder_hits",
+        "coming_soon_hits",
+        "release_date_hints",
+        "availability_hint_add_to_cart",
+        "availability_hint_out_of_stock",
+        "availability_hint_preorder",
+        "availability_hint_unknown",
+        "rate_limit_retries",
+        "rate_limit_backoff_seconds",
+        "last_non_success_status",
+        "last_error",
+        "seller_samples",
+        "source_pages_ok",
     ]
-    if diagnostics.get("last_error"):
-        diag_lines.append(f"Last error: `{str(diagnostics.get('last_error'))[:700]}`")
-    if diagnostics.get("redsky_last_non_success_body"):
+
+    ordered_keys = []
+    for key in preferred_diag_keys:
+        if key in diagnostics and key not in ordered_keys:
+            ordered_keys.append(key)
+    for key in sorted(diagnostics.keys()):
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+
+    diag_lines = []
+    for key in ordered_keys:
+        value = diagnostics.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, dict):
+            rendered = ", ".join(
+                f"{k}={v}"
+                for k, v in list(value.items())[:8]
+            )
+        elif isinstance(value, (list, tuple, set)):
+            rendered = ", ".join(str(item) for item in list(value)[:8])
+        else:
+            rendered = str(value)
+        rendered = rendered.replace("`", "'")
+        label = str(key).replace("_", " ").title()
         diag_lines.append(
-            f"Redsky failure body: `{str(diagnostics.get('redsky_last_non_success_body'))[:180]}`"
+            f"{label}: `{rendered[:760]}`"
         )
+
     # Discord limits every embed field value to 1024 characters.
     # Keep diagnostics readable and split them across bounded fields rather than
     # allowing a successful scan to fail while Discord renders the response.
@@ -4549,7 +4595,7 @@ async def majorscan(
         value="🔇 Forced silent validation — no database persistence and no Discord product alerts.",
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-2A Controlled Scan")
+    embed.set_footer(text="Lotus Major Retailer Foundation • 6K-3A Controlled Scan")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
