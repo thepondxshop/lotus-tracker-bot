@@ -1,6 +1,6 @@
 """Tier-aware member alert preferences for Lotus Tracker Bot.
 
-Step 6K-2B
+Step 6K-2C
 
 Design rules:
 - Members can control every alert type their current tier includes.
@@ -23,7 +23,7 @@ from sqlalchemy import text
 
 from app.database import SessionLocal
 
-VERSION = "1.0.0"
+VERSION = "1.0.6"
 
 TIER_RANK = {
     "Free": 0,
@@ -217,21 +217,37 @@ async def save_alert_preferences_for_tier(
     return await get_alert_preferences(discord_user_id, game)
 
 
-def preference_keys_for_event(event_type: str | None, alert_route: str | None) -> list[str]:
+def preference_keys_for_event(
+    event_type: str | None,
+    alert_route: str | None,
+    region: str | None = None,
+) -> list[str]:
     event = str(event_type or "").strip().upper()
     route = str(alert_route or "").strip().lower()
     keys: list[str] = []
 
-    # Route-wide controls can combine with event controls. An international
-    # restock therefore requires both INTERNATIONAL and RESTOCK to be enabled.
-    if route == "international":
+    # Route-wide controls combine with event controls. International products
+    # require the INTERNATIONAL switch even when a more-specific Premium+
+    # route (for example Inventory Flicker) is used.
+    region_value = str(region or "").strip().upper()
+    is_international = bool(
+        region_value
+        and region_value not in {"US", "USA", "UNITED STATES"}
+    )
+    if route == "international" or is_international:
         keys.append("INTERNATIONAL")
     if route == "inventory_flicker":
-        return ["INVENTORY_FLICKER"]
+        if "INVENTORY_FLICKER" not in keys:
+            keys.append("INVENTORY_FLICKER")
+        return keys
     if route == "release_radar":
-        return ["RELEASE_RADAR"]
+        if "RELEASE_RADAR" not in keys:
+            keys.append("RELEASE_RADAR")
+        return keys
     if route == "pokemon_queue":
-        return ["POKEMON_QUEUE"]
+        if "POKEMON_QUEUE" not in keys:
+            keys.append("POKEMON_QUEUE")
+        return keys
 
     event_map = {
         "DISCOVERED": "NEW_PRODUCT",
@@ -258,10 +274,10 @@ def preference_keys_for_event(event_type: str | None, alert_route: str | None) -
 
 async def member_allows_alert(
     *, discord_user_id: int, game: str, event_type: str | None,
-    alert_route: str | None, tier: str | None,
+    alert_route: str | None, tier: str | None, region: str | None = None,
 ) -> bool:
     """Backend enforcement: entitlement AND saved preference must pass."""
-    keys = preference_keys_for_event(event_type, alert_route)
+    keys = preference_keys_for_event(event_type, alert_route, region)
     if not keys:
         # Unknown future event types are allowed only by route entitlement in
         # worker.py until they receive an explicit preference definition.
