@@ -1,4 +1,4 @@
-"""Lotus Step 6K-2A major-retailer package."""
+"""Lotus major-retailer package • Step 6K-2C • Bot release 1.0.6."""
 
 from .catalog import load_builtin_major_retailer_definitions
 
@@ -31,6 +31,18 @@ from .onboarding import (  # noqa: E402,F401
     normalize_major_domain,
     stage_major_retailer,
 )
+from .pipeline import (  # noqa: E402,F401
+    demote_major_retailer,
+    ensure_major_pipeline_schema,
+    get_major_pipeline_status,
+    get_major_promotion_gate,
+    list_major_pipeline_states,
+    promote_major_retailer,
+    run_major_retailer_monitor,
+    run_major_retailer_pipeline_scan,
+    set_major_kill_switch,
+    validate_major_retailer,
+)
 from .registry import (  # noqa: E402,F401
     build_major_retailer_adapter,
     get_major_retailer_adapter_class,
@@ -42,5 +54,5 @@ from .registry import (  # noqa: E402,F401
     register_major_retailer_adapter,
 )
 
-VERSION = "1.4.0"
-STEP = "6K-2A"
+VERSION = "1.0.6"
+STEP = "6K-2C"
