@@ -1,4 +1,4 @@
-"""Lotus major-retailer package • Step 6K-2C • Bot release 1.0.6."""
+"""Lotus major-retailer package • Step 6K-3A Walmart validation • Bot release 1.0.6."""
 
 from .catalog import load_builtin_major_retailer_definitions
 
@@ -6,6 +6,7 @@ load_builtin_major_retailer_definitions()
 
 # Register retailer-specific adapters only after definitions exist.
 from . import target as _target  # noqa: E402,F401
+from . import walmart as _walmart  # noqa: E402,F401
 
 from .base import (  # noqa: E402,F401
     MajorRetailerAdapter,
