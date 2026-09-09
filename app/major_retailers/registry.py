@@ -1,4 +1,4 @@
-"""Major-retailer registry for Lotus Step 6K-1A2."""
+"""Major-retailer registry for Lotus Step 6K-2A."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Type
 
 from .base import MajorRetailerAdapter, MajorRetailerDefinition
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 _DEFINITIONS: dict[str, MajorRetailerDefinition] = {}
 _ADAPTERS: dict[str, Type[MajorRetailerAdapter]] = {}
