@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-VERSION = "1.0.0"
+VERSION = "1.0.6"
 STEP = "6K-2A"
 
 
