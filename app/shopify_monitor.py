@@ -51,6 +51,7 @@ from app.product_family import (
 
 from app.shopify_adapter import (
     ShopifyAdapter,
+    ShopifyRateLimitError,
     normalize_shopify_domain,
 )
 
@@ -68,7 +69,8 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Version 1.0.4
+# Component Version 1.0.6-C1
+# Step 6K-2C1 — Shopify Rate-Limit + Large-Catalog Hardening
 #
 # Strict structured TCG classification
 # Product-category diagnostics
@@ -86,7 +88,9 @@ from app.store_health import (
 # Preorder Lifecycle Persistence
 # PREORDER_PAGE -> PREORDER_LIVE Detection
 # Shopify Discovery Source Persistence
-# Step 6G-C1 - Collection Backfill Alert Guard
+# Collection Backfill Guard + Priority Membership Release Signals
+# Per-domain request pacing + 429 Retry-After backoff
+# Global/per-store scan overlap protection
 # =========================================================
 
 
@@ -178,9 +182,105 @@ MONITOR_STATUS = {
     "unknown_family_products":
         0,
 
+    # Step 6K-2C1 diagnostics
+    "scan_in_progress":
+        False,
+
+    "scan_skipped_overlap":
+        0,
+
+    "last_scan_outcome":
+        "NOT_YET",
+
+    "active_shopify_stores":
+        0,
+
+    "stores_failed":
+        0,
+
+    "rate_limit_responses":
+        0,
+
+    "rate_limit_retries":
+        0,
+
+    "rate_limit_backoff_seconds":
+        0.0,
+
+    "rate_limit_exhausted":
+        0,
+
+    "partial_rate_limited_scans":
+        0,
+
+    "priority_collections":
+        0,
+
+    "collection_products_seen":
+        0,
+
+    "general_products_seen":
+        0,
+
+    "general_feed_skipped":
+        0,
+
+    "new_priority_collection_memberships":
+        0,
+
+    "priority_membership_alerts":
+        0,
+
+    "last_adapter_diagnostics":
+        {},
+
     "last_error":
         None,
 }
+
+
+_SHOPIFY_SCAN_LOCK = asyncio.Lock()
+_STORE_SCAN_LOCKS = {}
+
+
+def _get_store_scan_lock(store_id):
+    key = int(store_id)
+    lock = _STORE_SCAN_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _STORE_SCAN_LOCKS[key] = lock
+    return lock
+
+
+def get_previous_discovery_sources(store_product):
+    data = load_platform_data(store_product)
+    raw = data.get("shopify_discovery_sources") or []
+    if not isinstance(raw, (list, tuple, set)):
+        raw = [raw]
+    return {
+        str(value or "").strip()
+        for value in raw
+        if str(value or "").strip()
+    }
+
+
+def _record_adapter_diagnostics(store, diagnostics):
+    diagnostics = dict(diagnostics or {})
+    MONITOR_STATUS["rate_limit_responses"] += int(diagnostics.get("http_429", 0) or 0)
+    MONITOR_STATUS["rate_limit_retries"] += int(diagnostics.get("retries", 0) or 0)
+    MONITOR_STATUS["rate_limit_backoff_seconds"] += float(diagnostics.get("backoff_seconds", 0.0) or 0.0)
+    MONITOR_STATUS["rate_limit_exhausted"] += int(diagnostics.get("rate_limit_exhausted", 0) or 0)
+    MONITOR_STATUS["partial_rate_limited_scans"] += int(bool(diagnostics.get("partial_due_to_rate_limit")))
+    MONITOR_STATUS["priority_collections"] += int(diagnostics.get("priority_collections", 0) or 0)
+    MONITOR_STATUS["collection_products_seen"] += int(diagnostics.get("collection_products_seen", 0) or 0)
+    MONITOR_STATUS["general_products_seen"] += int(diagnostics.get("general_products_seen", 0) or 0)
+    MONITOR_STATUS["general_feed_skipped"] += int(bool(diagnostics.get("general_feed_skipped")))
+    MONITOR_STATUS["new_priority_collection_memberships"] += int(diagnostics.get("new_collection_memberships", 0) or 0)
+    MONITOR_STATUS["last_adapter_diagnostics"] = {
+        "store": getattr(store, "name", None),
+        "domain": getattr(store, "domain", None),
+        **diagnostics,
+    }
 
 
 def family_language(
@@ -1169,6 +1269,12 @@ def is_recent_public_shopify_product(
 
 def should_alert_new_shopify_product(item):
 
+    new_memberships = item.get("new_collection_memberships") or []
+    if not isinstance(new_memberships, (list, tuple, set)):
+        new_memberships = [new_memberships]
+    if any(str(value or "").strip() for value in new_memberships):
+        return True, "NEW_PRIORITY_COLLECTION_MEMBERSHIP"
+
     sources = item.get("discovery_sources") or []
 
     if not isinstance(sources, (list, tuple, set)):
@@ -1452,7 +1558,7 @@ async def get_deal_data(
         return None
 
 
-async def scan_shopify_store(
+async def _scan_shopify_store_unlocked(
     store,
 ):
 
@@ -1478,9 +1584,17 @@ async def scan_shopify_store(
         )
     )
 
-    raw_products = (
-        await adapter.fetch_products()
-    )
+    try:
+        raw_products = (
+            await adapter.fetch_products()
+        )
+    finally:
+        _record_adapter_diagnostics(
+            store,
+            adapter.get_diagnostics(),
+        )
+
+    adapter_diagnostics = adapter.get_diagnostics()
 
     normalized_products = []
 
@@ -1686,6 +1800,33 @@ async def scan_shopify_store(
 
         "new_product_backfills_suppressed":
             0,
+
+        "priority_membership_alerts":
+            0,
+
+        "rate_limit_responses":
+            int(adapter_diagnostics.get("http_429", 0) or 0),
+
+        "rate_limit_retries":
+            int(adapter_diagnostics.get("retries", 0) or 0),
+
+        "rate_limit_backoff_seconds":
+            float(adapter_diagnostics.get("backoff_seconds", 0.0) or 0.0),
+
+        "priority_collections":
+            int(adapter_diagnostics.get("priority_collections", 0) or 0),
+
+        "collection_products_seen":
+            int(adapter_diagnostics.get("collection_products_seen", 0) or 0),
+
+        "general_products_seen":
+            int(adapter_diagnostics.get("general_products_seen", 0) or 0),
+
+        "general_feed_skipped":
+            bool(adapter_diagnostics.get("general_feed_skipped")),
+
+        "partial_rate_limited":
+            bool(adapter_diagnostics.get("partial_due_to_rate_limit")),
 
         "preorder_activations":
             0,
@@ -2117,6 +2258,37 @@ async def scan_shopify_store(
                 )
             )
 
+            previous_discovery_sources = (
+                get_previous_discovery_sources(
+                    store_product
+                )
+            )
+
+            current_discovery_sources = {
+                str(value or "").strip()
+                for value in (item.get("discovery_sources") or [])
+                if str(value or "").strip()
+            }
+
+            adapter_new_collection_sources = {
+                "COLLECTION:" + str(handle or "").strip()
+                for handle in (item.get("new_collection_memberships") or [])
+                if str(handle or "").strip()
+            }
+
+            # Only alert a collection-membership delta when the adapter has
+            # already baselined that collection and explicitly observed this
+            # product enter it. This prevents a deployment/restart from
+            # backfilling every old product the first time a new collection
+            # discovery path becomes visible.
+            new_priority_collection_sources = {
+                value
+                for value in current_discovery_sources
+                if value.startswith("COLLECTION:")
+                and value not in previous_discovery_sources
+                and value in adapter_new_collection_sources
+            }
+
             old_price = (
                 store_product.price
             )
@@ -2527,6 +2699,41 @@ async def scan_shopify_store(
                     )
                 )
 
+            priority_membership_alerted = False
+
+            if (
+                new_priority_collection_sources
+                and not preorder_activation
+                and old_stock == new_stock
+            ):
+                changed = True
+                priority_membership_alerted = True
+                stats["priority_membership_alerts"] += 1
+                MONITOR_STATUS["priority_membership_alerts"] += 1
+
+                membership_event_type = (
+                    ProductEventType.COMING_SOON
+                    if new_product_state == "COMING_SOON"
+                    else ProductEventType.PAGE_LIVE
+                )
+
+                events_to_send.append(
+                    make_product_event(
+                        event_type=membership_event_type,
+                        item=item,
+                        store=store,
+                        in_stock=new_stock,
+                        old_price=None,
+                    )
+                )
+
+                print(
+                    "SHOPIFY PRIORITY COLLECTION RELEASE SIGNAL | "
+                    f"Store={store.name} | Product={item['title']} | "
+                    f"Collections={sorted(new_priority_collection_sources)} | "
+                    f"State={new_product_state} | Stock={new_stock}"
+                )
+
             if old_stock != new_stock:
 
                 changed = True
@@ -2844,11 +3051,20 @@ async def scan_shopify_store(
     )
 
 
-async def scan_all_shopify_stores():
+async def scan_shopify_store(store):
+    """Serialize scans for a single Shopify storefront."""
+    lock = _get_store_scan_lock(store.id)
+    async with lock:
+        return await _scan_shopify_store_unlocked(store)
+
+
+async def _scan_all_shopify_stores_unlocked():
 
     stores = (
         await get_shopify_stores()
     )
+
+    MONITOR_STATUS["active_shopify_stores"] = len(stores)
 
     results = []
 
@@ -2881,6 +3097,22 @@ async def scan_all_shopify_stores():
     MONITOR_STATUS[
         "last_error"
     ] = None
+
+    for key, value in (
+        ("stores_failed", 0),
+        ("rate_limit_responses", 0),
+        ("rate_limit_retries", 0),
+        ("rate_limit_backoff_seconds", 0.0),
+        ("rate_limit_exhausted", 0),
+        ("partial_rate_limited_scans", 0),
+        ("priority_collections", 0),
+        ("collection_products_seen", 0),
+        ("general_products_seen", 0),
+        ("general_feed_skipped", 0),
+        ("new_priority_collection_memberships", 0),
+        ("priority_membership_alerts", 0),
+    ):
+        MONITOR_STATUS[key] = value
 
     MONITOR_STATUS[
         "inventory_quantity_changes"
@@ -3016,6 +3248,23 @@ async def scan_all_shopify_stores():
                     + count
                 )
 
+        except ShopifyRateLimitError as error:
+
+            error_text = (
+                f"{store.name}: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+
+            # 429 is transient throttling, not proof the storefront is bad.
+            # Do not increment the store-health failure counter here.
+            MONITOR_STATUS["stores_failed"] += 1
+            MONITOR_STATUS["last_error"] = error_text
+            print(
+                "SHOPIFY SCAN RATE LIMITED | "
+                f"Store={store.name} | Error={error}"
+            )
+
         except Exception as error:
 
             error_text = (
@@ -3030,6 +3279,8 @@ async def scan_all_shopify_stores():
                     f"{error_text}"
                 )
             )
+
+            MONITOR_STATUS["stores_failed"] += 1
 
             await record_store_failure(
                 store.id,
@@ -3173,6 +3424,27 @@ async def scan_all_shopify_stores():
     )
 
 
+async def scan_all_shopify_stores():
+    """Run one full Shopify cycle; overlapping cycles are skipped."""
+    if _SHOPIFY_SCAN_LOCK.locked():
+        MONITOR_STATUS["scan_skipped_overlap"] += 1
+        MONITOR_STATUS["last_scan_outcome"] = "SKIPPED_OVERLAP"
+        print("SHOPIFY SCAN SKIPPED | Reason=OVERLAP")
+        return []
+
+    async with _SHOPIFY_SCAN_LOCK:
+        MONITOR_STATUS["scan_in_progress"] = True
+        MONITOR_STATUS["last_scan_outcome"] = "RUNNING"
+        try:
+            results = await _scan_all_shopify_stores_unlocked()
+            MONITOR_STATUS["last_scan_outcome"] = (
+                "SUCCESS" if results else "NO_SUCCESSFUL_STORES"
+            )
+            return results
+        finally:
+            MONITOR_STATUS["scan_in_progress"] = False
+
+
 async def probe_shopify_store(
     store,
 ):
@@ -3187,9 +3459,15 @@ async def probe_shopify_store(
         ),
     )
 
-    await adapter.fetch_products(
-        max_pages=1
-    )
+    lock = _get_store_scan_lock(store.id)
+    async with lock:
+        try:
+            await adapter.probe_storefront()
+        finally:
+            _record_adapter_diagnostics(
+                store,
+                adapter.get_diagnostics(),
+            )
 
     return (
         await record_store_success(
@@ -3225,6 +3503,16 @@ async def run_health_recovery_probes():
             ):
 
                 recovered_count += 1
+
+        except ShopifyRateLimitError as error:
+
+            MONITOR_STATUS["last_error"] = (
+                f"{store.name}: {type(error).__name__}: {error}"
+            )
+            print(
+                "SHOPIFY HEALTH PROBE RATE LIMITED | "
+                f"Store={store.name} | Error={error}"
+            )
 
         except Exception as error:
 
@@ -3303,6 +3591,15 @@ async def retry_shopify_store(
             "store": recovered,
         }
 
+    except ShopifyRateLimitError as error:
+
+        return {
+            "success": False,
+            "reason": "RATE_LIMITED",
+            "detail": str(error),
+            "store": store,
+        }
+
     except Exception as error:
 
         failed_store = (
@@ -3333,7 +3630,7 @@ async def run_shopify_monitor():
     ] = True
 
     print(
-        "Lotus Shopify Monitor v1.0.4 started."
+        "Lotus Shopify Monitor 6K-2C1 (component 1.0.6-C1) started."
     )
 
     await asyncio.sleep(
