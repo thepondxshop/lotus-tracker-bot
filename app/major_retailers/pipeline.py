@@ -18,6 +18,7 @@ Critical safety rules:
 - Online and local inventory remain separate; this pipeline only acts on verified
   online availability until local-inventory support is added explicitly.
 - Target is production-blocked until an approved official source exists.
+- Walmart is production-blocked in 6K-3A until online stock signals are separately validated.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ AUTO_DEMOTE_FAILURES = 3
 
 PRODUCTION_BLOCKS = {
     "target": "TARGET_OFFICIAL_SOURCE_REQUIRED",
+    "walmart": "WALMART_VALIDATION_ONLY_STEP_6K_3A",
 }
 
 CONFIDENCE_RANK = {
