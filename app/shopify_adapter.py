@@ -306,6 +306,9 @@ SEALED_CONTEXT_PATTERN = re.compile(
     r"display|"
     r"starter\s*deck|"
     r"structure\s*deck|"
+    r"deck\s*set|"
+    r"special\s*set|"
+    r"premium\s*set|"
     r"collection\s*box|"
     r"collection\s*set|"
     r"gift\s*collection|"
@@ -742,6 +745,21 @@ def infer_product_type(
 
         (
             (
+                "deck set",
+            ),
+            "Deck Set",
+        ),
+
+        (
+            (
+                "special set",
+                "premium set",
+            ),
+            "Special Set",
+        ),
+
+        (
+            (
                 "deck box",
             ),
             "Deck Box",
@@ -845,6 +863,9 @@ SEALED_KEYWORDS = (
     "elite trainer box",
     "starter deck",
     "structure deck",
+    "deck set",
+    "special set",
+    "premium set",
     "double pack",
     "double-pack",
     "collection box",
@@ -1575,13 +1596,15 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C1"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C3"
+_STORE_CURRENCY_CACHE = {}
+STORE_CURRENCY_CACHE_SECONDS = 3600
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
 SHOPIFY_MAX_429_RETRIES = 3
 SHOPIFY_MAX_5XX_RETRIES = 2
 SHOPIFY_MAX_BACKOFF_SECONDS = 30.0
 SHOPIFY_COLLECTION_CACHE_SECONDS = 30 * 60
-SHOPIFY_GENERAL_REFRESH_SECONDS = 10 * 60
+SHOPIFY_GENERAL_REFRESH_SECONDS = 30
 MAX_PRIORITY_COLLECTIONS = 12
 MAX_COLLECTION_PAGES = 2
 MAX_COLLECTION_SITEMAPS = 8
@@ -1906,6 +1929,10 @@ class ShopifyAdapter:
         )
 
     async def fetch_store_currency(self):
+        cached = _STORE_CURRENCY_CACHE.get(self.domain)
+        if cached and time.monotonic() - cached[0] < STORE_CURRENCY_CACHE_SECONDS:
+            self.currency = cached[1]
+            return self.currency
         url = f"{self.base_url}/cart.js"
         timeout = aiohttp.ClientTimeout(total=20)
         headers = {
@@ -1925,6 +1952,7 @@ class ShopifyAdapter:
                     currency = data.get("currency")
                     if currency:
                         self.currency = str(currency).strip().upper()
+                        _STORE_CURRENCY_CACHE[self.domain] = (time.monotonic(), self.currency)
         except Exception as error:
             print(
                 "SHOPIFY CURRENCY DETECTION ERROR | "
@@ -2160,7 +2188,7 @@ class ShopifyAdapter:
                     _COLLECTION_MEMBERSHIP_CACHE[membership_key] = current_members
 
             # =================================================
-            # 2. GENERAL PRODUCT FEED — PERIODIC, NOT EVERY MINUTE
+            # 2. GENERAL PRODUCT FEED — THIRTY-SECOND REFRESH TARGET
             # =================================================
             now = time.monotonic()
             last_general = _GENERAL_FEED_LAST_ATTEMPT_AT.get(self.domain, 0.0)
@@ -2173,7 +2201,7 @@ class ShopifyAdapter:
             general_pages = 0
             if run_general:
                 # Set this before requesting so a rate-limited general scan is
-                # not immediately retried by the next 60-second cycle.
+                # not immediately retried by the next scheduled scan.
                 _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = now
 
                 for page in range(1, max_pages + 1):
