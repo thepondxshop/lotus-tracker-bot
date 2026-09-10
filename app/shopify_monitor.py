@@ -69,8 +69,8 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C3
-# Step 6K-2C3 — Independent Shopify Store Scheduling
+# Component Version 1.0.6-C4
+# Step 6K-2C4 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
 # Product-category diagnostics
@@ -1300,6 +1300,9 @@ def should_alert_new_shopify_product(item):
         if str(source or "").strip()
     }
 
+    if "PRODUCTS_JSON_BACKFILL" in normalized_sources and "PRODUCTS_JSON" not in normalized_sources:
+        return (is_recent_public_shopify_product(item), "EXTENDED_CATALOG_BASELINE_OR_RECENT")
+
     if "PRODUCTS_JSON" in normalized_sources:
         return True, "PRODUCTS_JSON"
 
@@ -1572,42 +1575,71 @@ async def get_deal_data(
         return None
 
 
-async def _scan_shopify_store_unlocked(
-    store,
-):
-
-    adapter = ShopifyAdapter(
-
-        store.domain,
-
-        region=(
-            store.region
-            or "US"
-        ),
-    )
-
-    native_currency = (
-        await adapter.fetch_store_currency()
-    )
-
-    print(
-        (
-            "SHOPIFY CURRENCY | "
-            f"Store={store.name} | "
-            f"Currency={native_currency}"
+async def _scan_shopify_store_unlocked(store):
+    adapter = ShopifyAdapter(store.domain, region=store.region or "US")
+    native_currency = await adapter.fetch_store_currency()
+    # New stores retain the existing single-scan seed suppression. Start
+    # progressive delivery only when a persisted product baseline exists.
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(func.count(StoreProduct.id)).where(StoreProduct.store_id == store.id)
         )
-    )
+        seeded = bool(result.scalar())
+    totals = {}
+    batch_count = 0
+    processing_seconds = 0.0
+    started = time.monotonic()
+
+    async def process_batch(products, source):
+        nonlocal batch_count, processing_seconds
+        batch_started = time.monotonic()
+        result = await _process_shopify_product_batch(store, adapter, native_currency, products)
+        processing_seconds += time.monotonic() - batch_started
+        batch_count += 1
+        for key, value in result.items():
+            if isinstance(value, dict):
+                target = totals.setdefault(key, {})
+                for name, count in value.items():
+                    target[name] = target.get(name, 0) + count
+            elif isinstance(value, bool):
+                totals[key] = totals.get(key, False) or value
+            elif isinstance(value, (int, float)):
+                totals[key] = totals.get(key, 0) + value
+            else:
+                totals[key] = value
+        print(f"SHOPIFY BATCH TIMING | Store={store.name} | Source={source} | "
+              f"Products={len(products)} | BatchSeconds={time.monotonic()-batch_started:.3f} | "
+              f"PassElapsedSeconds={time.monotonic()-started:.3f} | Events={result.get('events', 0)}")
 
     try:
-        raw_products = (
-            await adapter.fetch_products()
-        )
+        if seeded:
+            await adapter.fetch_products(on_batch=process_batch)
+        else:
+            raw = await adapter.fetch_products()
+            await process_batch(raw, "INITIAL_BASELINE")
     finally:
-        _record_adapter_diagnostics(
-            store,
-            adapter.get_diagnostics(),
-        )
+        _record_adapter_diagnostics(store, adapter.get_diagnostics())
+    # Adapter counters describe the pass and must not be added per batch.
+    diagnostics = adapter.get_diagnostics()
+    for key, diagnostic in (
+        ("rate_limit_responses", "http_429"), ("rate_limit_retries", "retries"),
+        ("rate_limit_backoff_seconds", "backoff_seconds"),
+        ("priority_collections", "priority_collections"),
+        ("collection_products_seen", "collection_products_seen"),
+        ("general_products_seen", "general_products_seen"),
+    ):
+        totals[key] = diagnostics.get(diagnostic, 0)
+    totals["partial_rate_limited"] = bool(diagnostics.get("partial_due_to_rate_limit"))
+    totals["general_feed_skipped"] = bool(diagnostics.get("general_feed_skipped"))
+    totals["batches"] = batch_count
+    print(f"SHOPIFY PASS PHASES | Store={store.name} | Batches={batch_count} | "
+          f"FetchAndDiscoverySeconds={time.monotonic()-started-processing_seconds:.3f} | "
+          f"ProcessingAndPublishSeconds={processing_seconds:.3f}")
+    return totals
 
+
+async def _process_shopify_product_batch(store, adapter, native_currency, raw_products):
+    processing_started = time.monotonic()
     adapter_diagnostics = adapter.get_diagnostics()
 
     normalized_products = []
@@ -3044,6 +3076,7 @@ async def _scan_shopify_store_unlocked(
 
         await session.commit()
 
+    publish_started = time.monotonic()
     for event in events_to_send:
 
         result = (
@@ -3060,6 +3093,9 @@ async def _scan_shopify_store_unlocked(
                 "events"
             ] += 1
 
+    print(f"SHOPIFY BATCH PHASES | Store={store.name} | "
+          f"NormalizeAndDBSeconds={publish_started-processing_started:.3f} | "
+          f"PublishSeconds={time.monotonic()-publish_started:.3f}")
     return (
         stats
     )
@@ -3737,7 +3773,7 @@ async def _run_scheduled_store(store_id):
 
 async def run_shopify_monitor():
     MONITOR_STATUS["running"] = True
-    print("Lotus Shopify Monitor 6K-2C3 (component 1.0.6-C3) started. "
+    print("Lotus Shopify Monitor 6K-2C4 (component 1.0.6-C4) started. "
           "Independent stores; target=5s; max concurrent scans=4.")
     tasks = {}
     health_task = None
@@ -3788,7 +3824,7 @@ async def run_shopify_monitor():
 def get_shopify_monitor_status():
     data = dict(MONITOR_STATUS)
     data.update({
-        "scheduler": "INDEPENDENT_STORES_6K_2C3",
+        "scheduler": "INDEPENDENT_STORES_6K_2C4",
         "target_interval_seconds": POLL_SECONDS,
         "max_concurrent_stores": MAX_CONCURRENT_STORE_SCANS,
         "background_scans": _BACKGROUND_SCANS,
