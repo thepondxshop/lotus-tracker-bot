@@ -1596,7 +1596,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C3"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C4"
 _STORE_CURRENCY_CACHE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
@@ -1631,6 +1631,8 @@ _DOMAIN_REQUEST_LOCKS = {}
 _DOMAIN_LAST_REQUEST_AT = {}
 _PRIORITY_COLLECTION_CACHE = {}
 _GENERAL_FEED_LAST_ATTEMPT_AT = {}
+_GENERAL_FEED_CURSOR = {}
+GENERAL_PAGES_PER_PASS = 2
 _COLLECTION_MEMBERSHIP_CACHE = {}
 
 
@@ -2073,7 +2075,7 @@ class ShopifyAdapter:
         self.diagnostics["priority_collection_handles"] = [row[1] for row in ranked]
         return ranked
 
-    async def fetch_products(self, max_pages=20):
+    async def fetch_products(self, max_pages=20, *, on_batch=None):
         products_by_key = {}
         anonymous_products = []
 
@@ -2187,13 +2189,24 @@ class ShopifyAdapter:
                     # slice can still be detected on later scans.
                     _COLLECTION_MEMBERSHIP_CACHE[membership_key] = current_members
 
+            # Finish merging collection memberships before publishing them.
+            # Each product is processed once per pass, even across overlaps.
+            delivered_keys = set()
+            if on_batch is not None:
+                priority_products = list(products_by_key.values()) + anonymous_products
+                for offset in range(0, len(priority_products), 100):
+                    await on_batch(priority_products[offset:offset + 100], "PRIORITY_COLLECTIONS")
+                delivered_keys.update(products_by_key)
+
             # =================================================
             # 2. GENERAL PRODUCT FEED — THIRTY-SECOND REFRESH TARGET
             # =================================================
             now = time.monotonic()
             last_general = _GENERAL_FEED_LAST_ATTEMPT_AT.get(self.domain, 0.0)
+            cursor = _GENERAL_FEED_CURSOR.get(self.domain, 1) if on_batch is not None else 1
             run_general = (
-                max_pages <= 1
+                (on_batch is not None and cursor > 1)
+                or max_pages <= 1
                 or not last_general
                 or now - last_general >= SHOPIFY_GENERAL_REFRESH_SECONDS
             )
@@ -2202,9 +2215,11 @@ class ShopifyAdapter:
             if run_general:
                 # Set this before requesting so a rate-limited general scan is
                 # not immediately retried by the next scheduled scan.
-                _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = now
-
-                for page in range(1, max_pages + 1):
+                if on_batch is None:
+                    _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = now
+                pages = (range(cursor, cursor + GENERAL_PAGES_PER_PASS)
+                         if on_batch is not None else range(1, max_pages + 1))
+                for page in pages:
                     existing_product_count = len(products_by_key) + len(anonymous_products)
                     data = await self._get_json(
                         session,
@@ -2217,18 +2232,48 @@ class ShopifyAdapter:
 
                     page_products = data.get("products", []) or []
                     if not page_products:
+                        if on_batch is not None:
+                            _GENERAL_FEED_CURSOR[self.domain] = 1
+                            _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = time.monotonic()
+                            self.diagnostics["general_sweep_complete"] = True
                         break
 
                     general_pages += 1
                     self.diagnostics["general_pages_successful"] += 1
                     self.diagnostics["general_products_seen"] += len(page_products)
-                    await merge_products(page_products, "PRODUCTS_JSON")
-
+                    general_source = ("PRODUCTS_JSON_BACKFILL" if on_batch is not None and page > max_pages else "PRODUCTS_JSON")
+                    await merge_products(page_products, general_source)
+                    if on_batch is not None:
+                        fresh = []
+                        for raw in page_products:
+                            if not isinstance(raw, dict):
+                                continue
+                            key = _product_dedupe_key(raw)
+                            if key is not None and key not in delivered_keys:
+                                fresh.append(products_by_key[key])
+                                delivered_keys.add(key)
+                            elif key is None:
+                                product = dict(raw)
+                                _append_discovery_source(product, general_source)
+                                fresh.append(product)
+                        for offset in range(0, len(fresh), 100):
+                            await on_batch(fresh[offset:offset + 100], f"GENERAL_PAGE_{page}")
+                        # Advance only after every callback for this page succeeds.
+                        _GENERAL_FEED_CURSOR[self.domain] = page + 1
                     if len(page_products) < 250:
+                        if on_batch is not None:
+                            _GENERAL_FEED_CURSOR[self.domain] = 1
+                            _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = time.monotonic()
+                            self.diagnostics["general_sweep_complete"] = True
                         break
             else:
                 self.diagnostics["general_feed_skipped"] = 1
 
+        if on_batch is not None:
+            self.diagnostics["general_next_page"] = _GENERAL_FEED_CURSOR.get(self.domain, 1)
+            print(f"SHOPIFY CATALOG PROGRESS | Store={self.domain} | "
+                  f"NextPage={self.diagnostics['general_next_page']} | "
+                  f"SweepComplete={bool(self.diagnostics.get('general_sweep_complete'))}")
         products = list(products_by_key.values()) + anonymous_products
 
         if not products and self.diagnostics["rate_limit_exhausted"]:
