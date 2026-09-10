@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import time
 
 import discord
 
@@ -26,6 +27,20 @@ from app.event_service import (
 
 from app.helpers import (
     safe_int,
+    get_subscription,
+    tier_allows,
+)
+
+from app.preference_service import (
+    get_product_preferences,
+)
+
+from app.family_preference_service import (
+    get_family_preferences,
+)
+
+from app.alert_preference_service import (
+    member_allows_alert,
 )
 
 from app.redis_client import (
@@ -37,7 +52,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 0.7.9
+# Version 1.0.6
 #
 # Compact alert layout
 # Previous -> current price display
@@ -48,6 +63,7 @@ from app.redis_client import (
 # Source routing
 # Game validation failsafe
 # Realtime flicker protection
+# Step 6K-2C2 legacy preference compatibility
 # =========================================================
 
 
@@ -67,6 +83,25 @@ EVENT_TITLES = {
     "QUEUE_DETECTED": "🚨 POKÉMON CENTER QUEUE DETECTED",
     "QUEUE_ACTIVE": "🚨 POKÉMON CENTER QUEUE LIVE",
     "QUEUE_CLEARED": "✅ POKÉMON CENTER QUEUE CLEARED",
+}
+
+
+# Existing members may predate the product/family preference rows introduced
+# by the newer member-level notification system.  Missing keys must use the
+# same defaults shown by the slash commands instead of silently becoming OFF.
+DEFAULT_PRODUCT_PREFERENCES = {
+    "SEALED": True,
+    "SINGLE": False,
+    "ACCESSORY": False,
+    "UNKNOWN": True,
+}
+
+DEFAULT_FAMILY_PREFERENCES = {
+    "GLOBAL_STANDARD": True,
+    "JP": False,
+    "KR": False,
+    "CN": False,
+    "UNKNOWN": False,
 }
 
 
@@ -256,14 +291,30 @@ def determine_alert_route(event):
 
     # =====================================================
     # MAJOR RETAILER
+    #
+    # International major-retailer events are Premium and route through
+    # the International channel. The member preference layer then requires
+    # BOTH the INTERNATIONAL switch and the event-specific switch.
     # =====================================================
 
     if source_type == "major_retailer":
+        region = str(event.get("region") or "US").strip().upper()
+        is_international = region not in {"US", "USA", "UNITED STATES"}
+
+        # Premium+ routes remain Premium+ even for international stores.
+        if event_type == "INVENTORY_FLICKER":
+            return "inventory_flicker"
+
+        if event_type == "RELEASE_DATE_CHANGED":
+            return "release_radar"
+
+        if is_international:
+            return "international"
+
         if event_type == "PREORDER_LIVE":
             return "preorder"
 
         if event_type in {
-            "DISCOVERED",
             "PAGE_LIVE",
             "COMING_SOON",
         }:
@@ -276,10 +327,17 @@ def determine_alert_route(event):
         }:
             return "deal"
 
-        if event_type == "INVENTORY_FLICKER":
-            return "inventory_flicker"
+        # Major-retailer discoveries and verified online stock lifecycle
+        # events are part of the Free major-retailer route.
+        if event_type in {
+            "DISCOVERED",
+            "STOCK_AVAILABLE",
+            "RESTOCK",
+            "SOLD_OUT",
+        }:
+            return "major_retailer"
 
-        return "major_retailer"
+        return None
 
     if source_type == "simulation":
         return "major_retailer"
@@ -1000,6 +1058,183 @@ def get_primary_guild(bot):
 
 
 # =========================================================
+# MEMBER-LEVEL NOTIFICATION ELIGIBILITY
+# Step 6K-2B
+# =========================================================
+
+def get_game_members(guild, game):
+    if not game:
+        return []
+    role_id = safe_int(GAME_ROLES.get(game))
+    if not role_id:
+        return []
+    role = guild.get_role(role_id)
+    if role is None:
+        return []
+    return [member for member in role.members if not member.bot]
+
+
+def _normalize_category(value):
+    if value is None:
+        return None
+    raw = str(value).strip().upper()
+    aliases = {
+        "SEALED": "SEALED",
+        "SINGLE": "SINGLE",
+        "SINGLES": "SINGLE",
+        "ACCESSORY": "ACCESSORY",
+        "ACCESSORIES": "ACCESSORY",
+        "UNKNOWN": "UNKNOWN",
+    }
+    return aliases.get(raw, "UNKNOWN")
+
+
+def _normalize_family(value):
+    if value is None:
+        return None
+    raw = str(value).strip().upper()
+    aliases = {
+        "GLOBAL": "GLOBAL_STANDARD",
+        "ENGLISH": "GLOBAL_STANDARD",
+        "GLOBAL_STANDARD": "GLOBAL_STANDARD",
+        "JP": "JP",
+        "JAPAN": "JP",
+        "JAPANESE": "JP",
+        "KR": "KR",
+        "KOREA": "KR",
+        "KOREAN": "KR",
+        "CN": "CN",
+        "CHINA": "CN",
+        "CHINESE": "CN",
+        "SIMPLIFIED_CHINESE": "CN",
+        "UNKNOWN": "UNKNOWN",
+    }
+    return aliases.get(raw, "UNKNOWN")
+
+
+async def get_eligible_members(guild, event, alert_type, minimum_tier):
+    game = event.get("game")
+    if not game:
+        return []
+
+    base_members = get_game_members(guild, game)
+    if not base_members:
+        return []
+
+    event_type = str(event.get("event_type") or "").upper()
+    is_queue_event = event_type in {
+        "QUEUE_DETECTED", "QUEUE_ACTIVE", "QUEUE_CLEARED"
+    }
+    category = _normalize_category(event.get("product_category"))
+    family = _normalize_family(event.get("product_family"))
+    eligible = []
+    rejected_tier = 0
+    rejected_alert_preference = 0
+    rejected_product_preference = 0
+    rejected_family_preference = 0
+    preference_errors = 0
+
+    async def check_member(member):
+        nonlocal rejected_tier, rejected_alert_preference, rejected_product_preference
+        nonlocal rejected_family_preference, preference_errors
+        try:
+            tier = get_subscription(member)
+
+            # Route entitlement remains authoritative even if a stored user
+            # preference is stale or manually manipulated.
+            if not tier_allows(tier, minimum_tier):
+                rejected_tier += 1
+                return
+
+            if not await member_allows_alert(
+                discord_user_id=member.id,
+                game=game,
+                event_type=event_type,
+                alert_route=alert_type,
+                tier=tier,
+                region=event.get("region"),
+            ):
+                rejected_alert_preference += 1
+                return
+
+            # Queue alerts are not product-category/family events.
+            if not is_queue_event:
+                if category is not None:
+                    product_preferences = await get_product_preferences(
+                        member.id,
+                        game,
+                    )
+                    product_default = DEFAULT_PRODUCT_PREFERENCES.get(
+                        category,
+                        False,
+                    )
+                    if not bool(product_preferences.get(category, product_default)):
+                        rejected_product_preference += 1
+                        return
+
+                if family is not None:
+                    family_preferences = await get_family_preferences(
+                        member.id,
+                        game,
+                    )
+                    family_default = DEFAULT_FAMILY_PREFERENCES.get(
+                        family,
+                        False,
+                    )
+                    if not bool(family_preferences.get(family, family_default)):
+                        rejected_family_preference += 1
+                        return
+
+            eligible.append(member)
+
+        except Exception as error:
+            # Fail closed for pings: the channel alert can still be posted,
+            # but a member is not pinged when entitlement/preferences cannot
+            # be verified.
+            print(
+                "MEMBER ALERT PREF ERROR | "
+                f"User={getattr(member, 'id', None)} | "
+                f"Game={game} | Event={event_type} | "
+                f"{type(error).__name__}: {error}"
+            )
+            preference_errors += 1
+
+    for offset in range(0, len(base_members), 4):
+        await asyncio.gather(*(check_member(member) for member in base_members[offset:offset + 4]))
+    eligible_ids = {member.id for member in eligible}
+    eligible = [member for member in base_members if member.id in eligible_ids]
+
+    print(
+        "MEMBER ALERT ELIGIBILITY | "
+        f"Game={game} | Event={event_type} | Route={alert_type} | "
+        f"GameMembers={len(base_members)} | Eligible={len(eligible)} | "
+        f"TierBlocked={rejected_tier} | "
+        f"AlertPrefBlocked={rejected_alert_preference} | "
+        f"ProductPrefBlocked={rejected_product_preference} | "
+        f"FamilyPrefBlocked={rejected_family_preference} | "
+        f"Errors={preference_errors}"
+    )
+
+    return eligible
+
+
+def build_mention_chunks(members, max_length=1800):
+    chunks = []
+    current = []
+    for member in members:
+        mention = member.mention
+        candidate = " ".join(current + [mention])
+        if len(candidate) > max_length and current:
+            chunks.append(" ".join(current))
+            current = [mention]
+        else:
+            current.append(mention)
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+# =========================================================
 # ROUTE EVENT
 # =========================================================
 
@@ -1007,6 +1242,7 @@ async def route_event_to_discord(
     bot,
     event,
 ):
+    dispatch_started = time.monotonic()
     # =====================================================
     # GAME SAFETY CHECK BEFORE ROLE PING
     # =====================================================
@@ -1087,26 +1323,20 @@ async def route_event_to_discord(
         return False
 
     # =====================================================
-    # GAME ROLE
+    # MEMBER-LEVEL ELIGIBILITY
+    # Tier + game + product type + family + alert toggle
     # =====================================================
 
-    game = event.get(
-        "game"
-    )
+    game = event.get("game")
+    minimum_tier = access.get("minimum_tier", "Free")
 
-    role_id = safe_int(
-        GAME_ROLES.get(
-            game
-        )
+    eligible_members = await get_eligible_members(
+        guild,
+        event,
+        alert_type,
+        minimum_tier,
     )
-
-    role = (
-        guild.get_role(
-            role_id
-        )
-        if role_id
-        else None
-    )
+    mention_chunks = build_mention_chunks(eligible_members)
 
     embed, affiliate_used = (
         await build_event_embed(
@@ -1128,19 +1358,15 @@ async def route_event_to_discord(
             message = (
                 await channel.send(
                     content=(
-                        role.mention
-                        if role
-                        else (
-                            f"**{game}**"
-                            if game
-                            else None
-                        )
+                        mention_chunks[0]
+                        if mention_chunks
+                        else None
                     ),
                     embed=embed,
                     allowed_mentions=(
                         discord.AllowedMentions(
-                            roles=True,
-                            users=False,
+                            roles=False,
+                            users=True,
                             everyone=False,
                         )
                     ),
@@ -1177,6 +1403,28 @@ async def route_event_to_discord(
     if message is None:
         return False
 
+    # Large servers can exceed one Discord content field. Additional chunks
+    # contain mentions only; the product embed is posted once.
+    for mention_chunk in mention_chunks[1:]:
+        try:
+            await channel.send(
+                content=mention_chunk,
+                allowed_mentions=discord.AllowedMentions(
+                    roles=False,
+                    users=True,
+                    everyone=False,
+                ),
+            )
+        except Exception as error:
+            print(
+                "DISCORD MENTION CHUNK ERROR | "
+                f"{type(error).__name__}: {error}"
+            )
+
+    print(f"LOTUS DISPATCH TIMING | Event={event.get('event_type')} | "
+          f"Store={event.get('store_name')} | "
+          f"DispatchSeconds={time.monotonic() - dispatch_started:.3f} | "
+          f"EligibleMentions={len(eligible_members)}")
     await save_alert_delivery(
         alert_type=alert_type,
         minimum_tier=(
@@ -1206,7 +1454,8 @@ async def route_event_to_discord(
             f"OldPrice={event.get('old_price')} | "
             f"Price={event.get('price')} | "
             f"Image={bool(event.get('image_url'))} | "
-            f"Affiliate={affiliate_used}"
+            f"Affiliate={affiliate_used} | "
+            f"EligibleMentions={len(eligible_members)}"
         )
     )
 
@@ -1221,7 +1470,7 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v0.7.9 started."
+        "Lotus Event Worker v1.0.6 / 6K-2C3 started."
     )
 
     while not bot.is_closed():
