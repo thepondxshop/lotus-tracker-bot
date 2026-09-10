@@ -69,8 +69,8 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C1
-# Step 6K-2C1 — Shopify Rate-Limit + Large-Catalog Hardening
+# Component Version 1.0.6-C3
+# Step 6K-2C3 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
 # Product-category diagnostics
@@ -94,7 +94,12 @@ from app.store_health import (
 # =========================================================
 
 
-POLL_SECONDS = 60
+POLL_SECONDS = 5
+MAX_CONCURRENT_STORE_SCANS = 4
+_STORE_SCAN_CAPACITY = asyncio.Semaphore(MAX_CONCURRENT_STORE_SCANS)
+_STORE_TIMINGS = {}
+_STORE_RESULTS = {}
+_BACKGROUND_SCANS = 0
 
 HEALTH_PROBE_SECONDS = 300
 
@@ -3064,7 +3069,31 @@ async def scan_shopify_store(store):
     """Serialize scans for a single Shopify storefront."""
     lock = _get_store_scan_lock(store.id)
     async with lock:
-        return await _scan_shopify_store_unlocked(store)
+        requested = time.monotonic()
+        async with _STORE_SCAN_CAPACITY:
+            started = time.monotonic()
+            previous = _STORE_TIMINGS.get(store.id, {}).get("started_monotonic")
+            timing = {
+                "store": store.name,
+                "started_monotonic": started,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "capacity_wait_seconds": round(started - requested, 3),
+                "revisit_seconds": round(started - previous, 3) if previous else None,
+            }
+            _STORE_TIMINGS[store.id] = timing
+            MONITOR_STATUS["scan_started_at"] = timing["started_at"]
+            try:
+                return await _scan_shopify_store_unlocked(store)
+            finally:
+                timing["duration_seconds"] = round(time.monotonic() - started, 3)
+                MONITOR_STATUS["scan_finished_at"] = datetime.now(timezone.utc).isoformat()
+                MONITOR_STATUS["scan_duration_seconds"] = timing["duration_seconds"]
+                print(
+                    "SHOPIFY STORE TIMING | "
+                    f"Store={store.name} | RevisitSeconds={timing['revisit_seconds']} | "
+                    f"ScanSeconds={timing['duration_seconds']} | "
+                    f"CapacityWaitSeconds={timing['capacity_wait_seconds']}"
+                )
 
 
 async def _scan_all_shopify_stores_unlocked():
@@ -3642,76 +3671,131 @@ async def retry_shopify_store(
         }
 
 
-async def run_shopify_monitor():
+def _refresh_background_status():
+    """Existing status fields summarize the latest successful scan per store."""
+    values = list(_STORE_RESULTS.values())
+    MONITOR_STATUS["stores_scanned"] = len(values)
+    for status_key, result_key in (
+        ("products_seen", "seen"), ("events_created", "events"),
+        ("flickers_detected", "flickers"), ("variant_switches", "variant_switches"),
+        ("preorder_activations", "preorder_activations"),
+        ("preorder_pages", "preorder_pages"),
+        ("preorder_live_products", "preorder_live_products"),
+    ):
+        MONITOR_STATUS[status_key] = sum(int(v.get(result_key, 0) or 0) for v in values)
+    for key, category in (("sealed_products", "SEALED"), ("single_products", "SINGLE"),
+                          ("accessory_products", "ACCESSORY"), ("unknown_category_products", "UNKNOWN")):
+        MONITOR_STATUS[key] = sum(v.get("categories", {}).get(category, 0) for v in values)
+    for key, family in (("global_family_products", "GLOBAL_STANDARD"), ("jp_family_products", "JP"),
+                        ("kr_family_products", "KR"), ("cn_family_products", "CN"),
+                        ("unknown_family_products", "UNKNOWN")):
+        MONITOR_STATUS[key] = sum(v.get("families", {}).get(family, 0) for v in values)
 
-    MONITOR_STATUS[
-        "running"
-    ] = True
 
-    print(
-        "Lotus Shopify Monitor 6K-2C1 (component 1.0.6-C1) started."
-    )
-
-    await asyncio.sleep(
-        10
-    )
-
-    last_health_probe = 0.0
-
+async def _run_scheduled_store(store_id):
+    global _BACKGROUND_SCANS
+    failures = 0
     while True:
-
+        # Reload live activation/domain settings before every scan. Manual
+        # removal/disable therefore stops further polling without a restart.
+        store = await get_shopify_store(store_id)
+        if store is None or not store.active or store.platform != "shopify":
+            return
+        started = time.monotonic()
+        cooldown = POLL_SECONDS
+        _BACKGROUND_SCANS += 1
         try:
-
-            await scan_all_shopify_stores()
-
-            now = (
-                time.monotonic()
-            )
-
-            if (
-                now
-                - last_health_probe
-                >= HEALTH_PROBE_SECONDS
-            ):
-
-                await run_health_recovery_probes()
-
-                last_health_probe = (
-                    now
-                )
-
+            result = await scan_shopify_store(store)
+            _STORE_RESULTS[store_id] = result
+            if result.get("partial_rate_limited"):
+                failures += 1
+                cooldown = min(300, 30 * 2 ** min(failures - 1, 4))
+            else:
+                failures = 0
+            await record_store_success(store.id)
+            _refresh_background_status()
+            MONITOR_STATUS["last_scan"] = datetime.utcnow().isoformat()
+            MONITOR_STATUS["last_scan_outcome"] = "SUCCESS"
         except asyncio.CancelledError:
-
-            MONITOR_STATUS[
-                "running"
-            ] = False
-
             raise
-
         except Exception as error:
+            failures += 1
+            cooldown = min(300, 30 * 2 ** min(failures - 1, 4))
+            MONITOR_STATUS["stores_failed"] += 1
+            MONITOR_STATUS["last_error"] = f"{store.name}: {type(error).__name__}: {error}"
+            MONITOR_STATUS["last_scan_outcome"] = "STORE_ERROR"
+            print("SHOPIFY SCHEDULED ERROR | " + MONITOR_STATUS["last_error"])
+            if not isinstance(error, ShopifyRateLimitError):
+                await record_store_failure(store.id, str(error))
+        finally:
+            _BACKGROUND_SCANS -= 1
+        # No catch-up bursts. Healthy short scans target a five-second
+        # start-to-start period; throttled/error sources get a full cooldown.
+        delay = cooldown if failures else max(1.0, POLL_SECONDS - (time.monotonic() - started))
+        await asyncio.sleep(delay)
 
-            MONITOR_STATUS[
-                "last_error"
-            ] = (
-                f"{type(error).__name__}: "
-                f"{error}"
-            )
 
-            print(
-                (
-                    "SHOPIFY MONITOR LOOP ERROR | "
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-            )
-
-        await asyncio.sleep(
-            POLL_SECONDS
-        )
+async def run_shopify_monitor():
+    MONITOR_STATUS["running"] = True
+    print("Lotus Shopify Monitor 6K-2C3 (component 1.0.6-C3) started. "
+          "Independent stores; target=5s; max concurrent scans=4.")
+    tasks = {}
+    health_task = None
+    last_health_probe = 0.0
+    try:
+        await asyncio.sleep(2)
+        while True:
+            try:
+                stores = await get_shopify_stores()
+                active_ids = {store.id for store in stores}
+                MONITOR_STATUS["active_shopify_stores"] = len(active_ids)
+                # Let in-flight transactions/publication finish on disable.
+                # Each store task rechecks activation before the next request.
+                for store_id, task in list(tasks.items()):
+                    if task.done():
+                        if not task.cancelled() and task.exception() is not None:
+                            print(f"SHOPIFY SCHEDULER TASK ERROR | StoreID={store_id} | {task.exception()}")
+                        del tasks[store_id]
+                for store in stores:
+                    if store.id not in tasks:
+                        tasks[store.id] = asyncio.create_task(_run_scheduled_store(store.id))
+                for store_id in list(_STORE_RESULTS):
+                    if store_id not in active_ids:
+                        _STORE_RESULTS.pop(store_id, None)
+                        _STORE_TIMINGS.pop(store_id, None)
+                now = time.monotonic()
+                if health_task is not None and health_task.done():
+                    if not health_task.cancelled() and health_task.exception() is not None:
+                        print(f"SHOPIFY HEALTH TASK ERROR | {health_task.exception()}")
+                    health_task = None
+                if health_task is None and now - last_health_probe >= HEALTH_PROBE_SECONDS:
+                    health_task = asyncio.create_task(run_health_recovery_probes())
+                    last_health_probe = now
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                MONITOR_STATUS["last_error"] = f"Scheduler: {type(error).__name__}: {error}"
+                print("SHOPIFY SCHEDULER ERROR | " + MONITOR_STATUS["last_error"])
+            await asyncio.sleep(5)
+    finally:
+        MONITOR_STATUS["running"] = False
+        children = list(tasks.values()) + ([health_task] if health_task else [])
+        for task in children:
+            task.cancel()
+        await asyncio.gather(*children, return_exceptions=True)
 
 
 def get_shopify_monitor_status():
-
-    return dict(
-        MONITOR_STATUS
-    )
+    data = dict(MONITOR_STATUS)
+    data.update({
+        "scheduler": "INDEPENDENT_STORES_6K_2C3",
+        "target_interval_seconds": POLL_SECONDS,
+        "max_concurrent_stores": MAX_CONCURRENT_STORE_SCANS,
+        "background_scans": _BACKGROUND_SCANS,
+        "scan_in_progress": bool(_BACKGROUND_SCANS or _SHOPIFY_SCAN_LOCK.locked()),
+        "status_scope": "latest successful scan per store; adapter counters cumulative",
+        "store_timings": {str(k): {name: value for name, value in v.items()
+                                  if name != "started_monotonic"}
+                          for k, v in _STORE_TIMINGS.items()},
+    })
+    return data
