@@ -1,4 +1,4 @@
-"""Lotus major-retailer package • Step 6K-3B Best Buy validation • Bot release 1.0.6."""
+"""Lotus major-retailer package • Step 6K-3C GameStop validation • Bot release 1.0.6."""
 
 from .catalog import load_builtin_major_retailer_definitions
 
@@ -8,6 +8,7 @@ load_builtin_major_retailer_definitions()
 from . import target as _target  # noqa: E402,F401
 from . import walmart as _walmart  # noqa: E402,F401
 from . import best_buy as _best_buy  # noqa: E402,F401
+from . import gamestop as _gamestop  # noqa: E402,F401
 
 from .base import (  # noqa: E402,F401
     MajorRetailerAdapter,
@@ -57,4 +58,4 @@ from .registry import (  # noqa: E402,F401
 )
 
 VERSION = "1.0.6"
-STEP = "6K-3B"
+STEP = "6K-3C"
