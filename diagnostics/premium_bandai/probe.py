@@ -1,4 +1,4 @@
-"""Lotus 6K-3D6: one-shot browser diagnostics; no Discord or production integration."""
+"""Lotus 6K-3D7: one-shot browser diagnostics; no Discord or production integration."""
 import asyncio
 import json
 import re
@@ -174,7 +174,7 @@ PREFIX = "PREMIUM BANDAI BROWSER DIAGNOSTICS | "
 
 
 def emit(data):
-    print(PREFIX + json.dumps({"step": "6K-3D6", "browser_mode": "VIRTUAL_DISPLAY", "integration_state": "VALIDATION_ONLY",
+    print(PREFIX + json.dumps({"step": "6K-3D7", "browser_mode": "VIRTUAL_DISPLAY", "request_interception": False, "integration_state": "VALIDATION_ONLY",
                               "stock_verified": False, **data}, sort_keys=True), flush=True)
 
 
@@ -190,19 +190,26 @@ async def inspect_page(browser, url, result):
             counts["failed_requests"] += 1
         page.on("request", requested)
         page.on("requestfailed", failed)
-        # Keep top-level navigation on the selected public US item page.
-        async def guard(route):
-            request = route.request
-            if request.is_navigation_request() and request.frame == page.main_frame:
-                parsed = urlparse(request.url)
-                expected = urlparse(url)
-                if (parsed.scheme != "https" or parsed.hostname != "p-bandai.com"
-                        or parsed.path.rstrip('/') != expected.path.rstrip('/')):
-                    result["navigation_restricted"] = True
-                    await route.abort()
-                    return
-            await route.continue_()
-        await page.route("**/*", guard)
+        # Observe network events without routing/intercepting requests.
+        result["http_status_counts"] = {}
+        result["script_error_names"] = []
+        result["document_responses"] = []
+        def response_seen(response):
+            key = str(response.status)
+            counts_by_status = result["http_status_counts"]
+            counts_by_status[key] = counts_by_status.get(key, 0) + 1
+            if response.request.resource_type == "document" and len(result["document_responses"]) < 8:
+                parsed_url = urlparse(response.url)
+                result["document_responses"].append({
+                    "host": parsed_url.hostname,
+                    "path": sanitize_text(parsed_url.path, 160),
+                    "status": response.status,
+                })
+        def script_error(error):
+            if len(result["script_error_names"]) < 8:
+                result["script_error_names"].append(sanitize_text(error.name, 80))
+        page.on("response", response_seen)
+        page.on("pageerror", script_error)
         started = time.monotonic()
         response = await page.goto(url, wait_until="domcontentloaded", timeout=25000)
         result["http_status"] = response.status if response else None
@@ -217,6 +224,12 @@ async def inspect_page(browser, url, result):
                 result["outcome"] = "PAGE_TOO_LARGE"
                 return
             result["rendered_characters"] = len(body)
+            current = urlparse(page.url)
+            result["final_host"] = current.hostname
+            result["final_path"] = sanitize_text(current.path, 160)
+            if current.scheme != "https" or current.hostname not in {"p-bandai.com", "www.p-bandai.com"}:
+                result["outcome"] = "UNEXPECTED_DESTINATION"
+                return
             snapshot = await page.evaluate(SNAPSHOT_JS)
             result["page_title"] = sanitize_text(snapshot.get("title", ""), 180)
             result["visible_text_sample"] = sanitize_text(snapshot.get("text", ""), 500)
@@ -254,6 +267,7 @@ async def inspect_page(browser, url, result):
 
 
 async def main():
+    emit({"outcome": "PROBE_STARTING"})
     try:
         from playwright.async_api import async_playwright
     except ImportError:
