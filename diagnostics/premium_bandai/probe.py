@@ -1,4 +1,4 @@
-"""Lotus 6K-3D7: one-shot browser diagnostics; no Discord or production integration."""
+"""Lotus 6K-3D8: one-shot browser diagnostics; no Discord or production integration."""
 import asyncio
 import json
 import re
@@ -174,7 +174,7 @@ PREFIX = "PREMIUM BANDAI BROWSER DIAGNOSTICS | "
 
 
 def emit(data):
-    print(PREFIX + json.dumps({"step": "6K-3D7", "browser_mode": "VIRTUAL_DISPLAY", "request_interception": False, "integration_state": "VALIDATION_ONLY",
+    print(PREFIX + json.dumps({"step": "6K-3D8", "browser_mode": "VIRTUAL_DISPLAY", "request_interception": False, "integration_state": "VALIDATION_ONLY",
                               "stock_verified": False, **data}, sort_keys=True), flush=True)
 
 
@@ -194,7 +194,20 @@ async def inspect_page(browser, url, result):
         result["http_status_counts"] = {}
         result["script_error_names"] = []
         result["document_responses"] = []
+        result["http_error_responses"] = []
         def response_seen(response):
+            if response.status >= 400 and len(result["http_error_responses"]) < 12:
+                parsed_url = urlparse(response.url)
+                detail = {
+                    "host": parsed_url.hostname,
+                    "path": sanitize_text(parsed_url.path, 180),
+                    "status": response.status,
+                    "method": response.request.method,
+                    "resource_type": response.request.resource_type,
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                }
+                result["http_error_responses"].append(detail)
+                emit({"outcome": "HTTP_ERROR_OBSERVED", "probe_url": url, "response": detail})
             key = str(response.status)
             counts_by_status = result["http_status_counts"]
             counts_by_status[key] = counts_by_status.get(key, 0) + 1
