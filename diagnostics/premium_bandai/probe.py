@@ -1,4 +1,4 @@
-"""Lotus 6K-3D8: one-shot browser diagnostics; no Discord or production integration."""
+"""Lotus 6K-3D9: one-shot browser diagnostics; no Discord or production integration."""
 import asyncio
 import json
 import re
@@ -174,12 +174,64 @@ PREFIX = "PREMIUM BANDAI BROWSER DIAGNOSTICS | "
 
 
 def emit(data):
-    print(PREFIX + json.dumps({"step": "6K-3D8", "browser_mode": "VIRTUAL_DISPLAY", "request_interception": False, "integration_state": "VALIDATION_ONLY",
+    print(PREFIX + json.dumps({"step": "6K-3D9", "browser_mode": "VIRTUAL_DISPLAY", "request_interception": False, "integration_state": "VALIDATION_ONLY",
                               "stock_verified": False, **data}, sort_keys=True), flush=True)
+
+
+def summarize_error_body(raw, content_type):
+    if len(raw) > 131072:
+        return {"body_summary": "BODY_TOO_LARGE", "body_bytes": len(raw)}
+    text = raw.decode("utf-8", errors="replace")
+    if "json" in content_type:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return {"body_summary": "INVALID_JSON"}
+        fields = {}
+        if isinstance(data, dict):
+            for key in ("code", "status", "error", "message", "reason", "description"):
+                value = data.get(key)
+                if type(value) in (str, int, bool):
+                    fields[key] = sanitize_text(value, 300)
+        return {"error_fields": fields}
+    if "html" not in content_type and "text/plain" not in content_type:
+        return {"body_summary": "NON_TEXT_RESPONSE"}
+    class ErrorText(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.hidden = 0
+            self.parts = []
+            self.size = 0
+            self.title = []
+            self.in_title = False
+        def handle_starttag(self, tag, attrs):
+            if tag in {"script", "style", "form", "textarea", "template", "noscript"}:
+                self.hidden += 1
+            if tag == "title":
+                self.in_title = True
+        def handle_endtag(self, tag):
+            if tag in {"script", "style", "form", "textarea", "template", "noscript"}:
+                self.hidden = max(0, self.hidden - 1)
+            if tag == "title":
+                self.in_title = False
+        def handle_data(self, value):
+            if self.hidden:
+                return
+            if self.in_title:
+                self.title.append(value[:180])
+            if self.size < 3000:
+                piece = value[:3000-self.size]
+                self.parts.append(piece)
+                self.size += len(piece)
+    parser = ErrorText()
+    parser.feed(text)
+    return {"response_title": sanitize_text(" ".join(parser.title), 180),
+            "response_text_sample": sanitize_text(" ".join(parser.parts), 600)}
 
 
 async def inspect_page(browser, url, result):
     context = await browser.new_context(accept_downloads=False)
+    captures = []
     try:
         page = await context.new_page()
         page.set_default_timeout(5000)
@@ -195,6 +247,18 @@ async def inspect_page(browser, url, result):
         result["script_error_names"] = []
         result["document_responses"] = []
         result["http_error_responses"] = []
+        async def capture_error(response):
+            detail = {"status": response.status}
+            try:
+                headers = response.headers
+                content_type = headers.get("content-type", "").lower()
+                detail["content_type"] = sanitize_text(content_type, 100)
+                detail["server"] = sanitize_text(headers.get("server", ""), 100)
+                raw = await asyncio.wait_for(response.body(), timeout=5)
+                detail.update(summarize_error_body(raw, content_type))
+            except Exception as error:
+                detail["capture_error"] = type(error).__name__
+            emit({"outcome": "HTTP_ERROR_DETAIL", "probe_url": url, "response": detail})
         def response_seen(response):
             if response.status >= 400 and len(result["http_error_responses"]) < 12:
                 parsed_url = urlparse(response.url)
@@ -206,6 +270,9 @@ async def inspect_page(browser, url, result):
                     "resource_type": response.request.resource_type,
                     "elapsed_seconds": round(time.monotonic() - started, 3),
                 }
+                if (response.status == 501 and parsed_url.hostname == "p-bandai.com"
+                        and parsed_url.path == urlparse(url).path and len(captures) < 1):
+                    captures.append(asyncio.create_task(capture_error(response)))
                 result["http_error_responses"].append(detail)
                 emit({"outcome": "HTTP_ERROR_OBSERVED", "probe_url": url, "response": detail})
             key = str(response.status)
@@ -276,7 +343,11 @@ async def inspect_page(browser, url, result):
                 return
             await asyncio.sleep(1)
     finally:
-        await context.close()
+        try:
+            if captures:
+                await asyncio.gather(*captures, return_exceptions=True)
+        finally:
+            await context.close()
 
 
 async def main():
