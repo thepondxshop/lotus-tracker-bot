@@ -1,4 +1,4 @@
-"""Lotus 6K-3D4: one-shot browser diagnostics; no Discord or production integration."""
+"""Lotus 6K-3D5: one-shot browser diagnostics; no production alerts."""
 import asyncio
 import json
 import re
@@ -12,7 +12,8 @@ def sanitize_text(value, limit=400):
     value = re.sub(r"https?://\S+", "[URL]", value)
     value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[EMAIL]", value)
     value = re.sub(
-        r"(?i)\b(token|api_?key|session|authorization|password|nonce)\s*[:=]\s*[^\s,;]+",
+        r"(?i)\b(token|api_?key|session|authorization|password|nonce)"
+        r"\s*[:=]\s*[^\s,;]+",
         r"\1=[REDACTED]",
         value,
     )
@@ -22,7 +23,7 @@ def sanitize_text(value, limit=400):
 
 
 def parse_preload_product(body, page_url):
-    """Extract observed product fields without executing JavaScript or enabling alerts."""
+    """Extract JSON from an inline PRELOAD_DATA assignment."""
     path = urlparse(page_url).path
     match = re.fullmatch(r"/us/item/([A-Za-z0-9_-]+)/?", path)
     if not match:
@@ -57,7 +58,8 @@ def parse_preload_product(body, page_url):
 
     for script in scripts.parts:
         for assignment in re.finditer(
-            r"(?m)^\s*(?:(?:var|let|const)\s+|window\.)?PRELOAD_DATA\s*=\s*",
+            r"(?m)^\s*(?:(?:var|let|const)\s+|window\.)?"
+            r"PRELOAD_DATA\s*=\s*",
             script,
         ):
             try:
@@ -79,7 +81,17 @@ def parse_preload_product(body, page_url):
             )
         }
 
-    data = candidates[0]
+    return parse_product_data(candidates[0], page_url)
+
+
+def parse_product_data(data, page_url):
+    match = re.fullmatch(
+        r"/us/item/([A-Za-z0-9_-]+)/?",
+        urlparse(page_url).path,
+    )
+    if not match:
+        return {"preload_error": "ITEM_URL_REQUIRED"}
+
     product = data.get("product") if isinstance(data, dict) else None
 
     if not isinstance(product, dict):
@@ -204,6 +216,92 @@ def parse_preload_product(body, page_url):
     }
 
 
+SNAPSHOT_JS = r"""() => {
+    const out = {
+        title: String(document.title || "").slice(0, 500),
+        text: String(document.body?.innerText || "").slice(0, 10000),
+        preload_present: false,
+        product_present: false,
+        read_error: false
+    };
+
+    try {
+        const data = typeof PRELOAD_DATA !== "undefined"
+            ? PRELOAD_DATA : window.PRELOAD_DATA;
+
+        out.preload_present = data != null;
+
+        const p = data?.product;
+        out.product_present = p != null && typeof p === "object";
+
+        if (out.product_present) {
+            const scalar = v => typeof v === "string"
+                ? v.slice(0, 500)
+                : (
+                    typeof v === "boolean"
+                    || (typeof v === "number" && Number.isFinite(v))
+                ) ? v : null;
+
+            const info = p.infoSection || {};
+            const price = info.price?.fixedListPrice || {};
+            const order = info.orderInfo || {};
+            const general = info.generalProdInfo || {};
+            const limits =
+                p.productDescriptionSection?.productLimitedQuantityInfo
+                || {};
+
+            out.product = {
+                productCode: scalar(p.productCode),
+                areaCode: scalar(p.areaCode),
+                purchaseAvailable: scalar(p.purchaseAvailable),
+                discontinued: scalar(p.discontinued),
+                flags: Array.isArray(p.flags)
+                    ? p.flags.slice(0, 20).map(scalar) : [],
+                infoSection: {
+                    productName: {
+                        en: scalar(info.productName?.en)
+                    },
+                    price: {
+                        fixedListPrice: {
+                            amount: scalar(price.amount),
+                            currency: scalar(price.currency)
+                        }
+                    },
+                    orderInfo: {
+                        preOrderStatus: scalar(order.preOrderStatus),
+                        orderStartDate: scalar(order.orderStartDate),
+                        orderEndDate: scalar(order.orderEndDate),
+                        estimatedShippingDate:
+                            scalar(order.estimatedShippingDate)
+                    },
+                    generalProdInfo: {
+                        outOfStock: scalar(general.outOfStock),
+                        availabilityStatus:
+                            scalar(general.availabilityStatus)
+                    }
+                },
+                productDescriptionSection: {
+                    productLimitedQuantityInfo: {
+                        maxByPerOrder: scalar(limits.maxByPerOrder),
+                        maxByPerUser: scalar(limits.maxByPerUser)
+                    }
+                },
+                mediaSection: {
+                    images: [{
+                        fileUrl:
+                            scalar(p.mediaSection?.images?.[0]?.fileUrl)
+                    }]
+                }
+            };
+        }
+    } catch (_) {
+        out.read_error = true;
+    }
+
+    return out;
+}"""
+
+
 URLS = [
     "https://p-bandai.com/us/item/N2890904002",
     "https://p-bandai.com/us/item/N2890904001",
@@ -216,7 +314,7 @@ def emit(data):
         PREFIX
         + json.dumps(
             {
-                "step": "6K-3D4",
+                "step": "6K-3D5",
                 "integration_state": "VALIDATION_ONLY",
                 "stock_verified": False,
                 **data,
@@ -229,6 +327,7 @@ def emit(data):
 
 async def inspect_page(browser, url, result):
     context = await browser.new_context(accept_downloads=False)
+
     try:
         page = await context.new_page()
         page.set_default_timeout(5000)
@@ -243,7 +342,6 @@ async def inspect_page(browser, url, result):
         page.on("request", requested)
         page.on("requestfailed", failed)
 
-        # Keep top-level navigation on the selected public US item page.
         async def guard(route):
             request = route.request
             if (
@@ -252,6 +350,7 @@ async def inspect_page(browser, url, result):
             ):
                 parsed = urlparse(request.url)
                 expected = urlparse(url)
+
                 if (
                     parsed.scheme != "https"
                     or parsed.hostname != "p-bandai.com"
@@ -261,6 +360,7 @@ async def inspect_page(browser, url, result):
                     result["navigation_restricted"] = True
                     await route.abort()
                     return
+
             await route.continue_()
 
         await page.route("**/*", guard)
@@ -285,14 +385,32 @@ async def inspect_page(browser, url, result):
 
         while True:
             body = await page.content()
+
             if len(body) > 2 * 1024 * 1024:
                 result["outcome"] = "PAGE_TOO_LARGE"
                 return
 
             result["rendered_characters"] = len(body)
-            visible = (
-                await page.locator("body").inner_text()
-            )[:10000].lower()
+            snapshot = await page.evaluate(SNAPSHOT_JS)
+
+            result["page_title"] = sanitize_text(
+                snapshot.get("title", ""), 180
+            )
+            result["visible_text_sample"] = sanitize_text(
+                snapshot.get("text", ""), 500
+            )
+            result["runtime_preload_present"] = snapshot.get(
+                "preload_present", False
+            )
+            result["runtime_product_present"] = snapshot.get(
+                "product_present", False
+            )
+            result["runtime_read_error"] = snapshot.get(
+                "read_error", False
+            )
+            result.update(counts)
+
+            visible = snapshot.get("text", "").lower()
 
             if any(
                 marker in visible
@@ -310,6 +428,24 @@ async def inspect_page(browser, url, result):
                 return
 
             parsed = parse_preload_product(body, url)
+            result["html_preload_error"] = parsed.get("preload_error")
+            result["data_source"] = (
+                "HTML" if parsed.get("product_data_parsed") else None
+            )
+
+            if snapshot.get("product_present"):
+                runtime = parse_product_data(
+                    {"product": snapshot.get("product")},
+                    url,
+                )
+                result["runtime_preload_error"] = runtime.get(
+                    "preload_error"
+                )
+
+                if runtime.get("product_data_parsed"):
+                    parsed = runtime
+                    result["data_source"] = "BROWSER_MEMORY"
+
             result.update(parsed)
             result.update(counts)
 
@@ -329,6 +465,7 @@ async def inspect_page(browser, url, result):
                 return
 
             await asyncio.sleep(1)
+
     finally:
         await context.close()
 
@@ -384,6 +521,7 @@ async def main():
                     time.monotonic() - start, 3
                 )
                 emit(result)
+
         finally:
             await browser.close()
 
