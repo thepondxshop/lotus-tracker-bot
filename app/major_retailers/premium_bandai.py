@@ -1,6 +1,6 @@
-"""Lotus 6K-3D: Premium Bandai US source-access assessment only.
+"""Lotus 6K-3D3: Premium Bandai US product-data validation probe.
 
-No product extraction, persistence, stock inference, or customer alerts.
+Extracts observed product fields for diagnostics only; no production alerts.
 """
 from __future__ import annotations
 import asyncio
@@ -14,7 +14,7 @@ import aiohttp
 from .base import MajorRetailerAdapter, MajorRetailerCapabilityProfile, MajorRetailerProbe
 from .registry import major_retailer_adapter
 
-STEP = "6K-3D2"
+STEP = "6K-3D3"
 DEFAULT_URL = "https://p-bandai.com/us"
 
 
@@ -150,19 +150,130 @@ def assess_html(body, page_url=DEFAULT_URL):
     # A fetched page is evidence for inspection, not a passed product validation.
     message = ("PREMIUM_BANDAI_CHALLENGE_PAGE" if challenge else
                "PREMIUM_BANDAI_STRUCTURE_CAPTURED_NOT_PRODUCT_VALIDATED")
+    if not challenge:
+        parsed = parse_preload_product(body, page_url)
+        details.update(parsed)
+        if parsed.get("product_data_parsed"):
+            message = "PREMIUM_BANDAI_PRODUCT_PARSED_LIVE_VALIDATION_PENDING"
+        else:
+            message = "PREMIUM_BANDAI_" + parsed["preload_error"]
     return False, message, details
+
+
+def parse_preload_product(body, page_url):
+    """Extract observed product fields without executing JavaScript or enabling alerts."""
+    path = urlparse(page_url).path
+    match = re.fullmatch(r"/us/item/([A-Za-z0-9_-]+)/?", path)
+    if not match:
+        return {"preload_error": "ITEM_URL_REQUIRED"}
+
+    class Scripts(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.active = False
+            self.parts = []
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                attrs = dict(attrs)
+                self.active = not attrs.get("src") and attrs.get("type", "").lower() in {
+                    "", "text/javascript", "application/javascript"}
+        def handle_endtag(self, tag):
+            if tag == "script":
+                self.active = False
+        def handle_data(self, data):
+            if self.active:
+                self.parts.append(data)
+
+    scripts = Scripts()
+    scripts.feed(body)
+    candidates = []
+    for script in scripts.parts:
+        for assignment in re.finditer(
+                r"(?m)^\s*(?:(?:var|let|const)\s+|window\.)?PRELOAD_DATA\s*=\s*", script):
+            try:
+                data, end = json.JSONDecoder().raw_decode(script[assignment.end():])
+                tail = script[assignment.end()+end:].lstrip(" \t")
+                if not tail or tail.startswith((";", "\n", "\r")):
+                    candidates.append(data)
+            except (ValueError, RecursionError):
+                return {"preload_error": "PRELOAD_JSON_INVALID"}
+    if len(candidates) != 1:
+        return {"preload_error": "PRELOAD_NOT_FOUND" if not candidates else "PRELOAD_AMBIGUOUS"}
+    data = candidates[0]
+    product = data.get("product") if isinstance(data, dict) else None
+    if not isinstance(product, dict):
+        return {"preload_error": "PRODUCT_MISSING"}
+    if product.get("productCode") != match[1] or product.get("areaCode") != "US":
+        return {"preload_error": "PRODUCT_IDENTITY_MISMATCH"}
+
+    def obj(value):
+        return value if isinstance(value, dict) else {}
+    def boolean(value):
+        return value if type(value) is bool else None
+    info = obj(product.get("infoSection"))
+    title = obj(info.get("productName")).get("en")
+    price = obj(obj(info.get("price")).get("fixedListPrice"))
+    amount = price.get("amount")
+    if (not isinstance(title, str) or not title.strip()
+            or type(amount) not in (int, float) or not 0 < amount < 10000000
+            or price.get("currency") != "USD"):
+        return {"preload_error": "PRODUCT_FIELDS_INVALID"}
+    general = obj(info.get("generalProdInfo"))
+    order = obj(info.get("orderInfo"))
+    flags = product.get("flags")
+    flags = [sanitize_text(f, 80) for f in flags[:20] if isinstance(f, str)] if isinstance(flags, list) else []
+    purchase = boolean(product.get("purchaseAvailable"))
+    out = boolean(general.get("outOfStock"))
+    # Only the closed-preorder combination has been observed in a real sample.
+    closed = (purchase is False and out is True and "PRE_ORDER_CLOSED" in flags
+              and order.get("preOrderStatus") == "End"
+              and general.get("availabilityStatus") == "End")
+    limits = obj(obj(product.get("productDescriptionSection")).get("productLimitedQuantityInfo"))
+    def limit(key):
+        value = limits.get(key)
+        return value if type(value) is int and value > 0 else None
+    images = obj(product.get("mediaSection")).get("images")
+    image_url = None
+    if isinstance(images, list) and images:
+        source = obj(images[0]).get("fileUrl")
+        if isinstance(source, str):
+            candidate = urljoin("https://p-bandai.com/", source)
+            parsed = urlparse(candidate)
+            if (parsed.scheme == "https" and parsed.hostname == "p-bandai.com"
+                    and not parsed.username and not parsed.password
+                    and not parsed.query and not parsed.fragment):
+                image_url = candidate
+    return {
+        "preload_error": None, "product_data_parsed": True,
+        "observed_product": {
+            "product_code": match[1], "title": sanitize_text(title, 240),
+            "price": amount, "currency": "USD", "image_url": image_url,
+            "flags": flags, "purchase_available": purchase, "out_of_stock": out,
+            "preorder_status": sanitize_text(order.get("preOrderStatus"), 80),
+            "availability_status": sanitize_text(general.get("availabilityStatus"), 80),
+            "discontinued": boolean(product.get("discontinued")),
+            "order_start": sanitize_text(order.get("orderStartDate"), 80),
+            "order_end": sanitize_text(order.get("orderEndDate"), 80),
+            "estimated_shipping_month": sanitize_text(order.get("estimatedShippingDate"), 80),
+            "limit_per_order": limit("maxByPerOrder"),
+            "limit_per_user": limit("maxByPerUser"),
+            "observed_state": "PREORDER_CLOSED" if closed else "UNKNOWN_REQUIRES_VALIDATION",
+        },
+        "stock_verified": False,
+        "validation_note": "Closed-preorder sample supported; live transitions and purchasable states unverified.",
+    }
 
 
 @major_retailer_adapter("premium_bandai")
 class PremiumBandaiMajorRetailerAdapter(MajorRetailerAdapter):
     retailer_key = "premium_bandai"
-    version = "1.0.6-6K3D2"
+    version = "1.0.6-6K3D3"
     @property
     def capabilities(self):
         # No product capability is claimed from a source-access probe.
         return MajorRetailerCapabilityProfile()
     async def healthcheck(self):
-        self.diagnostics={"integration_state":"SOURCE_ASSESSMENT_ONLY", "step":STEP,
+        self.diagnostics={"integration_state":"VALIDATION_ONLY", "product_data_parsed":False, "step":STEP,
                           "requests":0, "product_parser_verified":False,
                           "stock_verified":False, "last_error":None}
         url=safe_probe_url(os.getenv("PREMIUM_BANDAI_PROBE_URL",DEFAULT_URL).strip())
