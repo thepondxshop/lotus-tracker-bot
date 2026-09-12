@@ -2548,6 +2548,15 @@ class ShopifyAdapter:
             " ".join(str(value or "") for value in discovery_sources)
         )
 
+        # A collection explicitly labeled non-pre-order is not preorder
+        # evidence. Keep other positive sources and product-title signals.
+        discovery_probe = re.sub(
+            r"\b(?:non|not|no)[\s_-]+pre[\s_-]*orders?\b",
+            " ",
+            discovery_probe,
+            flags=re.IGNORECASE,
+        )
+
         preorder_signal = (
             "preorder" in lower_title
             or "pre-order" in lower_title
