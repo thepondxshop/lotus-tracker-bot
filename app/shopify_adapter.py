@@ -656,6 +656,19 @@ def has_strong_single_evidence(
     # One Piece singles commonly contain a card number such as
     # OP01-001, EB01-001, ST30-004, or P-001. A sealed deck code
     # such as ST-30 does not match this pattern.
+    # Pokemon collector numbers and explicit reverse-holo card titles.
+    # Sealed packaging must not become a single merely by mentioning a card.
+    if (
+        "pokemon" in combined
+        and not SEALED_CONTEXT_PATTERN.search(title_text)
+        and not any(keyword in title_text for keyword in ACCESSORY_KEYWORDS)
+        and (
+            re.search(r"\b\d{1,3}\s*/\s*\d{1,3}\b", title_text)
+            or re.search(r"\breverse[\s-]+holo(?:foil)?\b", title_text)
+        )
+    ):
+        return True
+
     if SINGLE_CARD_NUMBER_PATTERN.search(title_text):
         return True
 
@@ -668,6 +681,25 @@ def has_strong_single_evidence(
         return True
 
     return False
+
+
+def infer_additional_sealed_format(title):
+    """Recognize specific packaging names observed in store alerts."""
+    text = normalize_text(title)
+    if any(keyword in text for keyword in ACCESSORY_KEYWORDS):
+        return None
+    patterns = (
+        (r"\bbooster\s+pack\s+display\b", "Booster Box"),
+        (r"\bbooster\s*\(\s*24\s*ct\s+display\s*\)", "Booster Box"),
+        (r"\bevent\s+kit\b", "Event Kit"),
+        (r"\bshowdown\s+decks?\b", "Showdown Deck"),
+        (r"\bchampion\s+deck\b", "Champion Deck"),
+        (r"\bstarter\s*\(\s*st[-\s]?\d{1,2}\s*\)", "Starter Deck"),
+    )
+    for pattern, label in patterns:
+        if re.search(pattern, text):
+            return label
+    return None
 
 
 def infer_product_type(
@@ -691,6 +723,10 @@ def infer_product_type(
             title
         )
     )
+
+    additional_format = infer_additional_sealed_format(title)
+    if additional_format:
+        return additional_format
 
     mappings = [
 
@@ -966,6 +1002,9 @@ def infer_product_category(
     # =====================================================
     # SEALED
     # =====================================================
+
+    if infer_additional_sealed_format(title):
+        return "SEALED"
 
     if any(
         keyword in combined
