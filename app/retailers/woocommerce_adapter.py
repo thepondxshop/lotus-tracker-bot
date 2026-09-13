@@ -3,8 +3,8 @@ Lotus Tracker Bot
 PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
-Version: 1.0.5
-Step 6J-3D3 — Evolved condition and unique-copy validation
+Version: 1.0.6
+Step 6J-3D4 — Resumable Evolved validation batches
 
 Safety:
 - Public storefront Store API only
@@ -21,6 +21,7 @@ Safety:
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 
 from html import unescape
@@ -37,10 +38,10 @@ from app.retailer_adapter import (
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 
 USER_AGENT = (
-    "LotusTracker/1.0.5 "
+    "LotusTracker/1.0.6 "
     "(PonDeX Trackers; public retailer monitor)"
 )
 
@@ -620,6 +621,18 @@ def family_language(family):
 
 # Evolved's public condition table and unique-copy feed override its parent
 # WooCommerce stock flag. Other WooCommerce hosts retain their existing path.
+EVOLVED_BATCH_SIZE = 24
+EVOLVED_PRODUCT_TIMEOUT = 8
+# Process-local scan progress; a restart begins a fresh validation rotation.
+_EVOLVED_DISCOVERY_PROGRESS = {}
+
+
+def evolved_unverified(reason):
+    return {'available': False, 'known': False, 'state': 'UNKNOWN',
+            'source': 'EVOLVED_UNVERIFIED', 'price': None, 'currency': 'EUR',
+            'offers': [], 'reason': reason}
+
+
 class EvolvedConditionParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -628,6 +641,7 @@ class EvolvedConditionParser(HTMLParser):
         self.depth = 0
         self.price_depth = None
         self.product_ids = []
+        self.form = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -643,7 +657,14 @@ class EvolvedConditionParser(HTMLParser):
                 self.depth = 1
             if self.row is not None and 'evolved-regular-stock-price' in classes:
                 self.price_depth = self.depth
+        if self.row is not None and tag == 'form':
+            self.form = {'method': attrs.get('method', ''), 'fields': {}}
+        if self.row is not None and tag == 'input' and self.form is not None:
+            name = attrs.get('name')
+            if name:
+                self.form['fields'][name] = attrs.get('value')
         if self.row is not None and tag == 'button':
+            attrs['_form'] = self.form
             self.row['buttons'].append(attrs)
 
     def handle_data(self, text):
@@ -651,6 +672,8 @@ class EvolvedConditionParser(HTMLParser):
             self.row['price_text'] += text
 
     def handle_endtag(self, tag):
+        if tag == 'form':
+            self.form = None
         if tag == 'div' and self.row is not None:
             if self.depth == self.price_depth:
                 self.price_depth = None
@@ -661,81 +684,93 @@ class EvolvedConditionParser(HTMLParser):
 
 
 def evolved_inventory_result(product_id, html, payload):
-    result = {'available': False, 'known': False, 'state': 'UNKNOWN',
-              'source': 'EVOLVED_INCOMPLETE', 'price': None, 'currency': 'EUR',
-              'offers': []}
     parser = EvolvedConditionParser()
     try:
         parser.feed(html or '')
-        if (parser.product_ids != [str(product_id)] or parser.row is not None
-                or not isinstance(payload, dict)
-                or str(payload.get('product_id')) != str(product_id)
-                or payload.get('currency') != 'EUR'
-                or not isinstance(payload.get('copies'), list)
+        if parser.product_ids != [str(product_id)]:
+            return evolved_unverified('PAGE_PRODUCT_ID_MISMATCH_OR_MISSING')
+        if parser.row is not None:
+            return evolved_unverified('TRUNCATED_CONDITION_TABLE')
+        if not isinstance(payload, dict):
+            return evolved_unverified('COPY_FEED_MISSING_OR_INVALID')
+        if str(payload.get('product_id')) != str(product_id):
+            return evolved_unverified('COPY_FEED_PRODUCT_ID_MISMATCH')
+        if payload.get('currency') != 'EUR':
+            return evolved_unverified('COPY_FEED_CURRENCY_MISMATCH')
+        if (not isinstance(payload.get('copies'), list)
                 or payload.get('count') != len(payload['copies'])):
-            return result
+            return evolved_unverified('COPY_FEED_COUNT_OR_STRUCTURE_MISMATCH')
         expected = {'mint', 'near mint', 'excellent', 'good', 'light played', 'played', 'poor'}
         conditions = [str(r['condition'] or '').lower() for r in parser.rows]
         if len(conditions) != 7 or set(conditions) != expected:
-            return result
-        offers = []
-        uncertain = False
+            return evolved_unverified('CONDITION_TABLE_INCOMPLETE')
+        offers, reasons, seen = [], set(), set()
         for row in parser.rows:
-            # Only a product-specific enabled regular-stock purchase button
-            # counts as available. Unknown markup never inherits parent stock.
             enabled = [b for b in row['buttons'] if 'disabled' not in b
                        and 'is-disabled' not in b.get('class', '').split()
                        and b.get('aria-disabled') != 'true']
             if 'is-out-of-stock' in row['classes']:
                 if enabled:
-                    uncertain = True
+                    reasons.add('CONDITION_STOCK_BUTTON_CONFLICT')
                 continue
-            purchase = [b for b in enabled
-                        if b.get('data-product-id') == str(product_id)
-                        and b.get('data-variation-id')]
-            if not purchase:
-                uncertain = True
+            purchase = []
+            for button in enabled:
+                if (button.get('data-product-id') == str(product_id)
+                        and button.get('data-variation-id')):
+                    purchase.append(button['data-variation-id'])
+                form = button.get('_form') or {}
+                fields = form.get('fields', {})
+                if (button.get('type') == 'submit' and form.get('method', '').lower() == 'post'
+                        and fields.get('product_id') == str(product_id)
+                        and fields.get('add-to-cart') == str(product_id)
+                        and str(fields.get('variation_id', '')).isdigit()):
+                    purchase.append(fields['variation_id'])
+            if not purchase or 'is-in-stock' not in row['classes']:
+                reasons.add('REGULAR_PURCHASE_CONTROL_UNVERIFIED')
                 continue
             raw = row['price_text'].replace('\xa0', '').replace(' ', '').replace('€', '').replace(',', '.')
-            price = normalize_price(raw)
             offers.append({'kind': 'regular', 'condition': row['condition'],
-                           'variation_id': purchase[0]['data-variation-id'],
-                           'price': price if price is not None and price > 0 else None})
-        seen = set()
+                           'variation_id': purchase[0], 'price': evolved_positive_price(raw)})
         for copy in payload['copies']:
             if (not isinstance(copy, dict) or str(copy.get('product_id')) != str(product_id)
                     or not copy.get('copy_id') or copy['copy_id'] in seen):
-                return result
+                return evolved_unverified('COPY_IDENTITY_INVALID_OR_DUPLICATED')
             seen.add(copy['copy_id'])
             state = copy.get('availability_state')
             reservation = copy.get('reservation')
             if state == 'available':
                 if (not isinstance(reservation, dict) or reservation.get('state') != 'available'
                         or copy.get('status') != 'available' or not copy.get('variation_id')):
-                    uncertain = True
+                    reasons.add('COPY_AVAILABILITY_RESERVATION_CONFLICT')
                     continue
-                price = normalize_price(copy.get('price'))
                 offers.append({'kind': 'unique_copy', 'copy_id': copy['copy_id'],
                                'variation_id': copy['variation_id'],
                                'condition': copy.get('condition_label'),
-                               'price': price if price is not None and price > 0 else None})
+                               'price': evolved_positive_price(copy.get('price'))})
+            elif state in {'reserved', 'reserved_by_me', 'reserved_by_other'}:
+                reasons.add('COPY_RESERVED')
             elif state != 'sold':
-                # Reservations are temporary, not a confirmed sell-out.
-                uncertain = True
+                reasons.add('COPY_STATE_UNRECOGNIZED')
+        result = evolved_unverified('|'.join(sorted(reasons)) or 'NONE')
         result['offers'] = offers
         if offers:
             result.update(available=True, known=True, state='IN_STOCK',
                           source='EVOLVED_CONDITIONS_AND_COPIES')
             if all(o['price'] is not None for o in offers):
                 result['price'] = min(o['price'] for o in offers)
-        elif not uncertain:
+            else:
+                result['reason'] = 'AVAILABLE_OFFER_PRICE_MISSING'
+        elif not reasons:
             result.update(known=True, state='OUT_OF_STOCK',
                           source='EVOLVED_CONDITIONS_AND_COPIES')
-        else:
-            result['source'] = 'EVOLVED_RESERVED_OR_UNVERIFIED'
-    except (TypeError, ValueError, KeyError):
         return result
-    return result
+    except (TypeError, ValueError, KeyError):
+        return evolved_unverified('INVENTORY_STRUCTURE_INVALID')
+
+
+def evolved_positive_price(raw):
+    price = normalize_price(raw)
+    return price if price is not None and math.isfinite(price) and price > 0 else None
 
 
 def parse_wc_price(product):
@@ -881,17 +916,19 @@ class WooCommerceAdapter(RetailerAdapter):
     async def _enrich_evolved_product(self, session, product):
         if not self._uses_evolved_inventory() or not isinstance(product, dict):
             return
-        product['_evolved_inventory'] = evolved_inventory_result(None, '', None)
+        product['_evolved_inventory'] = evolved_unverified('FETCH_INCOMPLETE')
         product_id = str(product.get('id', ''))
         url = str(product.get('permalink') or '')
         if (not product_id.isdigit() or urlparse(url).scheme != 'https'
                 or (urlparse(url).hostname or '').lower() not in
                 {'evolvedtcg.eu', 'www.evolvedtcg.eu'}):
+            product['_evolved_inventory'] = evolved_unverified('INVALID_PRODUCT_ID_OR_URL')
             return
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
                                    allow_redirects=False) as response:
                 if response.status != 200:
+                    product['_evolved_inventory'] = evolved_unverified(f'PAGE_HTTP_{response.status}')
                     return
                 html = await response.text()
             await asyncio.sleep(self.request_delay)
@@ -899,43 +936,87 @@ class WooCommerceAdapter(RetailerAdapter):
                 session, f'{self.base_url}/wp-json/evolved-inventory/v1/product-copies/{product_id}')
             product['_evolved_inventory'] = evolved_inventory_result(product_id, html, payload)
             await asyncio.sleep(self.request_delay)
-        except (asyncio.TimeoutError, aiohttp.ClientError, UnicodeError):
-            pass
+        except (asyncio.TimeoutError, aiohttp.ClientError, UnicodeError) as error:
+            product['_evolved_inventory'] = evolved_unverified(type(error).__name__)
+        except asyncio.CancelledError:
+            product['_evolved_inventory'] = evolved_unverified('CANCELED_OR_TIMEOUT')
+            raise
         finally:
             result = product['_evolved_inventory']
             print('EVOLVED INVENTORY VALIDATION | '
                   f'ProductID={product_id} | State={result["state"]} | '
                   f'Price={result["price"]} | Source={result["source"]} | '
-                  f'AvailableOffers={len(result["offers"])}')
+                  f'AvailableOffers={len(result["offers"])} | '
+                  f'Reason={result.get("reason", "NONE")}')
 
     async def _enrich_evolved_batch(self, products):
         if not self._uses_evolved_inventory():
             return
-        candidates = []
+        candidates = {}
         for product in products:
             if not isinstance(product, dict):
                 continue
+            # Only this scan's evidence may enter normalization.
+            product.pop('_evolved_inventory', None)
             context = self._native_product_taxonomy_context(product)
             saved = self.product_taxonomy_context.get(product_identity_key(product), {})
             terms = sum((list(context.get(k) or []) + list(saved.get(k) or [])
                          for k in ('categories', 'tags')), [])
             if classify_game_with_taxonomy(clean_text(product.get('name')), terms)[0]:
-                candidates.append(product)
+                candidates[str(product.get('id'))] = product
+        ordered = sorted(candidates)
+        if not ordered:
+            return
+        host = 'evolvedtcg.eu'
+        progress = _EVOLVED_DISCOVERY_PROGRESS.setdefault(host, {
+            'last_id': '', 'checked': set(), 'verified': set(),
+        })
+        progress['checked'].intersection_update(ordered)
+        progress['verified'].intersection_update(ordered)
+        after = [key for key in ordered if key > progress['last_id']]
+        before = [key for key in ordered if key <= progress['last_id']]
+        selected = (after + before)[:EVOLVED_BATCH_SIZE]
+        # Reserve before awaiting so overlapping calls do not select the same
+        # batch. Canceled entries return on the next catalog rotation.
+        progress['last_id'] = selected[-1]
         semaphore = asyncio.Semaphore(3)
         async with aiohttp.ClientSession(headers={'User-Agent': USER_AGENT},
                 connector=aiohttp.TCPConnector(limit=3, limit_per_host=3)) as session:
-            async def enrich(product):
+            async def enrich(key):
+                product = candidates[key]
                 async with semaphore:
-                    await self._enrich_evolved_product(session, product)
-            # Full catalog discovery already has a monitor deadline. Enrich a
-            # bounded subset; remaining rows stay UNKNOWN until sharded refresh.
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*(enrich(product) for product in candidates)),
-                    timeout=8,
-                )
-            except asyncio.TimeoutError:
-                print("EVOLVED INVENTORY BUDGET | Remaining products require fast refresh")
+                    try:
+                        await asyncio.wait_for(
+                            self._enrich_evolved_product(session, product),
+                            timeout=EVOLVED_PRODUCT_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        product['_evolved_inventory'] = evolved_unverified('PRODUCT_TIMEOUT')
+                    progress['checked'].add(key)
+                    if product.get('_evolved_inventory', {}).get('known'):
+                        progress['verified'].add(key)
+                    else:
+                        progress['verified'].discard(key)
+            await asyncio.gather(*(enrich(key) for key in selected))
+        verified = sum(bool(candidates[k].get('_evolved_inventory', {}).get('known'))
+                       for k in selected)
+        self.diagnostics.update(
+            evolved_catalog_candidates=len(ordered),
+            evolved_batch_selected=len(selected),
+            evolved_batch_verified=verified,
+            evolved_batch_unresolved=len(selected) - verified,
+            evolved_not_checked_this_scan=len(ordered) - len(selected),
+            evolved_checked_since_start=len(progress['checked']),
+            evolved_verified_since_start=len(progress['verified']),
+        )
+        print('EVOLVED INVENTORY COVERAGE | '
+              f'Catalog={len(ordered)} | Selected={len(selected)} | '
+              f'VerifiedThisBatch={verified} | UnresolvedThisBatch={len(selected)-verified} | '
+              f'NotCheckedThisScan={len(ordered)-len(selected)} | '
+              f'CheckedSinceStart={len(progress["checked"])} | '
+              f'VerifiedSinceStart={len(progress["verified"])} | '
+              f'LastID={progress["last_id"]} | Resume=NEXT_BATCH | '
+              'ProgressScope=PROCESS_LIFETIME')
 
     async def _fetch_json(self, session, url):
         timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
@@ -1661,9 +1742,10 @@ class WooCommerceAdapter(RetailerAdapter):
                     payload, _ = await self._fetch_json(session, endpoint)
                     try:
                         await asyncio.wait_for(
-                            self._enrich_evolved_product(session, payload), timeout=8)
+                            self._enrich_evolved_product(session, payload), timeout=EVOLVED_PRODUCT_TIMEOUT)
                     except asyncio.TimeoutError:
-                        pass
+                        if isinstance(payload, dict):
+                            payload['_evolved_inventory'] = evolved_unverified('PRODUCT_TIMEOUT')
 
                     # Preserve conservative request pacing while still
                     # allowing a few independent public GETs in flight.
@@ -1795,6 +1877,19 @@ class WooCommerceAdapter(RetailerAdapter):
             return None
 
         evolved = (product.get("_evolved_inventory") or evolved_inventory_result(None, "", None)) if self._uses_evolved_inventory() else None
+        if self._uses_evolved_inventory():
+            evidence = product.get('_evolved_inventory')
+            if not evidence or not evidence.get('known'):
+                # Do not send unvisited or unresolved rows to the persistence
+                # layer: None/False must not replace a previously verified row.
+                reason = evidence.get('reason', 'UNRESOLVED') if evidence else 'NOT_CHECKED_THIS_SCAN'
+                counter = 'evolved_unresolved_skipped' if evidence else 'evolved_unchecked_skipped'
+                self.diagnostics[counter] = self.diagnostics.get(counter, 0) + 1
+                if evidence:
+                    print('EVOLVED INVENTORY SKIPPED | '
+                          f'ProductID={product.get("id")} | Reason={reason} | '
+                          'Persist=False | Alerts=False')
+                return None
         price, currency = ((evolved["price"], evolved["currency"])
                            if evolved is not None else parse_wc_price(product))
 
@@ -1952,4 +2047,5 @@ class WooCommerceAdapter(RetailerAdapter):
             cart_base_url=None,
             platform_data=platform_data,
         )
+
 
