@@ -2656,7 +2656,10 @@ async def _process_shopify_product_batch(store, adapter, native_currency, raw_pr
                 )
                 and (
                     not old_stock
-                    or old_product_state is not None
+                    # A different discovery source can change the inferred
+                    # state without a real preorder activation. Require new
+                    # evidence when the product was already purchasable.
+                    or bool(new_priority_collection_sources)
                     or preorder_title_transition
                 )
             )
