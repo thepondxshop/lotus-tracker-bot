@@ -3,8 +3,8 @@ Lotus Tracker Bot
 PonDeX Trackers
 
 WooCommerce Universal Retailer Adapter
-Version: 1.0.4
-Step 6J-3D2 — WooCommerce Fast Known-Product Refresh
+Version: 1.0.5
+Step 6J-3D3 — Evolved condition and unique-copy validation
 
 Safety:
 - Public storefront Store API only
@@ -24,6 +24,7 @@ import asyncio
 import re
 
 from html import unescape
+from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
@@ -36,10 +37,10 @@ from app.retailer_adapter import (
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 
 USER_AGENT = (
-    "LotusTracker/1.0.4 "
+    "LotusTracker/1.0.5 "
     "(PonDeX Trackers; public retailer monitor)"
 )
 
@@ -617,6 +618,126 @@ def family_language(family):
     }.get(family, "Unknown")
 
 
+# Evolved's public condition table and unique-copy feed override its parent
+# WooCommerce stock flag. Other WooCommerce hosts retain their existing path.
+class EvolvedConditionParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows = []
+        self.row = None
+        self.depth = 0
+        self.price_depth = None
+        self.product_ids = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = attrs.get('class', '').split()
+        if attrs.get('id') == 'ehi-copy-list':
+            self.product_ids.append(attrs.get('data-product-id'))
+        if tag == 'div':
+            if self.row is not None:
+                self.depth += 1
+            elif 'evolved-regular-stock-row' in classes:
+                self.row = {'condition': attrs.get('data-condition-slug'),
+                            'classes': classes, 'price_text': '', 'buttons': []}
+                self.depth = 1
+            if self.row is not None and 'evolved-regular-stock-price' in classes:
+                self.price_depth = self.depth
+        if self.row is not None and tag == 'button':
+            self.row['buttons'].append(attrs)
+
+    def handle_data(self, text):
+        if self.row is not None and self.price_depth is not None:
+            self.row['price_text'] += text
+
+    def handle_endtag(self, tag):
+        if tag == 'div' and self.row is not None:
+            if self.depth == self.price_depth:
+                self.price_depth = None
+            self.depth -= 1
+            if self.depth == 0:
+                self.rows.append(self.row)
+                self.row = None
+
+
+def evolved_inventory_result(product_id, html, payload):
+    result = {'available': False, 'known': False, 'state': 'UNKNOWN',
+              'source': 'EVOLVED_INCOMPLETE', 'price': None, 'currency': 'EUR',
+              'offers': []}
+    parser = EvolvedConditionParser()
+    try:
+        parser.feed(html or '')
+        if (parser.product_ids != [str(product_id)] or parser.row is not None
+                or not isinstance(payload, dict)
+                or str(payload.get('product_id')) != str(product_id)
+                or payload.get('currency') != 'EUR'
+                or not isinstance(payload.get('copies'), list)
+                or payload.get('count') != len(payload['copies'])):
+            return result
+        expected = {'mint', 'near mint', 'excellent', 'good', 'light played', 'played', 'poor'}
+        conditions = [str(r['condition'] or '').lower() for r in parser.rows]
+        if len(conditions) != 7 or set(conditions) != expected:
+            return result
+        offers = []
+        uncertain = False
+        for row in parser.rows:
+            # Only a product-specific enabled regular-stock purchase button
+            # counts as available. Unknown markup never inherits parent stock.
+            enabled = [b for b in row['buttons'] if 'disabled' not in b
+                       and 'is-disabled' not in b.get('class', '').split()
+                       and b.get('aria-disabled') != 'true']
+            if 'is-out-of-stock' in row['classes']:
+                if enabled:
+                    uncertain = True
+                continue
+            purchase = [b for b in enabled
+                        if b.get('data-product-id') == str(product_id)
+                        and b.get('data-variation-id')]
+            if not purchase:
+                uncertain = True
+                continue
+            raw = row['price_text'].replace('\xa0', '').replace(' ', '').replace('€', '').replace(',', '.')
+            price = normalize_price(raw)
+            offers.append({'kind': 'regular', 'condition': row['condition'],
+                           'variation_id': purchase[0]['data-variation-id'],
+                           'price': price if price is not None and price > 0 else None})
+        seen = set()
+        for copy in payload['copies']:
+            if (not isinstance(copy, dict) or str(copy.get('product_id')) != str(product_id)
+                    or not copy.get('copy_id') or copy['copy_id'] in seen):
+                return result
+            seen.add(copy['copy_id'])
+            state = copy.get('availability_state')
+            reservation = copy.get('reservation')
+            if state == 'available':
+                if (not isinstance(reservation, dict) or reservation.get('state') != 'available'
+                        or copy.get('status') != 'available' or not copy.get('variation_id')):
+                    uncertain = True
+                    continue
+                price = normalize_price(copy.get('price'))
+                offers.append({'kind': 'unique_copy', 'copy_id': copy['copy_id'],
+                               'variation_id': copy['variation_id'],
+                               'condition': copy.get('condition_label'),
+                               'price': price if price is not None and price > 0 else None})
+            elif state != 'sold':
+                # Reservations are temporary, not a confirmed sell-out.
+                uncertain = True
+        result['offers'] = offers
+        if offers:
+            result.update(available=True, known=True, state='IN_STOCK',
+                          source='EVOLVED_CONDITIONS_AND_COPIES')
+            if all(o['price'] is not None for o in offers):
+                result['price'] = min(o['price'] for o in offers)
+        elif not uncertain:
+            result.update(known=True, state='OUT_OF_STOCK',
+                          source='EVOLVED_CONDITIONS_AND_COPIES')
+        else:
+            result['source'] = 'EVOLVED_RESERVED_OR_UNVERIFIED'
+    except (TypeError, ValueError, KeyError):
+        return result
+    return result
+
+
 def parse_wc_price(product):
     prices = product.get("prices")
 
@@ -751,6 +872,70 @@ class WooCommerceAdapter(RetailerAdapter):
 
     def get_diagnostics(self):
         return dict(self.diagnostics)
+
+    def _uses_evolved_inventory(self):
+        return (urlparse(self.base_url).hostname or '').lower() in {
+            'evolvedtcg.eu', 'www.evolvedtcg.eu'
+        }
+
+    async def _enrich_evolved_product(self, session, product):
+        if not self._uses_evolved_inventory() or not isinstance(product, dict):
+            return
+        product['_evolved_inventory'] = evolved_inventory_result(None, '', None)
+        product_id = str(product.get('id', ''))
+        url = str(product.get('permalink') or '')
+        if (not product_id.isdigit() or urlparse(url).scheme != 'https'
+                or (urlparse(url).hostname or '').lower() not in
+                {'evolvedtcg.eu', 'www.evolvedtcg.eu'}):
+            return
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
+                                   allow_redirects=False) as response:
+                if response.status != 200:
+                    return
+                html = await response.text()
+            await asyncio.sleep(self.request_delay)
+            payload, _ = await self._fetch_json(
+                session, f'{self.base_url}/wp-json/evolved-inventory/v1/product-copies/{product_id}')
+            product['_evolved_inventory'] = evolved_inventory_result(product_id, html, payload)
+            await asyncio.sleep(self.request_delay)
+        except (asyncio.TimeoutError, aiohttp.ClientError, UnicodeError):
+            pass
+        finally:
+            result = product['_evolved_inventory']
+            print('EVOLVED INVENTORY VALIDATION | '
+                  f'ProductID={product_id} | State={result["state"]} | '
+                  f'Price={result["price"]} | Source={result["source"]} | '
+                  f'AvailableOffers={len(result["offers"])}')
+
+    async def _enrich_evolved_batch(self, products):
+        if not self._uses_evolved_inventory():
+            return
+        candidates = []
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            context = self._native_product_taxonomy_context(product)
+            saved = self.product_taxonomy_context.get(product_identity_key(product), {})
+            terms = sum((list(context.get(k) or []) + list(saved.get(k) or [])
+                         for k in ('categories', 'tags')), [])
+            if classify_game_with_taxonomy(clean_text(product.get('name')), terms)[0]:
+                candidates.append(product)
+        semaphore = asyncio.Semaphore(3)
+        async with aiohttp.ClientSession(headers={'User-Agent': USER_AGENT},
+                connector=aiohttp.TCPConnector(limit=3, limit_per_host=3)) as session:
+            async def enrich(product):
+                async with semaphore:
+                    await self._enrich_evolved_product(session, product)
+            # Full catalog discovery already has a monitor deadline. Enrich a
+            # bounded subset; remaining rows stay UNKNOWN until sharded refresh.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(enrich(product) for product in candidates)),
+                    timeout=8,
+                )
+            except asyncio.TimeoutError:
+                print("EVOLVED INVENTORY BUDGET | Remaining products require fast refresh")
 
     async def _fetch_json(self, session, url):
         timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
@@ -1224,6 +1409,7 @@ class WooCommerceAdapter(RetailerAdapter):
                 await asyncio.sleep(self.request_delay)
 
         products = list(products_by_key.values())[:MAX_PRODUCTS]
+        await self._enrich_evolved_batch(products)
 
         self.diagnostics["product_urls_discovered"] = len(products)
         self.diagnostics["product_pages_successful"] = len(products)
@@ -1473,6 +1659,11 @@ class WooCommerceAdapter(RetailerAdapter):
 
                 async with semaphore:
                     payload, _ = await self._fetch_json(session, endpoint)
+                    try:
+                        await asyncio.wait_for(
+                            self._enrich_evolved_product(session, payload), timeout=8)
+                    except asyncio.TimeoutError:
+                        pass
 
                     # Preserve conservative request pacing while still
                     # allowing a few independent public GETs in flight.
@@ -1603,7 +1794,9 @@ class WooCommerceAdapter(RetailerAdapter):
             self.diagnostics["products_rejected"] += 1
             return None
 
-        price, currency = parse_wc_price(product)
+        evolved = (product.get("_evolved_inventory") or evolved_inventory_result(None, "", None)) if self._uses_evolved_inventory() else None
+        price, currency = ((evolved["price"], evolved["currency"])
+                           if evolved is not None else parse_wc_price(product))
 
         # WooCommerce can expose 0.00 for unavailable/archived catalog rows.
         # Treat non-positive values as unknown so they cannot become fake
@@ -1620,7 +1813,8 @@ class WooCommerceAdapter(RetailerAdapter):
             availability_known,
             availability_state,
             availability_source,
-        ) = parse_wc_availability(product)
+        ) = ((evolved["available"], evolved["known"], evolved["state"], evolved["source"])
+             if evolved is not None else parse_wc_availability(product))
 
         if not availability_known:
             self.diagnostics["unknown_availability"] += 1
@@ -1675,6 +1869,7 @@ class WooCommerceAdapter(RetailerAdapter):
 
         platform_data = {
             "adapter": "woocommerce",
+            "evolved_available_offers": evolved["offers"] if evolved is not None else [],
             "store_api_endpoint": self.store_api_path,
             "availability_known": availability_known,
             "availability_state": availability_state,
@@ -1757,3 +1952,4 @@ class WooCommerceAdapter(RetailerAdapter):
             cart_base_url=None,
             platform_data=platform_data,
         )
+
