@@ -422,18 +422,6 @@ def classify_game(
 
         or
         (
-            ONE_PIECE_SET_PATTERN.search(
-                title
-            )
-
-            and
-            SEALED_CONTEXT_PATTERN.search(
-                title
-            )
-        )
-
-        or
-        (
             "one piece"
             in text
 
@@ -608,6 +596,23 @@ def classify_game(
 
         return (
             "Hellbreak TCG"
+        )
+
+    # Set codes overlap across games (for example Gundam EB02).
+    # Use the One Piece code fallback only after explicit game matches.
+    if (
+        ONE_PIECE_SET_PATTERN.search(
+            title
+        )
+
+        and
+        SEALED_CONTEXT_PATTERN.search(
+            title
+        )
+    ):
+
+        return (
+            "One Piece"
         )
 
     return None
