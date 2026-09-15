@@ -64,6 +64,7 @@ from app.redis_client import (
 # Game validation failsafe
 # Realtime flicker protection
 # Step 6K-2C2 legacy preference compatibility
+# Universal routing correction: explicit sources + verified stock evidence
 # =========================================================
 
 
@@ -261,6 +262,39 @@ def determine_alert_route(event):
             return "shopify"
 
         return None
+
+    # Universal independent retailers share the existing paid shop channel.
+    # Use an explicit allowlist; unknown sources must not fall into Free alerts.
+    if source_type in {
+        "bigcommerce", "woocommerce", "square_weebly", "prestashop", "shopware",
+    }:
+        supported_events = {
+            "DISCOVERED", "PAGE_LIVE", "COMING_SOON", "PREORDER_LIVE",
+            "STOCK_AVAILABLE", "RESTOCK", "SOLD_OUT", "PRICE_DROP",
+            "PRICE_INCREASE", "PRICE_ERROR", "INVENTORY_FLICKER",
+            "RELEASE_DATE_CHANGED",
+        }
+        if event_type not in supported_events:
+            return None
+        if event_type in {"STOCK_AVAILABLE", "RESTOCK", "SOLD_OUT", "INVENTORY_FLICKER"}:
+            state = str(event.get("availability_state") or "UNKNOWN").upper()
+            expected_state = "OUT_OF_STOCK" if event_type == "SOLD_OUT" else "IN_STOCK"
+            if event.get("availability_known") is not True or state != expected_state:
+                return None
+        if event_type == "INVENTORY_FLICKER":
+            return "inventory_flicker"
+        if event_type == "RELEASE_DATE_CHANGED":
+            return "release_radar"
+        region = str(event.get("region") or "US").strip().upper()
+        if region not in {"US", "USA", "UNITED STATES"}:
+            return "international"
+        if event_type in {"DISCOVERED", "PAGE_LIVE", "COMING_SOON"}:
+            return "page_live"
+        if event_type == "PREORDER_LIVE":
+            return "preorder"
+        if event_type in {"PRICE_DROP", "PRICE_INCREASE", "PRICE_ERROR"}:
+            return "deal"
+        return "shopify"
 
     # =====================================================
     # POKEMON CENTER
@@ -1508,3 +1542,4 @@ async def run_event_worker(bot):
             await asyncio.sleep(
                 2
             )
+
