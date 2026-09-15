@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 BigCommerce Universal Retailer Adapter
-Version 1.0.4
+Version 1.0.5
 Step 6J-2B — BigCommerce Classification + Diagnostic Integrity
 
 Public storefront + sitemap GETs only.
@@ -14,6 +14,7 @@ import asyncio
 import html as html_lib
 import json
 import re
+import time
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -21,13 +22,16 @@ import aiohttp
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.65
 MAX_SITEMAPS = 20
 MAX_DISCOVERED_URLS = 10000
 MAX_PRODUCT_PAGES = 200
+
+# Per-process, per-store progress; no database or baseline changes.
+_DISCOVERY_LAST_URL = {}
 
 SITEMAP_PATHS = ("/xmlsitemap.php", "/sitemap.xml", "/sitemap_index.xml")
 TCG_PRIORITY = (
@@ -835,6 +839,8 @@ class BigCommerceAdapter(
         self.diagnostics = {}
 
         self.known_product_urls = set()
+        self.discovery_budget_seconds = None
+        self._discovery_deadline = None
 
         self._reset()
 
@@ -887,11 +893,20 @@ class BigCommerceAdapter(
         )
 
 
+    def _budget_expired(self):
+        return (self._discovery_deadline is not None
+                and time.monotonic() >= self._discovery_deadline)
+
     async def _get(
         self,
         session,
         url,
     ):
+        if self._budget_expired():
+            return None
+        timeout = DEFAULT_TIMEOUT
+        if self._discovery_deadline is not None:
+            timeout = min(timeout, max(0.001, self._discovery_deadline - time.monotonic()))
         self.diagnostics[
             "pages_checked"
         ] += 1
@@ -904,7 +919,7 @@ class BigCommerceAdapter(
 
                 timeout=(
                     aiohttp.ClientTimeout(
-                        total=DEFAULT_TIMEOUT
+                        total=timeout
                     )
                 ),
 
@@ -918,6 +933,7 @@ class BigCommerceAdapter(
                         "pages_failed"
                     ] += 1
 
+                    print(f"BIGCOMMERCE PAGE SKIPPED | Store={self.store_name} | URL={url} | Reason=HTTP_ERROR | Status={r.status}")
                     return None
 
                 self.diagnostics[
@@ -943,6 +959,7 @@ class BigCommerceAdapter(
                 f"{type(e).__name__}: {e}"
             )
 
+            print(f"BIGCOMMERCE PAGE SKIPPED | Store={self.store_name} | URL={url} | Reason=FETCH_ERROR | Error={type(e).__name__}")
             return None
 
 
@@ -968,6 +985,7 @@ class BigCommerceAdapter(
 
         while (
             queue
+            and not self._budget_expired()
             and
             len(
                 visited
@@ -1081,9 +1099,15 @@ class BigCommerceAdapter(
             ),
         )
 
-        selected = ranked[
-            :self.max_product_pages
-        ]
+        if self.discovery_budget_seconds is not None:
+            # Stable ordering prevents changing known/unknown membership from
+            # moving the cursor backwards after newly discovered rows are saved.
+            ranked = sorted(urls, key=lambda x: (-priority(x), x))
+            last = _DISCOVERY_LAST_URL.get(self.domain)
+            if last in ranked:
+                start = ranked.index(last) + 1
+                ranked = ranked[start:] + ranked[:start]
+        selected = ranked[:self.max_product_pages]
 
         self.diagnostics[
             "product_urls_discovered"
@@ -1108,98 +1132,111 @@ class BigCommerceAdapter(
         self,
     ):
         self._reset()
-
-        headers = {
-
-            "User-Agent":
-                USER_AGENT,
-
-            "Accept":
-                (
-                    "text/html,"
-                    "application/xhtml+xml,"
-                    "application/xml;q=0.9,"
-                    "*/*;q=0.8"
-                ),
-        }
-
-        raw = []
-
-        async with aiohttp.ClientSession(
-
-            headers=headers,
-
-            connector=(
-                aiohttp.TCPConnector(
-                    limit=4,
-                    limit_per_host=2,
-                )
-            ),
-
-        ) as session:
-
-            for url in (
-                await self._discover(
-                    session
-                )
-            ):
-
-                text = (
-                    await self._get(
-                        session,
-                        url,
-                    )
-                )
-
-                if not text:
-                    continue
-
-                schema = (
-                    product_schema(
-                        text
-                    )
-                )
-
-                if not isinstance(
-                    schema,
-                    dict,
-                ):
-                    continue
-
-                raw.append(
-                    {
-                        "url":
-                            url,
-
-                        "html":
-                            text,
-
-                        "schema":
-                            schema,
-                    }
-                )
-
-                self.diagnostics[
-                    "product_pages_successful"
-                ] += 1
-
-                await asyncio.sleep(
-                    self.request_delay
-                )
-
-        print(
-            (
-                "BIGCOMMERCE FETCH COMPLETE | "
-                f"Store={self.store_name} | "
-                f"ProductURLs="
-                f"{self.diagnostics['product_urls_discovered']} | "
-                f"ProductPages="
-                f"{self.diagnostics['product_pages_successful']} | "
-                f"RawProducts={len(raw)}"
-            )
+        self._discovery_deadline = (
+            time.monotonic() + self.discovery_budget_seconds
+            if self.discovery_budget_seconds is not None else None
         )
 
-        return raw
+        try:
+            headers = {
+
+                "User-Agent":
+                    USER_AGENT,
+
+                "Accept":
+                    (
+                        "text/html,"
+                        "application/xhtml+xml,"
+                        "application/xml;q=0.9,"
+                        "*/*;q=0.8"
+                    ),
+            }
+
+            raw = []
+
+            async with aiohttp.ClientSession(
+
+                headers=headers,
+
+                connector=(
+                    aiohttp.TCPConnector(
+                        limit=4,
+                        limit_per_host=2,
+                    )
+                ),
+
+            ) as session:
+
+                for url in (
+                    await self._discover(
+                        session
+                    )
+                ):
+
+                    if self._budget_expired():
+                        break
+                    # Advance even after a failed fetch; retry on the next full pass.
+                    if self.discovery_budget_seconds is not None:
+                        _DISCOVERY_LAST_URL[self.domain] = url
+                    text = (
+                        await self._get(
+                            session,
+                            url,
+                        )
+                    )
+
+                    if not text:
+                        continue
+
+                    schema = (
+                        product_schema(
+                            text
+                        )
+                    )
+
+                    if not isinstance(schema, dict):
+                        print(f"BIGCOMMERCE PAGE SKIPPED | Store={self.store_name} | URL={url} | Reason=NO_PRODUCT_SCHEMA")
+                        continue
+
+                    raw.append(
+                        {
+                            "url":
+                                url,
+
+                            "html":
+                                text,
+
+                            "schema":
+                                schema,
+                        }
+                    )
+
+                    self.diagnostics[
+                        "product_pages_successful"
+                    ] += 1
+
+                    await asyncio.sleep(
+                        self.request_delay
+                    )
+
+            print(
+                (
+                    "BIGCOMMERCE FETCH COMPLETE | "
+                    f"Store={self.store_name} | "
+                    f"ProductURLs="
+                    f"{self.diagnostics['product_urls_discovered']} | "
+                    f"ProductPages="
+                    f"{self.diagnostics['product_pages_successful']} | "
+                    f"RawProducts={len(raw)}"
+                )
+            )
+
+            print(f"BIGCOMMERCE DISCOVERY PROGRESS | Store={self.store_name} | BudgetExpired={self._budget_expired()} | ReturnedPages={len(raw)} | LastURL={_DISCOVERY_LAST_URL.get(self.domain)} | ProgressScope=PROCESS_LIFETIME")
+            return raw
+
+
+        finally:
+            self._discovery_deadline = None
 
 
     def set_known_product_urls(
@@ -1320,6 +1357,8 @@ class BigCommerceAdapter(
                             )
                         )
 
+                        if not isinstance(schema, dict):
+                            print(f"BIGCOMMERCE PAGE SKIPPED | Store={self.store_name} | URL={url} | Reason=NO_PRODUCT_SCHEMA")
                         if isinstance(
                             schema,
                             dict,
@@ -1367,7 +1406,7 @@ class BigCommerceAdapter(
             (
                 "BIGCOMMERCE FAST REFRESH COMPLETE | "
                 f"Store={self.store_name} | "
-                f"KnownURLs={len(unique)} | "
+                f"RequestedURLs={len(unique)} | "
                 f"ProductPages="
                 f"{self.diagnostics['product_pages_successful']}"
             )
@@ -1742,3 +1781,4 @@ class BigCommerceAdapter(
 
             platform_data=pdata,
         )
+
