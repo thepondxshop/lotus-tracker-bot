@@ -1315,6 +1315,9 @@ async def scan_store(
                         pass
 
                 try:
+                    if platform == "bigcommerce":
+                        # Return partial results before the outer safety timeout.
+                        adapter.discovery_budget_seconds = max(1, DISCOVERY_TIMEOUT_SECONDS - 5)
                     discovery_products = await asyncio.wait_for(
                         adapter.get_normalized_products(),
                         timeout=DISCOVERY_TIMEOUT_SECONDS,
@@ -1800,4 +1803,5 @@ async def run_once(*, suppress_events: bool = True) -> dict[str, Any]:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(run_once(suppress_events=True))
+
 
