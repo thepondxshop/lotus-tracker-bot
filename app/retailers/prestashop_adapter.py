@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 PrestaShop Universal Retailer Adapter
-Version 1.0.6-N2
+Version 1.0.6-N3
 Universal Retailer Production Readiness — PrestaShop accuracy pass
 
 Safety:
@@ -30,8 +30,8 @@ from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_pri
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.6-N2"
-USER_AGENT = "LotusTracker/1.0.6-N2 (PonDeX Trackers; public retailer monitor)"
+VERSION = "1.0.6-N3"
+USER_AGENT = "LotusTracker/1.0.6-N3 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.70
 
@@ -216,6 +216,13 @@ SEALED_TERMS = (
     "illustration box",
     "special pack set",
     "deck set",
+    "premium card collection",
+    "anniversary set",
+    "anniversary edition",
+    "special set",
+    "best selection",
+    "prerelease kit",
+    "set conmemorativo",
     "boite de",
     "boîte de",
     "lot de boosters",
@@ -239,6 +246,8 @@ SINGLE_TERMS = (
 
 ACCESSORY_TERMS = (
     "sleeves",
+    "card sleeve",
+    "card sleeves",
     "deck box",
     "binder",
     "playmat",
@@ -919,7 +928,7 @@ def classify_game(
     )
 
     if any(
-        term in combined
+        term in title_text
         for term in pokemon_direct
     ):
         return "Pokemon"
@@ -1006,15 +1015,15 @@ def product_category(title):
 
     if any(
         term in text
-        for term in SEALED_TERMS
-    ):
-        return "SEALED"
-
-    if any(
-        term in text
         for term in ACCESSORY_TERMS
     ):
         return "ACCESSORY"
+
+    if any(
+        term in text
+        for term in SEALED_TERMS
+    ):
+        return "SEALED"
 
     return "UNKNOWN"
 
@@ -1660,6 +1669,30 @@ def parse_price(
         currency,
         "UNKNOWN",
     )
+
+
+def contextual_price_source(
+    domain,
+    price,
+    source,
+):
+
+    if price is not None:
+        return source
+
+    normalized = normalize_domain(
+        domain
+    ).lower()
+
+    if (
+        normalized == "tcgfactory.com"
+        or normalized.endswith(
+            ".tcgfactory.com"
+        )
+    ):
+        return "LOGIN_GATED_OR_CLIENT_RENDERED"
+
+    return source
 
 
 def normalize_availability_token(raw):
@@ -3383,6 +3416,12 @@ class PrestaShopAdapter(
             text,
 
             self.region,
+        )
+
+        price_source = contextual_price_source(
+            self.domain,
+            price,
+            price_source,
         )
 
         if price is None:
