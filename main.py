@@ -8651,6 +8651,141 @@ async def simulateproduct(
 
 
 # =========================================================
+# /SIMULATEUNIVERSAL
+#
+# Administrator-only, controlled end-to-end test for the
+# Universal retailer -> database -> Redis -> worker ->
+# International Discord alert pipeline.
+#
+# This uses an explicit test identity and example.com URL.
+# It does not modify any real retailer catalog or baseline.
+# =========================================================
+
+@bot.tree.command(
+    name="simulateuniversal",
+    description="Test the complete Universal retailer alert pipeline.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+async def simulateuniversal(
+    interaction,
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    product_event = ProductEvent(
+
+        event_type=(
+            ProductEventType.RESTOCK
+        ),
+
+        game="Pokemon",
+
+        product_name=(
+            "Pokemon Universal Pipeline Test Booster Box "
+            "(TEST - NOT A REAL LISTING)"
+        ),
+
+        store_name=(
+            "Lotus Universal Test Store"
+        ),
+
+        product_url=(
+            "https://example.com/lotus-universal-pipeline-test"
+        ),
+
+        price=24.99,
+
+        old_price=24.99,
+
+        currency="EUR",
+
+        in_stock=True,
+
+        availability_state=(
+            "IN_STOCK"
+        ),
+
+        availability_known=True,
+
+        availability_confidence=(
+            "VERIFIED"
+        ),
+
+        region="ES",
+
+        language="English",
+
+        product_type="Booster Box",
+
+        product_category="SEALED",
+
+        product_family=(
+            "GLOBAL_STANDARD"
+        ),
+
+        lifecycle_state="ACTIVE",
+
+        source_type="prestashop",
+
+        retailer_key=(
+            "lotus-universal-test"
+        ),
+
+        external_product_id=(
+            "lotus-universal-pipeline-test"
+        ),
+
+        source_confidence="VERIFIED",
+
+        image_url=None,
+
+        variant_id=None,
+
+        purchase_limit=None,
+
+        cart_base_url=None,
+    )
+
+    result = (
+        await process_product_event(
+            product_event
+        )
+    )
+
+    await interaction.followup.send(
+
+        (
+            "🧪 Universal pipeline test submitted.\n\n"
+
+            "Source: `prestashop`\n"
+
+            "Region: `ES`\n"
+
+            "Route expected: `international`\n"
+
+            "Event: `RESTOCK`\n"
+
+            "Availability: `IN_STOCK / VERIFIED`\n"
+
+            "Database: "
+            f"{'✅' if result['database_saved'] else '❌'}\n"
+
+            "Redis: "
+            f"{'✅' if result['redis_saved'] else '❌'}\n\n"
+
+            "This is a controlled test identity and does not "
+            "change a real retailer baseline."
+        ),
+
+        ephemeral=True,
+    )
+
+
+# =========================================================
 # /TESTALERT
 # =========================================================
 
@@ -9117,3 +9252,4 @@ if not DISCORD_TOKEN:
 bot.run(
     DISCORD_TOKEN
 )
+
