@@ -18,8 +18,8 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C1
-# Step 6K-2C1 - Shopify Rate-Limit + Large-Catalog Hardening
+# Component Version 1.0.6-C5
+# Step 6K-2C5 - Shopify Collection Rotation + Throttle Containment
 #
 # Strict Structured TCG Classification
 # Product Family Detection
@@ -1640,16 +1640,20 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C4"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C5"
 _STORE_CURRENCY_CACHE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
 SHOPIFY_MAX_429_RETRIES = 3
+# Optional discovery requests must never hold a store scan in repeated
+# exponential sleeps. Required catalog requests retain the protected retries.
+SHOPIFY_OPTIONAL_429_RETRIES = 0
 SHOPIFY_MAX_5XX_RETRIES = 2
 SHOPIFY_MAX_BACKOFF_SECONDS = 30.0
 SHOPIFY_COLLECTION_CACHE_SECONDS = 30 * 60
 SHOPIFY_GENERAL_REFRESH_SECONDS = 30
 MAX_PRIORITY_COLLECTIONS = 12
+PRIORITY_COLLECTIONS_PER_PASS = 3
 MAX_COLLECTION_PAGES = 2
 MAX_COLLECTION_SITEMAPS = 8
 MAX_COLLECTION_JSON_PAGES = 8
@@ -1674,6 +1678,7 @@ PRIORITY_COLLECTION_TERMS = (
 _DOMAIN_REQUEST_LOCKS = {}
 _DOMAIN_LAST_REQUEST_AT = {}
 _PRIORITY_COLLECTION_CACHE = {}
+_PRIORITY_COLLECTION_CURSOR = {}
 _GENERAL_FEED_LAST_ATTEMPT_AT = {}
 _GENERAL_FEED_CURSOR = {}
 GENERAL_PAGES_PER_PASS = 2
@@ -1735,11 +1740,19 @@ def _xml_locations(xml_text):
     except Exception:
         return []
     locations = []
-    for element in root.iter():
-        if str(element.tag).lower().endswith("loc") and element.text:
+    # A Shopify sitemap entry can also contain nested image:image/image:loc
+    # elements. Only the direct loc child of each url/sitemap entry is a
+    # navigable sitemap URL. Reading every tag ending in "loc" caused image
+    # filenames to be mistaken for collection handles.
+    for entry in list(root):
+        for element in list(entry):
+            local_name = str(element.tag).rsplit("}", 1)[-1].lower()
+            if local_name != "loc" or not element.text:
+                continue
             value = str(element.text).strip()
             if value:
                 locations.append(value)
+            break
     return locations
 
 
@@ -1752,7 +1765,16 @@ def _collection_handle_from_url(url):
     if marker not in path:
         return None
     handle = path.split(marker, 1)[1].strip("/").split("/", 1)[0]
-    return handle or None
+    if not handle:
+        return None
+    lowered = handle.lower()
+    if lowered.endswith((
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico",
+        ".css", ".js", ".woff", ".woff2", ".ttf", ".pdf", ".zip",
+        ".mp4", ".webm",
+    )):
+        return None
+    return handle
 
 
 def _collection_score(handle, title=""):
@@ -1849,6 +1871,11 @@ class ShopifyAdapter:
 
         async with lock:
             retry_429 = 0
+            max_429_retries = (
+                SHOPIFY_MAX_429_RETRIES
+                if required
+                else SHOPIFY_OPTIONAL_429_RETRIES
+            )
             retry_5xx = 0
 
             while True:
@@ -1883,7 +1910,7 @@ class ShopifyAdapter:
 
                         if status == 429:
                             self.diagnostics["http_429"] += 1
-                            if retry_429 < SHOPIFY_MAX_429_RETRIES:
+                            if retry_429 < max_429_retries:
                                 wait_seconds = _retry_after_seconds(
                                     response.headers.get("Retry-After"),
                                     retry_429,
@@ -1894,7 +1921,7 @@ class ShopifyAdapter:
                                 print(
                                     "SHOPIFY RATE LIMIT BACKOFF | "
                                     f"Store={self.domain} | Purpose={purpose} | "
-                                    f"Retry={retry_429}/{SHOPIFY_MAX_429_RETRIES} | "
+                                    f"Retry={retry_429}/{max_429_retries} | "
                                     f"Wait={wait_seconds:.1f}s"
                                 )
                                 await asyncio.sleep(wait_seconds)
@@ -1903,7 +1930,7 @@ class ShopifyAdapter:
                             self.diagnostics["rate_limit_exhausted"] += 1
                             self.diagnostics["partial_due_to_rate_limit"] = 1
                             message = (
-                                f"Shopify HTTP 429 after {SHOPIFY_MAX_429_RETRIES} retries "
+                                f"Shopify HTTP 429 after {max_429_retries} retries "
                                 f"for {purpose}"
                             )
                             if required:
@@ -2171,9 +2198,37 @@ class ShopifyAdapter:
             # =================================================
             # 1. FAST LANE — PRIORITY COLLECTIONS FIRST
             # =================================================
-            priority_collections = await self._discover_priority_collections(session)
+            discovered_priority_collections = await self._discover_priority_collections(session)
 
+            # Rotate a small slice instead of requesting every priority
+            # collection on every five-second pass. All discovered collections
+            # remain cached and are revisited across subsequent passes.
+            priority_collections = list(discovered_priority_collections)
+            if len(priority_collections) > PRIORITY_COLLECTIONS_PER_PASS:
+                start = _PRIORITY_COLLECTION_CURSOR.get(self.domain, 0) % len(priority_collections)
+                priority_collections = [
+                    discovered_priority_collections[(start + offset) % len(discovered_priority_collections)]
+                    for offset in range(PRIORITY_COLLECTIONS_PER_PASS)
+                ]
+                _PRIORITY_COLLECTION_CURSOR[self.domain] = (
+                    start + len(priority_collections)
+                ) % len(discovered_priority_collections)
+            elif priority_collections:
+                _PRIORITY_COLLECTION_CURSOR[self.domain] = 0
+
+            self.diagnostics["priority_collections_selected"] = len(priority_collections)
+            print(
+                "SHOPIFY PRIORITY COLLECTION PLAN | "
+                f"Store={self.domain} | "
+                f"Discovered={len(discovered_priority_collections)} | "
+                f"Selected={len(priority_collections)} | "
+                f"NextCursor={_PRIORITY_COLLECTION_CURSOR.get(self.domain, 0)}"
+            )
+
+            priority_lane_rate_limited = False
             for _, handle, title in priority_collections:
+                if priority_lane_rate_limited:
+                    break
                 source_label = "COLLECTION:" + handle
                 membership_key = (self.domain, handle)
                 previous_members = _COLLECTION_MEMBERSHIP_CACHE.get(membership_key)
@@ -2182,6 +2237,7 @@ class ShopifyAdapter:
                 successful_pages = 0
 
                 for page in range(1, MAX_COLLECTION_PAGES + 1):
+                    previous_429 = self.diagnostics["http_429"]
                     data = await self._get_json(
                         session,
                         (
@@ -2191,6 +2247,13 @@ class ShopifyAdapter:
                         purpose=f"PRIORITY_COLLECTION:{handle}:PAGE:{page}",
                         required=False,
                     )
+                    if self.diagnostics["http_429"] > previous_429:
+                        priority_lane_rate_limited = True
+                        print(
+                            "SHOPIFY PRIORITY LANE PAUSED | "
+                            f"Store={self.domain} | Handle={handle} | "
+                            "Reason=HTTP_429 | ContinueWithGeneralFeed=True"
+                        )
                     if not isinstance(data, dict):
                         collection_complete = False
                         break
