@@ -137,6 +137,8 @@ from app.event_service import (
 # =========================================================
 
 from app.worker import (
+    build_mention_chunks,
+    get_eligible_members,
     run_event_worker,
 )
 
@@ -8676,6 +8678,8 @@ async def testalert(
 
         return
 
+    alert_type = str(alert_type or "").strip().lower()
+
     config = (
         ALERT_ACCESS.get(
             alert_type
@@ -8745,7 +8749,35 @@ async def testalert(
 
         return
 
+    event_by_route = {
+        "major_retailer": "RESTOCK",
+        "shopify": "RESTOCK",
+        "preorder": "PREORDER_LIVE",
+        "page_live": "PAGE_LIVE",
+        "deal": "PRICE_DROP",
+        "international": "RESTOCK",
+        "inventory_flicker": "INVENTORY_FLICKER",
+        "release_radar": "RELEASE_DATE_CHANGED",
+        "pokemon_queue": "QUEUE_ACTIVE",
+    }
+    test_event = {
+        "game": game.value,
+        "event_type": event_by_route.get(alert_type, "RESTOCK"),
+        "product_category": "SEALED",
+        "product_family": "GLOBAL_STANDARD",
+        "region": "JP" if alert_type == "international" else "US",
+    }
+    eligible_members = await get_eligible_members(
+        interaction.guild,
+        test_event,
+        alert_type,
+        config.get("minimum_tier", "Free"),
+    )
+    mention_chunks = build_mention_chunks(eligible_members)
+
     await channel.send(
+
+        content=(mention_chunks[0] if mention_chunks else None),
 
         embed=discord.Embed(
 
@@ -8758,16 +8790,32 @@ async def testalert(
                 f"Route: "
                 f"`{alert_type}`\n"
 
-                "Version: `1.0.6`"
+                "Version: `1.0.6-N1`"
+            ),
+        ),
+        allowed_mentions=discord.AllowedMentions(
+            roles=False,
+            users=True,
+            everyone=False,
+        ),
+    )
+
+    for mention_chunk in mention_chunks[1:]:
+        await channel.send(
+            content=mention_chunk,
+            allowed_mentions=discord.AllowedMentions(
+                roles=False,
+                users=True,
+                everyone=False,
             ),
         )
-    )
 
     await interaction.followup.send(
 
         (
             f"\u2705 Test alert sent "
-            f"to {channel.mention}."
+            f"to {channel.mention}.\n"
+            f"Eligible member pings: `{len(eligible_members)}`"
         ),
 
         ephemeral=True,
