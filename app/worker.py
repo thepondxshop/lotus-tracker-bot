@@ -52,7 +52,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.6
+# Version 1.0.6-N1
 #
 # Compact alert layout
 # Previous -> current price display
@@ -65,6 +65,7 @@ from app.redis_client import (
 # Realtime flicker protection
 # Step 6K-2C2 legacy preference compatibility
 # Universal routing correction: explicit sources + verified stock evidence
+# Member-cache recovery + explicit zero-mention diagnostics
 # =========================================================
 
 
@@ -1096,6 +1097,8 @@ def get_primary_guild(bot):
 # Step 6K-2B
 # =========================================================
 
+_MEMBER_CACHE_REFRESH_ATTEMPTED = set()
+
 def get_game_members(guild, game):
     if not game:
         return []
@@ -1149,10 +1152,58 @@ def _normalize_family(value):
 async def get_eligible_members(guild, event, alert_type, minimum_tier):
     game = event.get("game")
     if not game:
+        print(
+            "MEMBER ALERT ELIGIBILITY | Game=None | "
+            f"Event={event.get('event_type')} | Route={alert_type} | "
+            "GameMembers=0 | Eligible=0 | Reason=EVENT_GAME_MISSING"
+        )
+        return []
+
+    role_id = safe_int(GAME_ROLES.get(game))
+    if not role_id:
+        print(
+            "MEMBER ALERT ELIGIBILITY | "
+            f"Game={game} | Event={event.get('event_type')} | Route={alert_type} | "
+            "GameMembers=0 | Eligible=0 | Reason=GAME_ROLE_NOT_CONFIGURED"
+        )
+        return []
+
+    role = guild.get_role(role_id)
+    if role is None:
+        print(
+            "MEMBER ALERT ELIGIBILITY | "
+            f"Game={game} | Event={event.get('event_type')} | Route={alert_type} | "
+            f"GameMembers=0 | Eligible=0 | Reason=GAME_ROLE_NOT_FOUND | RoleID={role_id}"
+        )
         return []
 
     base_members = get_game_members(guild, game)
+    guild_key = getattr(guild, "id", id(guild))
+    if (
+        not base_members
+        and guild_key not in _MEMBER_CACHE_REFRESH_ATTEMPTED
+        and hasattr(guild, "chunk")
+    ):
+        _MEMBER_CACHE_REFRESH_ATTEMPTED.add(guild_key)
+        try:
+            await guild.chunk(cache=True)
+            base_members = get_game_members(guild, game)
+            print(
+                "MEMBER CACHE REFRESH | "
+                f"Guild={guild_key} | Game={game} | MembersAfter={len(base_members)}"
+            )
+        except Exception as error:
+            print(
+                "MEMBER CACHE REFRESH ERROR | "
+                f"Guild={guild_key} | Game={game} | "
+                f"{type(error).__name__}: {error}"
+            )
     if not base_members:
+        print(
+            "MEMBER ALERT ELIGIBILITY | "
+            f"Game={game} | Event={event.get('event_type')} | Route={alert_type} | "
+            f"GameMembers=0 | Eligible=0 | Reason=NO_MEMBERS_IN_GAME_ROLE | RoleID={role_id}"
+        )
         return []
 
     event_type = str(event.get("event_type") or "").upper()
@@ -1504,7 +1555,7 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v1.0.6 / 6K-2C3 started."
+        "Lotus Event Worker v1.0.6-N1 / 6K-2C5 started."
     )
 
     while not bot.is_closed():
