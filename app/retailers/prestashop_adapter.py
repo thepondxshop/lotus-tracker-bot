@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 PrestaShop Universal Retailer Adapter
-Version 1.0.6-N3
+Version 1.0.6-N4
 Universal Retailer Production Readiness — PrestaShop accuracy pass
 
 Safety:
@@ -30,8 +30,8 @@ from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_pri
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.6-N3"
-USER_AGENT = "LotusTracker/1.0.6-N3 (PonDeX Trackers; public retailer monitor)"
+VERSION = "1.0.6-N4"
+USER_AGENT = "LotusTracker/1.0.6-N4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.70
 
@@ -945,21 +945,6 @@ def classify_game(
 
     if (
         title_has_pokemon
-        and title_has_product_evidence
-    ):
-        return "Pokemon"
-
-    product_slug = url_path(
-        url
-    ).rstrip("/").rsplit("/", 1)[-1]
-
-    slug_has_pokemon = (
-        "pokemon" in product_slug
-        or "pokémon" in product_slug
-    )
-
-    if (
-        slug_has_pokemon
         and title_has_product_evidence
     ):
         return "Pokemon"
