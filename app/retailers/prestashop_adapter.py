@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 PrestaShop Universal Retailer Adapter
-Version 1.0.6-N4
-Universal Retailer Production Readiness — PrestaShop accuracy pass
+Version 1.0.5
+Step 6J-3C5 — PrestaShop Non-TCG Merchandise Integrity
 
 Safety:
 - Public storefront pages, robots.txt, and public sitemap GETs only
@@ -30,8 +30,8 @@ from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_pri
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.6-N4"
-USER_AGENT = "LotusTracker/1.0.6-N4 (PonDeX Trackers; public retailer monitor)"
+VERSION = "1.0.5"
+USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.70
 
@@ -216,13 +216,6 @@ SEALED_TERMS = (
     "illustration box",
     "special pack set",
     "deck set",
-    "premium card collection",
-    "anniversary set",
-    "anniversary edition",
-    "special set",
-    "best selection",
-    "prerelease kit",
-    "set conmemorativo",
     "boite de",
     "boîte de",
     "lot de boosters",
@@ -246,8 +239,6 @@ SINGLE_TERMS = (
 
 ACCESSORY_TERMS = (
     "sleeves",
-    "card sleeve",
-    "card sleeves",
     "deck box",
     "binder",
     "playmat",
@@ -257,55 +248,34 @@ ACCESSORY_TERMS = (
     "top loader",
     "fundas",
     "tapete",
-    "caja de mazo",
-    "caja para mazo",
-    "caja de cartas",
-    "archivador",
-    "álbum",
-    "album",
-    "carpeta",
-    "estuche para cartas",
     "classeur",
 )
 
-NON_TCG_MERCH_TERMS = (
-    "funko pop",
-    "funko pop!",
-    "pop! vinyl",
-    "vinyl figure",
-    "figura de vinilo",
-    "figura premium",
-    "peluche",
-    "plush toy",
-    "llavero",
-    "keychain",
-    "poster",
-    "póster",
-    "taza",
-    "mug",
-)
-
-POKEMON_PRODUCT_TERMS = (
-    "tcg",
-    "trading card",
-    "card game",
-    "juego de cartas",
-    "cartas coleccionables",
-    "booster",
-    "starter deck",
-    "battle deck",
-    "deck box",
-    "caja de mazo",
-    "caja para mazo",
-    "archivador",
-    "binder",
-    "portfolio",
-    "fundas",
-    "sleeves",
-    "tapete",
-    "playmat",
-    "sobres",
-    "mazos",
+NON_TCG_MERCHANDISE = (
+    re.compile(r"\bplush(?:ie|ies)?\b", re.I),
+    re.compile(r"\bpeluche(?:s)?\b", re.I),
+    re.compile(r"\bstuffed\s+(?:animal|toy)\b", re.I),
+    re.compile(r"\bkey[\s-]*chain\b", re.I),
+    re.compile(r"\bkeyring\b", re.I),
+    re.compile(r"\bllavero(?:s)?\b", re.I),
+    re.compile(r"\bporte[\s-]*cl[eé]s?\b", re.I),
+    re.compile(r"\bclip[\s-]*on\b", re.I),
+    re.compile(r"\blanyard\b", re.I),
+    re.compile(r"\bfunko\b", re.I),
+    re.compile(r"\bpop!(?:\s|$)", re.I),
+    re.compile(r"\baction\s+figure\b", re.I),
+    re.compile(r"\bfigurine\b", re.I),
+    re.compile(r"\bvinyl\s+(?:figure|toy)\b", re.I),
+    re.compile(r"\bstatue\b", re.I),
+    re.compile(r"\bdoll\b", re.I),
+    re.compile(r"\bmuñec[oa]s?\b", re.I),
+    re.compile(r"\bmodel\s+kit\b", re.I),
+    re.compile(r"\bgunpla\b", re.I),
+    re.compile(
+        r"\b(?:t[\s-]*shirt|shirt|hoodie|sweatshirt|socks|blanket)\b",
+        re.I,
+    ),
+    re.compile(r"\b(?:backpack|wallet|mug)\b", re.I),
 )
 
 ONE_PIECE_CARD_CODE = re.compile(
@@ -387,10 +357,6 @@ SKU_PATTERNS = (
 )
 
 PRICE_PATTERNS = (
-    re.compile(
-        r'''class=["'][^"']*\bunit_price\b[^"']*["'][^>]*>\s*([0-9][0-9\s.,]*)\s*<''',
-        re.I | re.S,
-    ),
     re.compile(
         r'''itemprop=["']price["'][^>]{0,250}?content=["']([0-9][0-9\s.,]*)["']''',
         re.I,
@@ -881,15 +847,14 @@ def classify_game(
     if not title_text:
         return None
 
-    if any(
-        term in combined
-        for term in UNSUPPORTED
+    if is_non_tcg_merchandise(
+        title
     ):
         return None
 
     if any(
-        term in title_text
-        for term in NON_TCG_MERCH_TERMS
+        term in combined
+        for term in UNSUPPORTED
     ):
         return None
 
@@ -928,26 +893,34 @@ def classify_game(
     )
 
     if any(
-        term in title_text
+        term in combined
         for term in pokemon_direct
     ):
         return "Pokemon"
 
-    title_has_pokemon = (
-        "pokemon" in title_text
-        or "pokémon" in title_text
-    )
-
-    title_has_product_evidence = any(
-        term in title_text
-        for term in POKEMON_PRODUCT_TERMS
-    )
-
     if (
-        title_has_pokemon
-        and title_has_product_evidence
+        "pokemon"
+        in url_text
+
+        or
+        "pokémon"
+        in url_text
     ):
-        return "Pokemon"
+
+        safe_url_context = any(
+            term in url_text
+            for term in (
+                "booster",
+                "cartes",
+                "card",
+                "tcg",
+                "/pokemon/",
+                "pokemon-",
+            )
+        )
+
+        if safe_url_context:
+            return "Pokemon"
 
     for (
         game,
@@ -961,6 +934,23 @@ def classify_game(
             return game
 
     return None
+
+
+def is_non_tcg_merchandise(title):
+
+    text = clean(
+        title
+    )
+
+    if not text:
+        return False
+
+    return any(
+        pattern.search(
+            text
+        )
+        for pattern in NON_TCG_MERCHANDISE
+    )
 
 
 def product_category(title):
@@ -1000,15 +990,15 @@ def product_category(title):
 
     if any(
         term in text
-        for term in ACCESSORY_TERMS
-    ):
-        return "ACCESSORY"
-
-    if any(
-        term in text
         for term in SEALED_TERMS
     ):
         return "SEALED"
+
+    if any(
+        term in text
+        for term in ACCESSORY_TERMS
+    ):
+        return "ACCESSORY"
 
     return "UNKNOWN"
 
@@ -1137,10 +1127,6 @@ def product_type(title):
             (
                 "binder",
                 "portfolio",
-                "archivador",
-                "álbum",
-                "album",
-                "carpeta",
                 "classeur",
             ),
             "Binder",
@@ -1148,9 +1134,6 @@ def product_type(title):
         (
             (
                 "deck box",
-                "caja de mazo",
-                "caja para mazo",
-                "caja de cartas",
             ),
             "Deck Box",
         ),
@@ -1654,30 +1637,6 @@ def parse_price(
         currency,
         "UNKNOWN",
     )
-
-
-def contextual_price_source(
-    domain,
-    price,
-    source,
-):
-
-    if price is not None:
-        return source
-
-    normalized = normalize_domain(
-        domain
-    ).lower()
-
-    if (
-        normalized == "tcgfactory.com"
-        or normalized.endswith(
-            ".tcgfactory.com"
-        )
-    ):
-        return "LOGIN_GATED_OR_CLIENT_RENDERED"
-
-    return source
 
 
 def normalize_availability_token(raw):
@@ -3367,6 +3326,30 @@ class PrestaShopAdapter(
             text,
         )
 
+        if is_non_tcg_merchandise(
+            title
+        ):
+
+            self.diagnostics[
+                "products_rejected"
+            ] += 1
+
+            self.diagnostics[
+                "rejected_products"
+            ] += 1
+
+            print(
+                (
+                    "PRESTASHOP PAGE SKIPPED | "
+                    f"Store={self.store_name} | "
+                    f"URL={url} | "
+                    "Reason=NON_TCG_MERCHANDISE | "
+                    f"Title={title}"
+                )
+            )
+
+            return None
+
         game = classify_game(
             title,
             url=url,
@@ -3401,12 +3384,6 @@ class PrestaShopAdapter(
             text,
 
             self.region,
-        )
-
-        price_source = contextual_price_source(
-            self.domain,
-            price,
-            price_source,
         )
 
         if price is None:
