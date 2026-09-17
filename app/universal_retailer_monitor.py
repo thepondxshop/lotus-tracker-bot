@@ -3,9 +3,9 @@ Lotus Tracker Bot
 PonDeX Trackers
 
 Universal Retailer Monitor
-Version: 1.1.0
+Version: 1.1.1
 
-Step 6J-3F — Shopware 6 Universal Platform Support
+Step 6J-4A — Magento 2 / Adobe Commerce Universal Platform Support
 
 Safety:
 - Shopify remains isolated in shopify_monitor.py
@@ -46,7 +46,7 @@ from app.retailers.delta_discovery import discover_new_product_urls
 from app.store_health import record_store_failure, record_store_success
 
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
@@ -72,11 +72,11 @@ SUPPORTED_UNIVERSAL_PLATFORMS = {
     "bigcommerce",
     "prestashop",
     "shopware",
+    "magento",
 }
 
-# Shopware 6 is production-supported for normal sharded refresh + bounded
-# deep discovery in Step 6J-3F. Keep it out of the lightweight generic delta
-# crawler until the platform-specific Shopware delta path is validated.
+# Shopware 6 and Magento use platform-specific discovery. Keep both out of the
+# generic delta crawler until their dedicated delta paths are validated.
 DELTA_DISCOVERY_PLATFORMS = {
     "square_weebly",
     "woocommerce",
@@ -440,9 +440,6 @@ def make_product_event(
         else normalize_price(item.get("price"))
     )
 
-    platform_data = deserialize_platform_data(item.get("platform_data"))
-    _, availability_known, availability_state = get_availability_info(item)
-
     return ProductEvent(
         event_type=normalized_event_type,
         game=normalize_text(item.get("game"), "Unknown"),
@@ -453,17 +450,6 @@ def make_product_event(
         old_price=normalize_price(old_price),
         currency=normalize_currency(item.get("currency")),
         in_stock=bool(in_stock),
-        availability_known=availability_known,
-        availability_state=availability_state,
-        availability_confidence=normalize_text(
-            platform_data.get("availability_confidence"), "UNKNOWN"
-        ),
-        external_product_id=normalize_optional_text(
-            item.get("external_product_id") or item.get("external_id")
-            or platform_data.get("external_product_id")
-        ),
-        source_confidence=normalize_text(platform_data.get("source_confidence"), "UNKNOWN"),
-        lifecycle_state=normalize_text(item.get("product_state"), "UNKNOWN"),
         region=normalize_region(getattr(store, "region", None)),
         language=family_language(product_family),
         product_type=normalize_text(item.get("product_type"), "TCG Product"),
@@ -1315,9 +1301,6 @@ async def scan_store(
                         pass
 
                 try:
-                    if platform == "bigcommerce":
-                        # Return partial results before the outer safety timeout.
-                        adapter.discovery_budget_seconds = max(1, DISCOVERY_TIMEOUT_SECONDS - 5)
                     discovery_products = await asyncio.wait_for(
                         adapter.get_normalized_products(),
                         timeout=DISCOVERY_TIMEOUT_SECONDS,
@@ -1803,5 +1786,3 @@ async def run_once(*, suppress_events: bool = True) -> dict[str, Any]:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(run_once(suppress_events=True))
-
-
