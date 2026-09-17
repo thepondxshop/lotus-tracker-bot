@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 PrestaShop Universal Retailer Adapter
-Version 1.0.7
-Step 6J-3C7 — Collision-Safe PrestaShop Product Identity
+Version 1.0.8
+Step 6J-3C8 — IPv4 Transport Hardening + Network Diagnostics
 
 Safety:
 - Public storefront pages, robots.txt, and public sitemap GETs only
@@ -22,6 +22,7 @@ import asyncio
 import html as html_lib
 import json
 import re
+import socket
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
@@ -30,7 +31,7 @@ from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_pri
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.70
@@ -496,6 +497,55 @@ def normalize_domain(value):
     )
 
     return value.strip("/")
+
+
+def format_connector_error(error):
+
+    parts = [
+        f"{type(error).__name__}: {error}",
+        "Transport=IPV4_ONLY",
+    ]
+
+    host = getattr(
+        error,
+        "host",
+        None,
+    )
+
+    port = getattr(
+        error,
+        "port",
+        None,
+    )
+
+    if host:
+        parts.append(
+            f"Host={host}"
+        )
+
+    if port:
+        parts.append(
+            f"Port={port}"
+        )
+
+    os_error = getattr(
+        error,
+        "os_error",
+        None,
+    )
+
+    if os_error is not None:
+        parts.append(
+            (
+                "Underlying="
+                f"{type(os_error).__name__}: "
+                f"{os_error!r}"
+            )
+        )
+
+    return " | ".join(
+        parts
+    )
 
 
 def normalize_url(url):
@@ -2753,6 +2803,12 @@ class PrestaShopAdapter(
             "identity_duplicates_removed":
                 0,
 
+            "network_transport":
+                "IPV4_ONLY",
+
+            "connection_failures":
+                0,
+
             "last_error":
                 None,
         }
@@ -2875,10 +2931,51 @@ class PrestaShopAdapter(
                     final_url,
                 )
 
-        except (
-            asyncio.TimeoutError,
-            aiohttp.ClientError,
-        ) as error:
+        except aiohttp.ClientConnectorError as error:
+
+            self.diagnostics[
+                "pages_failed"
+            ] += 1
+
+            self.diagnostics[
+                "connection_failures"
+            ] += 1
+
+            self.diagnostics[
+                "last_error"
+            ] = format_connector_error(
+                error
+            )
+
+            return (
+                None,
+                None,
+            )
+
+        except asyncio.TimeoutError as error:
+
+            self.diagnostics[
+                "pages_failed"
+            ] += 1
+
+            self.diagnostics[
+                "connection_failures"
+            ] += 1
+
+            self.diagnostics[
+                "last_error"
+            ] = (
+                "RequestTimeout: "
+                f"{type(error).__name__} | "
+                "Transport=IPV4_ONLY"
+            )
+
+            return (
+                None,
+                None,
+            )
+
+        except aiohttp.ClientError as error:
 
             self.diagnostics[
                 "pages_failed"
@@ -3360,6 +3457,8 @@ class PrestaShopAdapter(
                 aiohttp.TCPConnector(
                     limit=4,
                     limit_per_host=2,
+                    family=socket.AF_INET,
+                    ttl_dns_cache=300,
                 )
             ),
 
@@ -3556,6 +3655,8 @@ class PrestaShopAdapter(
                 aiohttp.TCPConnector(
                     limit=4,
                     limit_per_host=3,
+                    family=socket.AF_INET,
+                    ttl_dns_cache=300,
                 )
             ),
 
