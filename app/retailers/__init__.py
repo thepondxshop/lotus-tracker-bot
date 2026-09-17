@@ -3,15 +3,15 @@ Lotus Tracker Bot
 PonDeX Trackers
 
 Retailer Adapter Loader
-Version: 1.0.4
-Step 6J-3F — Shopware 6 Universal Adapter Registration
+Version: 1.0.5
+Step 6J-4A — Magento 2 / Adobe Commerce Adapter Registration
 """
 
 from __future__ import annotations
 
 import logging
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 logger = logging.getLogger("lotus.retailers")
 _ADAPTERS_LOADED = False
 
@@ -36,9 +36,12 @@ def load_retailer_adapters() -> None:
     from app.retailers import shopware_adapter
     _ = shopware_adapter
 
+    from app.retailers import magento_adapter
+    _ = magento_adapter
+
     _ADAPTERS_LOADED = True
     logger.info(
-        "RETAILER ADAPTERS LOADED | Version=%s | Platforms=square_weebly,woocommerce,bigcommerce,prestashop,shopware",
+        "RETAILER ADAPTERS LOADED | Version=%s | Platforms=square_weebly,woocommerce,bigcommerce,prestashop,shopware,magento",
         VERSION,
     )
 
