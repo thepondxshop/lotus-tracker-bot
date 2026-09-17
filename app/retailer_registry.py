@@ -4,8 +4,8 @@ from app.retailer_adapter import RetailerAdapter
 # =========================================================
 # LOTUS RETAILER REGISTRY
 # PonDeX Trackers
-# Version 1.0.4
-# Step 6J-3A — PrestaShop Universal Platform Registration
+# Version 1.0.5
+# Step 6J-4A — Magento 2 / Adobe Commerce Registration
 # =========================================================
 
 RETAILER_ADAPTERS = {}
@@ -36,6 +36,15 @@ def normalize_platform(platform):
         "presta-shop": "prestashop",
         "presta_shop": "prestashop",
         "prestashop": "prestashop",
+
+        # Magento 2 / Adobe Commerce
+        "adobe commerce": "magento",
+        "adobe-commerce": "magento",
+        "adobe_commerce": "magento",
+        "magento 2": "magento",
+        "magento-2": "magento",
+        "magento_2": "magento",
+        "magento": "magento",
 
         # Square / Weebly
         "square": "square_weebly",
