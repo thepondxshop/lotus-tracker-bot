@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 BigCommerce Universal Retailer Adapter
-Version 1.0.5
-Step 6J-2B — BigCommerce Classification + Diagnostic Integrity
+Version 1.0.6
+Step 6J-2B1 — BigCommerce Non-TCG Merchandise Integrity
 
 Public storefront + sitemap GETs only.
 No auth guessing, cart mutation, checkout automation, CAPTCHA/queue bypass.
@@ -22,7 +22,7 @@ import aiohttp
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.65
@@ -64,7 +64,29 @@ SEALED = (
 SINGLE = ("single card","tcg single","card single","singles","individual card","black star promo","promo card")
 ACCESSORY = ("sleeves","deck box","binder","playmat","play mat","portfolio","toploader","top loader")
 ONE_PIECE_CODE = re.compile(r"\b(?:OP|EB|PRB|ST|EX)\d{1,2}-\d{2,4}\b", re.I)
-POKEMON_NUMBER = re.compile(r"\b\d{1,4}\s*/\s*\d{1,4}\b")
+POKEMON_NUMBER = re.compile(
+    r"\b\d{1,4}\s*/\s*\d{1,4}\b"
+    r"(?!\s*(?:-|–|—)?\s*(?:inch|inches|in\.|[\"”]))",
+    re.I,
+)
+NON_TCG_MERCHANDISE = (
+    re.compile(r"\bplush(?:ie|ies)?\b", re.I),
+    re.compile(r"\bstuffed\s+(?:animal|toy)\b", re.I),
+    re.compile(r"\bkey[\s-]*chain\b", re.I),
+    re.compile(r"\bclip[\s-]*on\b", re.I),
+    re.compile(r"\blanyard\b", re.I),
+    re.compile(r"\bfunko\b", re.I),
+    re.compile(r"\bpop!\b", re.I),
+    re.compile(r"\baction\s+figure\b", re.I),
+    re.compile(r"\bfigurine\b", re.I),
+    re.compile(r"\bstatue\b", re.I),
+    re.compile(r"\bdoll\b", re.I),
+    re.compile(
+        r"\b(?:t[\s-]*shirt|shirt|hoodie|sweatshirt|socks|blanket)\b",
+        re.I,
+    ),
+    re.compile(r"\b(?:backpack|wallet|mug)\b", re.I),
+)
 JSON_LD = re.compile(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I|re.S)
 LOC = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.I|re.S)
 OG_TITLE = re.compile(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', re.I)
@@ -117,10 +139,25 @@ def same_domain(url, domain):
         return False
 
 
+def is_non_tcg_merchandise(title):
+    text = clean(title)
+
+    if not text:
+        return False
+
+    return any(
+        pattern.search(text)
+        for pattern in NON_TCG_MERCHANDISE
+    )
+
+
 def classify_game(title):
     t = clean(title).lower()
 
     if not t:
+        return None
+
+    if is_non_tcg_merchandise(title):
         return None
 
     if any(
@@ -1561,6 +1598,25 @@ class BigCommerceAdapter(
                 text,
             )
         )
+
+        if is_non_tcg_merchandise(
+            title
+        ):
+            self.diagnostics[
+                "products_rejected"
+            ] += 1
+
+            print(
+                (
+                    "BIGCOMMERCE PAGE SKIPPED | "
+                    f"Store={self.store_name} | "
+                    f"URL={url} | "
+                    "Reason=NON_TCG_MERCHANDISE | "
+                    f"Title={title}"
+                )
+            )
+
+            return None
 
         game = (
             classify_game(
