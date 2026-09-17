@@ -1,14 +1,15 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Universal Retailer Platform Detector
-Version: 1.0.4
+Version: 1.0.5
 
 Step 6J-3F1 — Shopware 6 Production-Adapter Fingerprinting
 
 Purpose:
 - Detect the storefront platform before a universal retailer is staged.
 - Distinguish WooCommerce, Square/Weebly, BigCommerce, PrestaShop,
-  Shopware 6, and Shopify using bounded public storefront signals.
+  Shopware 6, Magento 2 / Adobe Commerce, and Shopify using bounded public
+  storefront signals.
 - Treat Square payment references as weak evidence so a WooCommerce
   store that merely uses Square for payments is not misclassified.
 - Return confidence + diagnostics so main.py can refuse ambiguous stores.
@@ -48,6 +49,7 @@ AUTO_STAGE_PLATFORMS = {
     "bigcommerce",
     "prestashop",
     "shopware",
+    "magento",
 }
 
 PLATFORM_LABELS = {
@@ -56,6 +58,7 @@ PLATFORM_LABELS = {
     "bigcommerce": "BigCommerce",
     "prestashop": "PrestaShop",
     "shopware": "Shopware 6",
+    "magento": "Magento 2 / Adobe Commerce",
     "shopify": "Shopify",
     "unknown": "Unknown",
 }
@@ -138,6 +141,7 @@ def _initial_scores() -> dict[str, int]:
         "bigcommerce": 0,
         "prestashop": 0,
         "shopware": 0,
+        "magento": 0,
         "shopify": 0,
     }
 
@@ -149,6 +153,7 @@ def _initial_signal_map() -> dict[str, list[str]]:
         "bigcommerce": [],
         "prestashop": [],
         "shopware": [],
+        "magento": [],
         "shopify": [],
     }
 
@@ -299,6 +304,52 @@ def score_homepage_signals(
             "shopware",
             35,
             "Shopware storefront product markup",
+        )
+
+    # -----------------------------------------------------
+    # Magento 2 / Adobe Commerce
+    # -----------------------------------------------------
+    if re.search(
+        r'<meta[^>]+name=["\']generator["\'][^>]+content=["\'][^"\']*magento',
+        lowered,
+    ) or re.search(
+        r'<meta[^>]+content=["\'][^"\']*magento[^"\']*["\'][^>]+name=["\']generator',
+        lowered,
+    ):
+        _add_signal(
+            scores,
+            signal_map,
+            "magento",
+            100,
+            "Magento generator meta tag",
+        )
+
+    if _contains_any(
+        lowered,
+        (
+            "magento_ui/",
+            "magento_catalog/",
+            "mage/cookies",
+            "mage-cache-storage",
+            "data-mage-init",
+            "text/x-magento-init",
+        ),
+    ):
+        _add_signal(
+            scores,
+            signal_map,
+            "magento",
+            70,
+            "Magento storefront assets/runtime",
+        )
+
+    if "/static/version" in lowered and "/frontend/" in lowered:
+        _add_signal(
+            scores,
+            signal_map,
+            "magento",
+            45,
+            "Magento versioned frontend assets",
         )
 
     # -----------------------------------------------------
@@ -542,6 +593,17 @@ def score_homepage_signals(
             "shopify",
             35,
             "HTTP headers reference Shopify",
+        )
+
+    if "magento" in headers_lower.get("x-magento-vary", "") or (
+        "x-magento-vary" in headers_lower
+    ):
+        _add_signal(
+            scores,
+            signal_map,
+            "magento",
+            65,
+            "HTTP response exposes X-Magento-Vary",
         )
 
 
@@ -812,6 +874,31 @@ async def _probe_shopware_with_production_adapter(
         return False, None, f"{type(error).__name__}:{error}", []
 
 
+async def _probe_magento_with_production_adapter(
+    base_url: str,
+) -> tuple[bool, str | None, str | None]:
+    """Use the real adapter's read-only public GraphQL probe."""
+    try:
+        from app.retailers.magento_adapter import MagentoAdapter
+
+        result = await MagentoAdapter.platform_probe(base_url)
+        if result.get("detected"):
+            return (
+                True,
+                str(result.get("endpoint") or "/graphql"),
+                None,
+            )
+        return (
+            False,
+            str(result.get("endpoint") or "") or None,
+            str(result.get("reason") or "MAGENTO_GRAPHQL_NOT_CONFIRMED"),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        return False, None, f"{type(error).__name__}:{error}"
+
+
 async def _probe_platform_apis(
     *,
     session: aiohttp.ClientSession,
@@ -821,6 +908,31 @@ async def _probe_platform_apis(
     errors: list[str],
 ) -> None:
     base_url = base_url.rstrip("/")
+
+    # =====================================================
+    # Magento 2 / Adobe Commerce — public GraphQL truth
+    # =====================================================
+    magento_detected, magento_endpoint, magento_error = (
+        await _probe_magento_with_production_adapter(base_url)
+    )
+    if magento_detected:
+        _add_signal(
+            scores,
+            signal_map,
+            "magento",
+            160,
+            (
+                "Production Magento adapter confirmed the public products "
+                f"GraphQL schema at {magento_endpoint}"
+            ),
+        )
+    elif magento_error and magento_error not in {
+        "HTTP_401",
+        "HTTP_403",
+        "HTTP_404",
+        "MAGENTO_GRAPHQL_NOT_CONFIRMED",
+    }:
+        errors.append(f"MAGENTO_PRODUCTION_PROBE:{magento_error}")
 
     # =====================================================
     # Shopware 6 — production-adapter truth first
