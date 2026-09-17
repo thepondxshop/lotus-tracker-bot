@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 PrestaShop Universal Retailer Adapter
-Version 1.0.5
-Step 6J-3C5 — PrestaShop Non-TCG Merchandise Integrity
+Version 1.0.6
+Step 6J-3C6 — PrestaShop Multilingual Product Identity Integrity
 
 Safety:
 - Public storefront pages, robots.txt, and public sitemap GETs only
@@ -30,7 +30,7 @@ from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_pri
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.70
@@ -47,6 +47,30 @@ SITEMAP_PATHS = (
     "/sitemap_index.xml",
     "/index_sitemap.xml",
 )
+
+PRESTASHOP_LOCALE_SEGMENTS = {
+    "en", "en-us", "en-gb", "es", "es-es", "fr", "fr-fr", "de", "de-de",
+    "it", "it-it", "pt", "pt-pt", "nl", "nl-nl", "sv", "sv-se", "pl",
+    "pl-pl", "da", "da-dk", "fi", "fi-fi", "no", "nb-no",
+}
+
+REGION_LOCALE = {
+    "US": "en",
+    "CA": "en",
+    "UK": "en",
+    "GB": "en",
+    "ES": "es",
+    "FR": "fr",
+    "DE": "de",
+    "IT": "it",
+    "PT": "pt",
+    "NL": "nl",
+    "SE": "sv",
+    "PL": "pl",
+    "DK": "da",
+    "FI": "fi",
+    "NO": "no",
+}
 
 HTML_DISCOVERY_PATHS = (
     "/",
@@ -506,6 +530,348 @@ def normalize_url(url):
     except Exception:
 
         return ""
+
+
+def prestashop_locale_segment(url):
+
+    try:
+
+        parts = [
+            part.lower()
+            for part in urlparse(
+                str(
+                    url
+                    or ""
+                )
+            ).path.split("/")
+            if part
+        ]
+
+    except Exception:
+
+        return None
+
+    if (
+        parts
+        and
+        parts[0] in PRESTASHOP_LOCALE_SEGMENTS
+    ):
+
+        return parts[0]
+
+    return None
+
+
+def prestashop_canonical_url_key(url):
+
+    normalized = normalize_url(
+        url
+    )
+
+    if not normalized:
+
+        return ""
+
+    try:
+
+        parsed = urlparse(
+            normalized
+        )
+
+        parts = [
+            part
+            for part in parsed.path.split("/")
+            if part
+        ]
+
+        if (
+            parts
+            and
+            parts[0].lower() in PRESTASHOP_LOCALE_SEGMENTS
+        ):
+
+            parts = parts[1:]
+
+        path = (
+            "/"
+            + "/".join(
+                parts
+            )
+        ).rstrip("/")
+
+        return (
+            f"{parsed.netloc.lower()}"
+            f"{path.lower() or '/'}"
+        )
+
+    except Exception:
+
+        return normalized.lower()
+
+
+def prestashop_url_preference_score(
+    url,
+    region,
+):
+
+    locale = prestashop_locale_segment(
+        url
+    )
+
+    preferred = REGION_LOCALE.get(
+        str(
+            region
+            or ""
+        ).upper()
+    )
+
+    if (
+        locale
+        and
+        preferred
+        and
+        locale.split("-", 1)[0] == preferred
+    ):
+
+        return 20
+
+    if locale is None:
+
+        return 10
+
+    if locale.startswith(
+        "en"
+    ):
+
+        return 5
+
+    return 0
+
+
+def deduplicate_prestashop_urls(
+    urls,
+    region,
+):
+
+    selected = {}
+
+    for raw_url in (
+        urls
+        or []
+    ):
+
+        url = normalize_url(
+            raw_url
+        )
+
+        if not url:
+
+            continue
+
+        key = (
+            prestashop_canonical_url_key(
+                url
+            )
+            or url.lower()
+        )
+
+        current = selected.get(
+            key
+        )
+
+        if (
+            current is None
+            or
+            prestashop_url_preference_score(
+                url,
+                region,
+            )
+            >
+            prestashop_url_preference_score(
+                current,
+                region,
+            )
+        ):
+
+            selected[key] = url
+
+    return list(
+        selected.values()
+    )
+
+
+def prestashop_product_identity_key(item):
+
+    if not isinstance(
+        item,
+        dict,
+    ):
+
+        return None
+
+    for field in (
+        "external_product_id",
+        "external_id",
+        "sku",
+    ):
+
+        value = clean(
+            item.get(
+                field
+            )
+        ).lower()
+
+        if value:
+
+            return (
+                f"{field}:"
+                f"{value}"
+            )
+
+    url_key = prestashop_canonical_url_key(
+        item.get(
+            "url"
+        )
+    )
+
+    if url_key:
+
+        return (
+            f"url:{url_key}"
+        )
+
+    return None
+
+
+def prestashop_product_quality_score(
+    item,
+    region,
+):
+
+    if not isinstance(
+        item,
+        dict,
+    ):
+
+        return -1
+
+    platform_data = item.get(
+        "platform_data"
+    )
+
+    if not isinstance(
+        platform_data,
+        dict,
+    ):
+
+        platform_data = {}
+
+    score = prestashop_url_preference_score(
+        item.get(
+            "url"
+        ),
+        region,
+    )
+
+    if item.get(
+        "price"
+    ) is not None:
+
+        score += 40
+
+    if platform_data.get(
+        "availability_known"
+    ):
+
+        score += 30
+
+    if item.get(
+        "image_url"
+    ):
+
+        score += 5
+
+    if item.get(
+        "sku"
+    ):
+
+        score += 3
+
+    return score
+
+
+def deduplicate_normalized_prestashop_products(
+    products,
+    region,
+):
+
+    selected = {}
+    anonymous = []
+    input_count = 0
+
+    for item in (
+        products
+        or []
+    ):
+
+        if not isinstance(
+            item,
+            dict,
+        ):
+
+            continue
+
+        input_count += 1
+
+        key = prestashop_product_identity_key(
+            item
+        )
+
+        if not key:
+
+            anonymous.append(
+                item
+            )
+
+            continue
+
+        current = selected.get(
+            key
+        )
+
+        if (
+            current is None
+            or
+            prestashop_product_quality_score(
+                item,
+                region,
+            )
+            >
+            prestashop_product_quality_score(
+                current,
+                region,
+            )
+        ):
+
+            selected[key] = item
+
+    output = (
+        list(
+            selected.values()
+        )
+        + anonymous
+    )
+
+    return (
+        output,
+        max(
+            input_count
+            - len(
+                output
+            ),
+            0,
+        ),
+    )
 
 
 def same_domain(
@@ -2366,6 +2732,12 @@ class PrestaShopAdapter(
             "html_product_candidates":
                 0,
 
+            "localized_url_duplicates_removed":
+                0,
+
+            "identity_duplicates_removed":
+                0,
+
             "last_error":
                 None,
         }
@@ -2377,6 +2749,54 @@ class PrestaShopAdapter(
 
         return dict(
             self.diagnostics
+        )
+
+
+    def _deduplicate_normalized_products(
+        self,
+        products,
+    ):
+
+        input_count = len(
+            products
+            or []
+        )
+
+        (
+            output,
+            removed,
+        ) = deduplicate_normalized_prestashop_products(
+            products,
+            self.region,
+        )
+
+        self.diagnostics[
+            "identity_duplicates_removed"
+        ] += removed
+
+        print(
+            (
+                "PRESTASHOP IDENTITY DEDUPLICATION | "
+                f"Store={self.store_name} | "
+                f"Input={input_count} | "
+                f"Output={len(output)} | "
+                f"Removed={removed}"
+            )
+        )
+
+        return output
+
+
+    async def get_normalized_products(
+        self,
+    ):
+
+        products = (
+            await super().get_normalized_products()
+        )
+
+        return self._deduplicate_normalized_products(
+            products
         )
 
 
@@ -2823,6 +3243,29 @@ class PrestaShopAdapter(
             html_candidates
         )
 
+        discovered_url_count = len(
+            product_urls
+        )
+
+        product_urls = set(
+            deduplicate_prestashop_urls(
+                product_urls,
+                self.region,
+            )
+        )
+
+        localized_duplicates = max(
+            discovered_url_count
+            - len(
+                product_urls
+            ),
+            0,
+        )
+
+        self.diagnostics[
+            "localized_url_duplicates_removed"
+        ] += localized_duplicates
+
         ranked = sorted(
 
             product_urls,
@@ -2859,7 +3302,9 @@ class PrestaShopAdapter(
                 f"{self.diagnostics['xml_product_candidates']} | "
                 f"HtmlCandidates="
                 f"{self.diagnostics['html_product_candidates']} | "
-                f"TotalCandidates={len(product_urls)} | "
+                f"TotalCandidates={discovered_url_count} | "
+                f"CanonicalCandidates={len(product_urls)} | "
+                f"LocalizedDuplicatesRemoved={localized_duplicates} | "
                 f"SelectedForFetch={len(selected)}"
             )
         )
@@ -3042,6 +3487,27 @@ class PrestaShopAdapter(
                 clean_url
             )
 
+        before_locale_deduplication = len(
+            unique_urls
+        )
+
+        unique_urls = deduplicate_prestashop_urls(
+            unique_urls,
+            self.region,
+        )
+
+        localized_duplicates = max(
+            before_locale_deduplication
+            - len(
+                unique_urls
+            ),
+            0,
+        )
+
+        self.diagnostics[
+            "localized_url_duplicates_removed"
+        ] += localized_duplicates
+
         headers = {
 
             "User-Agent":
@@ -3154,6 +3620,7 @@ class PrestaShopAdapter(
                 "PRESTASHOP FAST REFRESH COMPLETE | "
                 f"Store={self.store_name} | "
                 f"KnownURLs={len(unique_urls)} | "
+                f"LocalizedDuplicatesRemoved={localized_duplicates} | "
                 f"ProductPages="
                 f"{self.diagnostics['product_pages_successful']}"
             )
@@ -3251,7 +3718,9 @@ class PrestaShopAdapter(
                 item
             )
 
-        return normalized_products
+        return self._deduplicate_normalized_products(
+            normalized_products
+        )
 
 
     def normalize_product(
@@ -3508,7 +3977,7 @@ class PrestaShopAdapter(
                 "prestashop",
 
             "adapter_step":
-                "6J-3C2",
+                "6J-3C6",
 
             "availability_known":
                 availability_known,
