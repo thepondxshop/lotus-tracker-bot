@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 PrestaShop Universal Retailer Adapter
-Version 1.0.6
-Step 6J-3C6 — PrestaShop Multilingual Product Identity Integrity
+Version 1.0.7
+Step 6J-3C7 — Collision-Safe PrestaShop Product Identity
 
 Safety:
 - Public storefront pages, robots.txt, and public sitemap GETs only
@@ -30,7 +30,7 @@ from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_pri
 from app.retailer_registry import retailer_adapter
 
 
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.70
@@ -709,6 +709,16 @@ def prestashop_product_identity_key(item):
 
         return None
 
+    title_key = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        clean(
+            item.get(
+                "title"
+            )
+        ).lower(),
+    ).strip()
+
     for field in (
         "external_product_id",
         "external_id",
@@ -721,11 +731,16 @@ def prestashop_product_identity_key(item):
             )
         ).lower()
 
-        if value:
+        if (
+            value
+            and
+            title_key
+        ):
 
             return (
                 f"{field}:"
-                f"{value}"
+                f"{value}|"
+                f"title:{title_key}"
             )
 
     url_key = prestashop_canonical_url_key(
@@ -3977,7 +3992,7 @@ class PrestaShopAdapter(
                 "prestashop",
 
             "adapter_step":
-                "6J-3C6",
+                "6J-3C7",
 
             "availability_known":
                 availability_known,
