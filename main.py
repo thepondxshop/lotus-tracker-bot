@@ -496,6 +496,11 @@ RETAILER_PLATFORM_CHOICES = [
         name="Shopware 6",
         value="shopware",
     ),
+
+    app_commands.Choice(
+        name="Magento 2 / Adobe Commerce",
+        value="magento",
+    ),
 ]
 
 
@@ -3668,7 +3673,7 @@ async def detectretailer(
     embed.set_footer(
         text=(
             "Lotus Universal Retailer Foundation • "
-            "6J-3F Shopware 6 Platform Fingerprinting"
+            "6J-4A Universal Platform Fingerprinting"
         )
     )
 
@@ -5476,6 +5481,7 @@ async def addretailer(
         "bigcommerce",
         "prestashop",
         "shopware",
+        "magento",
     }:
 
         await interaction.followup.send(
@@ -5877,6 +5883,7 @@ async def setretailerplatform(
         "bigcommerce",
         "prestashop",
         "shopware",
+        "magento",
     }
 
     if clean_platform not in approved_platforms:
@@ -6071,6 +6078,7 @@ async def setretailerplatform(
             "bigcommerce": "BigCommerce",
             "prestashop": "PrestaShop",
             "shopware": "Shopware 6",
+            "magento": "Magento 2 / Adobe Commerce",
         }
 
         old_platform_label = (
@@ -6449,6 +6457,7 @@ async def scanretailer(
             "bigcommerce",
             "prestashop",
             "shopware",
+            "magento",
         }:
 
             await interaction.followup.send(
@@ -6597,6 +6606,7 @@ async def scanretailer(
             "bigcommerce": "BigCommerce",
             "prestashop": "PrestaShop",
             "shopware": "Shopware 6",
+            "magento": "Magento 2 / Adobe Commerce",
         }.get(platform, platform)
 
         embed.add_field(
@@ -6942,6 +6952,7 @@ async def stores(
         "bigcommerce": "BigCommerce",
         "prestashop": "PrestaShop",
         "shopware": "Shopware 6",
+        "magento": "Magento 2 / Adobe Commerce",
         "pokemon_center": "Pokémon Center",
         "major_retailer": "Major Retailer",
     }
