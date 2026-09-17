@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import time
 
 import discord
@@ -67,6 +68,13 @@ from app.redis_client import (
 # Universal routing correction: explicit sources + verified stock evidence
 # Member-cache recovery + explicit zero-mention diagnostics
 # =========================================================
+
+
+# A single broken database/API/Discord operation must never hold the only
+# queue consumer forever. Timed-out or failed events are preserved separately
+# for diagnosis instead of being requeued into an infinite failure loop.
+EVENT_DISPATCH_TIMEOUT_SECONDS = 30
+DEAD_LETTER_QUEUE_KEY = "lotus:product_events:dead_letter"
 
 
 EVENT_TITLES = {
@@ -1551,11 +1559,56 @@ async def route_event_to_discord(
 # WORKER
 # =========================================================
 
+async def preserve_failed_event(
+    event,
+    reason,
+):
+    redis_client = get_redis()
+
+    if redis_client is None:
+        print(
+            "EVENT DEAD LETTER ERROR | "
+            f"Reason={reason} | Redis unavailable | "
+            f"Event={event.get('event_type')} | "
+            f"Store={event.get('store_name')}"
+        )
+        return False
+
+    try:
+        failed_event = dict(event)
+        failed_event["_worker_failure"] = str(reason)
+
+        await redis_client.rpush(
+            DEAD_LETTER_QUEUE_KEY,
+            json.dumps(failed_event),
+        )
+
+        print(
+            "EVENT DEAD LETTERED | "
+            f"Reason={reason} | "
+            f"Event={event.get('event_type')} | "
+            f"Source={event.get('source_type')} | "
+            f"Game={event.get('game')} | "
+            f"Store={event.get('store_name')}"
+        )
+
+        return True
+
+    except Exception as error:
+        print(
+            "EVENT DEAD LETTER ERROR | "
+            f"Reason={reason} | "
+            f"{type(error).__name__}: {error}"
+        )
+        return False
+
+
 async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v1.0.6-N1 / 6K-2C5 started."
+        "Lotus Event Worker v1.0.6-N2 / 6K-2C6 started "
+        f"(dispatch timeout={EVENT_DISPATCH_TIMEOUT_SECONDS}s)."
     )
 
     while not bot.is_closed():
@@ -1573,10 +1626,55 @@ async def run_event_worker(bot):
             if event is None:
                 continue
 
-            await route_event_to_discord(
-                bot,
-                event,
-            )
+            try:
+                await asyncio.wait_for(
+                    route_event_to_discord(
+                        bot,
+                        event,
+                    ),
+                    timeout=EVENT_DISPATCH_TIMEOUT_SECONDS,
+                )
+
+            except asyncio.TimeoutError:
+                await preserve_failed_event(
+                    event,
+                    (
+                        "DISPATCH_TIMEOUT_"
+                        f"{EVENT_DISPATCH_TIMEOUT_SECONDS}S"
+                    ),
+                )
+
+                print(
+                    "EVENT DISPATCH TIMEOUT | "
+                    f"TimeoutSeconds={EVENT_DISPATCH_TIMEOUT_SECONDS} | "
+                    f"Event={event.get('event_type')} | "
+                    f"Source={event.get('source_type')} | "
+                    f"Game={event.get('game')} | "
+                    f"Store={event.get('store_name')} | "
+                    "WorkerContinuing=True"
+                )
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as error:
+                await preserve_failed_event(
+                    event,
+                    (
+                        f"{type(error).__name__}: "
+                        f"{error}"
+                    ),
+                )
+
+                print(
+                    "EVENT DISPATCH ERROR | "
+                    f"{type(error).__name__}: {error} | "
+                    f"Event={event.get('event_type')} | "
+                    f"Source={event.get('source_type')} | "
+                    f"Game={event.get('game')} | "
+                    f"Store={event.get('store_name')} | "
+                    "WorkerContinuing=True"
+                )
 
         except asyncio.CancelledError:
             raise
@@ -1593,4 +1691,5 @@ async def run_event_worker(bot):
             await asyncio.sleep(
                 2
             )
+
 
