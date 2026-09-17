@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 BigCommerce Universal Retailer Adapter
-Version 1.0.6
-Step 6J-2B1 — BigCommerce Non-TCG Merchandise Integrity
+Version 1.0.7
+Step 6J-2B2 — BigCommerce Sealed Product Classification Integrity
 
 Public storefront + sitemap GETs only.
 No auth guessing, cart mutation, checkout automation, CAPTCHA/queue bypass.
@@ -22,7 +22,7 @@ import aiohttp
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.65
@@ -56,7 +56,9 @@ GAME_TERMS = {
 }
 SEALED = (
     "booster box","booster display","booster pack","booster bundle","elite trainer box",
-    "starter deck","battle deck","structure deck","collection box","collection set",
+    "starter deck","battle deck","battle arena deck","high class deck","structure deck",
+    "build & battle","build and battle","classic trading card game",
+    "collection box","collection set",
     "special collection","premium collection","figure collection","v box","vstar box",
     "v star","world championship deck","world championships deck","build & battle stadium",
     "build and battle stadium","deluxe box","deluxe pack","double pack","blister","tin","case"
@@ -1837,4 +1839,3 @@ class BigCommerceAdapter(
 
             platform_data=pdata,
         )
-
