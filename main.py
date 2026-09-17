@@ -137,8 +137,6 @@ from app.event_service import (
 # =========================================================
 
 from app.worker import (
-    build_mention_chunks,
-    get_eligible_members,
     run_event_worker,
 )
 
@@ -7004,6 +7002,185 @@ async def stores(
 
 
 # =========================================================
+# /UPDATERETAILERDOMAIN
+# Safe in-place retailer hostname correction
+# =========================================================
+
+@bot.tree.command(
+    name="updateretailerdomain",
+    description="Safely update a retailer domain without losing its history.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+@app_commands.describe(
+    store_id="Existing Lotus store ID.",
+    domain="New hostname, for example www.cards-capital.com.",
+)
+async def updateretailerdomain(
+    interaction,
+    store_id: int,
+    domain: str,
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    if SessionLocal is None:
+
+        await interaction.followup.send(
+            "❌ PostgreSQL is unavailable.",
+            ephemeral=True,
+        )
+
+        return
+
+    # Keep an intentional www. hostname. The onboarding normalizer removes
+    # www., which is useful for duplicate detection but unsafe for retailers
+    # whose apex hostname does not serve HTTPS correctly.
+    clean_domain = (
+        str(
+            domain
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+    clean_domain = (
+        clean_domain
+        .replace(
+            "https://",
+            "",
+        )
+        .replace(
+            "http://",
+            "",
+        )
+    )
+
+    clean_domain = (
+        clean_domain
+        .split("/")[0]
+        .split("?")[0]
+        .split("#")[0]
+        .strip()
+        .rstrip(".")
+    )
+
+    if (
+        not clean_domain
+        or "." not in clean_domain
+        or " " in clean_domain
+        or "@" in clean_domain
+    ):
+
+        await interaction.followup.send(
+            (
+                "❌ Enter a valid retailer hostname.\n\n"
+                "Example: `www.cards-capital.com`"
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    apex_domain = (
+        clean_domain[4:]
+        if clean_domain.startswith("www.")
+        else clean_domain
+    )
+
+    equivalent_domains = {
+        apex_domain,
+        f"www.{apex_domain}",
+    }
+
+    try:
+
+        async with SessionLocal() as session:
+
+            result = await session.execute(
+                select(Store).where(
+                    Store.id == store_id
+                )
+            )
+
+            store = result.scalar_one_or_none()
+
+            if store is None:
+
+                await interaction.followup.send(
+                    "❌ Store ID not found.",
+                    ephemeral=True,
+                )
+
+                return
+
+            duplicate_result = await session.execute(
+                select(Store)
+                .where(
+                    Store.id != store_id,
+                    Store.domain.in_(
+                        equivalent_domains
+                    ),
+                )
+                .limit(1)
+            )
+
+            duplicate = duplicate_result.scalar_one_or_none()
+
+            if duplicate is not None:
+
+                await interaction.followup.send(
+                    (
+                        "❌ That retailer domain is already assigned.\n\n"
+                        f"**Store ID:** `{duplicate.id}`\n"
+                        f"**Name:** {duplicate.name}\n"
+                        f"**Domain:** `{duplicate.domain}`\n\n"
+                        "No changes were made."
+                    ),
+                    ephemeral=True,
+                )
+
+                return
+
+            old_domain = store.domain or "Unknown"
+            store.domain = clean_domain
+
+            await session.commit()
+
+            store_name = store.name
+
+    except Exception as error:
+
+        await interaction.followup.send(
+            (
+                "❌ Retailer domain could not be updated.\n\n"
+                f"`{type(error).__name__}: {error}`\n\n"
+                "No retailer history was intentionally removed."
+            ),
+            ephemeral=True,
+        )
+
+        return
+
+    await interaction.followup.send(
+        (
+            "✅ **Retailer domain updated.**\n\n"
+            f"**Store ID:** `{store_id}`\n"
+            f"**Name:** {store_name}\n"
+            f"**Old Domain:** `{old_domain}`\n"
+            f"**New Domain:** `{clean_domain}`\n\n"
+            "Product history and the existing baseline were preserved.\n"
+            f"Next run `/scanretailer store_id:{store_id}`."
+        ),
+        ephemeral=True,
+    )
+
+
+# =========================================================
 # /STOREINFO
 # =========================================================
 
@@ -8651,141 +8828,6 @@ async def simulateproduct(
 
 
 # =========================================================
-# /SIMULATEUNIVERSAL
-#
-# Administrator-only, controlled end-to-end test for the
-# Universal retailer -> database -> Redis -> worker ->
-# International Discord alert pipeline.
-#
-# This uses an explicit test identity and example.com URL.
-# It does not modify any real retailer catalog or baseline.
-# =========================================================
-
-@bot.tree.command(
-    name="simulateuniversal",
-    description="Test the complete Universal retailer alert pipeline.",
-)
-@app_commands.checks.has_permissions(
-    administrator=True
-)
-async def simulateuniversal(
-    interaction,
-):
-
-    await interaction.response.defer(
-        ephemeral=True
-    )
-
-    product_event = ProductEvent(
-
-        event_type=(
-            ProductEventType.RESTOCK
-        ),
-
-        game="Pokemon",
-
-        product_name=(
-            "Pokemon Universal Pipeline Test Booster Box "
-            "(TEST - NOT A REAL LISTING)"
-        ),
-
-        store_name=(
-            "Lotus Universal Test Store"
-        ),
-
-        product_url=(
-            "https://example.com/lotus-universal-pipeline-test"
-        ),
-
-        price=24.99,
-
-        old_price=24.99,
-
-        currency="EUR",
-
-        in_stock=True,
-
-        availability_state=(
-            "IN_STOCK"
-        ),
-
-        availability_known=True,
-
-        availability_confidence=(
-            "VERIFIED"
-        ),
-
-        region="ES",
-
-        language="English",
-
-        product_type="Booster Box",
-
-        product_category="SEALED",
-
-        product_family=(
-            "GLOBAL_STANDARD"
-        ),
-
-        lifecycle_state="ACTIVE",
-
-        source_type="prestashop",
-
-        retailer_key=(
-            "lotus-universal-test"
-        ),
-
-        external_product_id=(
-            "lotus-universal-pipeline-test"
-        ),
-
-        source_confidence="VERIFIED",
-
-        image_url=None,
-
-        variant_id=None,
-
-        purchase_limit=None,
-
-        cart_base_url=None,
-    )
-
-    result = (
-        await process_product_event(
-            product_event
-        )
-    )
-
-    await interaction.followup.send(
-
-        (
-            "🧪 Universal pipeline test submitted.\n\n"
-
-            "Source: `prestashop`\n"
-
-            "Region: `ES`\n"
-
-            "Route expected: `international`\n"
-
-            "Event: `RESTOCK`\n"
-
-            "Availability: `IN_STOCK / VERIFIED`\n"
-
-            "Database: "
-            f"{'✅' if result['database_saved'] else '❌'}\n"
-
-            "Redis: "
-            f"{'✅' if result['redis_saved'] else '❌'}\n\n"
-
-            "This is a controlled test identity and does not "
-            "change a real retailer baseline."
-        ),
-
-        ephemeral=True,
-    )
-
-
-# =========================================================
 # /TESTALERT
 # =========================================================
 
@@ -8812,8 +8854,6 @@ async def testalert(
     if interaction.guild is None:
 
         return
-
-    alert_type = str(alert_type or "").strip().lower()
 
     config = (
         ALERT_ACCESS.get(
@@ -8884,35 +8924,7 @@ async def testalert(
 
         return
 
-    event_by_route = {
-        "major_retailer": "RESTOCK",
-        "shopify": "RESTOCK",
-        "preorder": "PREORDER_LIVE",
-        "page_live": "PAGE_LIVE",
-        "deal": "PRICE_DROP",
-        "international": "RESTOCK",
-        "inventory_flicker": "INVENTORY_FLICKER",
-        "release_radar": "RELEASE_DATE_CHANGED",
-        "pokemon_queue": "QUEUE_ACTIVE",
-    }
-    test_event = {
-        "game": game.value,
-        "event_type": event_by_route.get(alert_type, "RESTOCK"),
-        "product_category": "SEALED",
-        "product_family": "GLOBAL_STANDARD",
-        "region": "JP" if alert_type == "international" else "US",
-    }
-    eligible_members = await get_eligible_members(
-        interaction.guild,
-        test_event,
-        alert_type,
-        config.get("minimum_tier", "Free"),
-    )
-    mention_chunks = build_mention_chunks(eligible_members)
-
     await channel.send(
-
-        content=(mention_chunks[0] if mention_chunks else None),
 
         embed=discord.Embed(
 
@@ -8925,32 +8937,16 @@ async def testalert(
                 f"Route: "
                 f"`{alert_type}`\n"
 
-                "Version: `1.0.6-N1`"
-            ),
-        ),
-        allowed_mentions=discord.AllowedMentions(
-            roles=False,
-            users=True,
-            everyone=False,
-        ),
-    )
-
-    for mention_chunk in mention_chunks[1:]:
-        await channel.send(
-            content=mention_chunk,
-            allowed_mentions=discord.AllowedMentions(
-                roles=False,
-                users=True,
-                everyone=False,
+                "Version: `1.0.6`"
             ),
         )
+    )
 
     await interaction.followup.send(
 
         (
             f"\u2705 Test alert sent "
-            f"to {channel.mention}.\n"
-            f"Eligible member pings: `{len(eligible_members)}`"
+            f"to {channel.mention}."
         ),
 
         ephemeral=True,
@@ -9252,4 +9248,3 @@ if not DISCORD_TOKEN:
 bot.run(
     DISCORD_TOKEN
 )
-
