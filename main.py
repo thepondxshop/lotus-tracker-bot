@@ -61,6 +61,7 @@ from app.database import (
 
 from app.models import (
     Store,
+    StoreProduct,
 )
 
 
@@ -178,6 +179,7 @@ from app.retailers import (
 )
 
 from app.universal_retailer_monitor import (
+    VERSION as UNIVERSAL_RETAILER_MONITOR_VERSION,
     get_universal_retailer_monitor_status,
     run_universal_retailer_monitor,
     scan_store,
@@ -5002,6 +5004,19 @@ def format_universal_discovery_diagnostics(value) -> str:
         ]
 
     keys = tuple(feed_keys) + (
+        ("adapter", "Adapter"),
+        ("adapter_version", "Adapter version"),
+        ("discovery_mode", "Discovery mode"),
+        ("graphql_requests", "GraphQL requests"),
+        ("graphql_successful", "GraphQL successful"),
+        ("graphql_errors", "GraphQL errors"),
+        ("searches_attempted", "Searches attempted"),
+        ("searches_completed", "Searches completed"),
+        ("empty_searches", "Empty searches"),
+        ("raw_products_seen", "Raw catalog products"),
+        ("catalog_products_discovered", "Catalog products"),
+        ("products_accepted", "Products accepted"),
+        ("products_rejected", "Products rejected"),
         ("pages_checked", "Pages checked"),
         ("pages_successful", "Pages OK"),
         ("listing_roots_found", "Listing roots"),
@@ -6554,7 +6569,11 @@ async def scanretailer(
                 inline=False,
             )
             failure_embed.set_footer(
-                text="Lotus Universal Retailer Foundation • 6J-3F9 Shopware Product Enrichment Diagnostics"
+                text=(
+                    "Lotus Universal Retailer Foundation • "
+                    f"Monitor v{UNIVERSAL_RETAILER_MONITOR_VERSION} • "
+                    "Platform-Aware Diagnostics"
+                )
             )
 
             await interaction.followup.send(
@@ -6820,7 +6839,8 @@ async def scanretailer(
         embed.set_footer(
             text=(
                 "Lotus Universal Retailer Foundation • "
-                "6J-3F9 Shopware Product Enrichment"
+                f"Monitor v{UNIVERSAL_RETAILER_MONITOR_VERSION} • "
+                "Platform-Aware Product Discovery"
             )
         )
 
@@ -6840,6 +6860,249 @@ async def scanretailer(
                 f"{error}`"
             ),
 
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# /SETRETAILERACTIVE
+# Safe universal-retailer production activation/deactivation
+# =========================================================
+
+@bot.tree.command(
+    name="setretaileractive",
+    description="Safely enable or disable a validated universal retailer.",
+)
+@app_commands.checks.has_permissions(
+    administrator=True
+)
+@app_commands.describe(
+    store_id="Existing universal retailer Store ID.",
+    enabled="True to activate monitoring; false to disable it immediately.",
+    confirm="Required confirmation when enabling production monitoring.",
+)
+async def setretaileractive(
+    interaction,
+    store_id: int,
+    enabled: bool,
+    confirm: bool = False,
+):
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    if SessionLocal is None:
+        await interaction.followup.send(
+            "❌ PostgreSQL is unavailable.",
+            ephemeral=True,
+        )
+        return
+
+    approved_platforms = {
+        "square_weebly",
+        "woocommerce",
+        "bigcommerce",
+        "prestashop",
+        "shopware",
+        "magento",
+    }
+
+    try:
+        async with SessionLocal() as session:
+            result = await session.execute(
+                select(Store)
+                .where(Store.id == store_id)
+                .limit(1)
+            )
+            store = result.scalar_one_or_none()
+
+            if store is None:
+                await interaction.followup.send(
+                    "❌ Retailer Store ID not found.",
+                    ephemeral=True,
+                )
+                return
+
+            platform = normalize_platform(store.platform)
+            store_name = store.name or "Unknown Store"
+            store_domain = store.domain or "Unknown"
+            store_region = store.region or "US"
+
+            if platform not in approved_platforms:
+                await interaction.followup.send(
+                    (
+                        "❌ Activation is limited to approved universal "
+                        f"retailer platforms.\n\nPlatform: `{platform}`"
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            if not enabled:
+                store.active = False
+                store.disabled_reason = "ADMIN_DISABLED"
+                await session.commit()
+
+                print(
+                    "UNIVERSAL RETAILER DEACTIVATED | "
+                    f"Store={store_name} | StoreID={store_id} | "
+                    f"Domain={store_domain}"
+                )
+
+                embed = discord.Embed(
+                    title="🔴 Universal Retailer Disabled",
+                    description=(
+                        f"**{store_name}** was removed from automatic "
+                        "universal-retailer monitoring."
+                    ),
+                )
+                embed.add_field(name="Store ID", value=f"`{store_id}`", inline=True)
+                embed.add_field(name="Platform", value=f"`{platform_display_name(platform)}`", inline=True)
+                embed.add_field(name="Domain", value=f"`{store_domain}`", inline=False)
+                embed.add_field(name="Discord Alerts", value="🔇 Disabled", inline=True)
+                embed.set_footer(text="Lotus Universal Retailer • Safe Production Gate")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            if store.active:
+                await interaction.followup.send(
+                    f"✅ **{store_name}** is already active.",
+                    ephemeral=True,
+                )
+                return
+
+            if not confirm:
+                await interaction.followup.send(
+                    (
+                        "⚠️ **Activation confirmation required.**\n\n"
+                        f"Retailer: **{store_name}**\n"
+                        f"Store ID: `{store_id}`\n\n"
+                        "Run the command again with `confirm:True`. Lotus will "
+                        "perform one final forced-silent scan before activation."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            baseline_result = await session.execute(
+                select(StoreProduct.id)
+                .where(StoreProduct.store_id == store_id)
+                .limit(1)
+            )
+            if baseline_result.scalar_one_or_none() is None:
+                await interaction.followup.send(
+                    (
+                        "❌ **Activation blocked: no baseline exists.**\n\n"
+                        f"Run `/scanretailer store_id:{store_id}` first."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Copy only the fields scan_store needs. The final validation runs
+            # while the database row is still inactive, preventing the normal
+            # monitor from racing this production gate.
+            validation_store = type(
+                "ValidatedStore",
+                (),
+                {
+                    "id": store.id,
+                    "name": store_name,
+                    "domain": store_domain,
+                    "platform": store.platform,
+                    "region": store_region,
+                    "active": False,
+                },
+            )()
+
+        load_retailer_adapters()
+        scan_result = await scan_store(
+            validation_store,
+            suppress_events=True,
+        )
+
+        products = int(scan_result.get("products", 0) or 0)
+        events = int(scan_result.get("events", 0) or 0)
+        if not scan_result.get("success") or products <= 0 or events != 0:
+            await interaction.followup.send(
+                (
+                    "❌ **Activation blocked by final validation.**\n\n"
+                    f"Reason: `{scan_result.get('error') or 'VALIDATION_FAILED'}`\n"
+                    f"Products: `{products}`\n"
+                    f"Published events: `{events}`\n\n"
+                    "The retailer remains inactive."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        async with SessionLocal() as session:
+            result = await session.execute(
+                select(Store)
+                .where(Store.id == store_id)
+                .limit(1)
+            )
+            store = result.scalar_one_or_none()
+            if store is None:
+                await interaction.followup.send(
+                    "❌ Retailer disappeared before activation.",
+                    ephemeral=True,
+                )
+                return
+
+            store.active = True
+            store.health_status = "HEALTHY"
+            store.consecutive_failures = 0
+            store.disabled_reason = None
+            store.last_error = None
+            await session.commit()
+
+        print(
+            "UNIVERSAL RETAILER ACTIVATED | "
+            f"Store={store_name} | StoreID={store_id} | "
+            f"Domain={store_domain} | Products={products} | "
+            "FinalValidation=PASSED | EventsSuppressed=True"
+        )
+
+        embed = discord.Embed(
+            title="🟢 Universal Retailer Activated",
+            description=(
+                f"**{store_name}** passed the final forced-silent scan and "
+                "is now included in automatic monitoring."
+            ),
+        )
+        embed.add_field(name="Store ID", value=f"`{store_id}`", inline=True)
+        embed.add_field(name="Platform", value=f"`{platform_display_name(platform)}`", inline=True)
+        embed.add_field(name="Region", value=f"`{store_region}`", inline=True)
+        embed.add_field(name="Domain", value=f"`{store_domain}`", inline=False)
+        embed.add_field(name="Validated Products", value=f"`{products}`", inline=True)
+        embed.add_field(name="Validation Alerts", value="`0`", inline=True)
+        embed.add_field(name="Monitoring", value="🟢 Active", inline=True)
+        embed.add_field(
+            name="Safety",
+            value=(
+                "Final validation completed while inactive and forced-silent. "
+                "Only future verified changes may create events."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Lotus Universal Retailer • Safe Production Gate")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        print(
+            "UNIVERSAL RETAILER ACTIVATION ERROR | "
+            f"StoreID={store_id} | {type(error).__name__}: {error}"
+        )
+        await interaction.followup.send(
+            (
+                "❌ Universal retailer activation failed.\n\n"
+                f"`{type(error).__name__}: {error}`\n\n"
+                "No intentional activation was completed."
+            ),
             ephemeral=True,
         )
 
