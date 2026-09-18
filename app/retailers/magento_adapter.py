@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Magento 2 / Adobe Commerce Universal Retailer Adapter
-Version 1.0.3
+Version 1.0.4
 
 Step 6J-4A — Public Magento Catalog Foundation
 
@@ -37,7 +37,7 @@ from app.retailers.shopware_adapter import (
 )
 
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 
 print(
     f"LOTUS MAGENTO ADAPTER | Version={VERSION} | "
@@ -398,14 +398,6 @@ class MagentoAdapter(RetailerAdapter):
 
             self.diagnostics["graphql_successful"] += 1
             self.diagnostics["pages_successful"] += 1
-            items = products.get("items") or []
-            print(
-                "MAGENTO SEARCH PAGE | "
-                f"Store={self.store_name} | Search={search} | "
-                f"Page={current_page} | "
-                f"TotalCount={int(products.get('total_count') or 0)} | "
-                f"Items={len(items) if isinstance(items, list) else 0}"
-            )
             return products
         except asyncio.CancelledError:
             raise
@@ -500,8 +492,7 @@ class MagentoAdapter(RetailerAdapter):
             f"Raw={self.diagnostics.get('raw_products_seen')} | "
             f"Catalog={self.diagnostics.get('catalog_products_discovered')} | "
             f"Accepted={self.diagnostics.get('products_accepted')} | "
-            f"Rejected={self.diagnostics.get('products_rejected')} | "
-            f"RejectionSamples={self.diagnostics.get('rejection_samples')}"
+            f"Rejected={self.diagnostics.get('products_rejected')}"
         )
         return products
 
