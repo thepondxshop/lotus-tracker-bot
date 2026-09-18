@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Magento 2 / Adobe Commerce Universal Retailer Adapter
-Version 1.0.2
+Version 1.0.3
 
 Step 6J-4A — Public Magento Catalog Foundation
 
@@ -37,7 +37,7 @@ from app.retailers.shopware_adapter import (
 )
 
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 print(
     f"LOTUS MAGENTO ADAPTER | Version={VERSION} | "
@@ -226,6 +226,7 @@ class MagentoAdapter(RetailerAdapter):
             "products_deduplicated": 0,
             "products_accepted": 0,
             "products_rejected": 0,
+            "rejection_samples": [],
             "missing_prices": 0,
             "unknown_availability": 0,
             "in_stock_products": 0,
@@ -397,6 +398,14 @@ class MagentoAdapter(RetailerAdapter):
 
             self.diagnostics["graphql_successful"] += 1
             self.diagnostics["pages_successful"] += 1
+            items = products.get("items") or []
+            print(
+                "MAGENTO SEARCH PAGE | "
+                f"Store={self.store_name} | Search={search} | "
+                f"Page={current_page} | "
+                f"TotalCount={int(products.get('total_count') or 0)} | "
+                f"Items={len(items) if isinstance(items, list) else 0}"
+            )
             return products
         except asyncio.CancelledError:
             raise
@@ -482,6 +491,20 @@ class MagentoAdapter(RetailerAdapter):
         self.diagnostics["catalog_products_discovered"] = len(collected)
         return list(collected.values())
 
+    async def get_normalized_products(self) -> list[dict[str, Any]]:
+        products = await super().get_normalized_products()
+        print(
+            "MAGENTO DISCOVERY SUMMARY | "
+            f"Store={self.store_name} | "
+            f"SearchCounts={self.diagnostics.get('search_result_counts')} | "
+            f"Raw={self.diagnostics.get('raw_products_seen')} | "
+            f"Catalog={self.diagnostics.get('catalog_products_discovered')} | "
+            f"Accepted={self.diagnostics.get('products_accepted')} | "
+            f"Rejected={self.diagnostics.get('products_rejected')} | "
+            f"RejectionSamples={self.diagnostics.get('rejection_samples')}"
+        )
+        return products
+
     def normalize_product(self, product: Any) -> RetailerProduct | None:
         if not isinstance(product, dict):
             self.diagnostics["products_rejected"] += 1
@@ -506,6 +529,9 @@ class MagentoAdapter(RetailerAdapter):
         game = classify_game(title) if _is_supported_tcg_product(title) else None
         if not game:
             self.diagnostics["products_rejected"] += 1
+            samples = self.diagnostics.get("rejection_samples")
+            if isinstance(samples, list) and len(samples) < 20 and title:
+                samples.append(title[:140])
             return None
 
         price, currency, price_source = _price_from_item(product)
