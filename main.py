@@ -9523,6 +9523,10 @@ async def on_app_command_error(
 # START
 # =========================================================
 
+from app.release_catalog.commands import register_release_catalog_commands
+
+register_release_catalog_commands(bot)
+
 if not DISCORD_TOKEN:
 
     raise RuntimeError(
