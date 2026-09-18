@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Magento 2 / Adobe Commerce Universal Retailer Adapter
-Version 1.0.4
+Version 1.0.5
 
 Step 6J-4A — Public Magento Catalog Foundation
 
@@ -37,7 +37,7 @@ from app.retailers.shopware_adapter import (
 )
 
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 
 print(
     f"LOTUS MAGENTO ADAPTER | Version={VERSION} | "
@@ -51,6 +51,8 @@ DEFAULT_REQUEST_DELAY = 0.35
 MAX_RESPONSE_BYTES = 8_000_000
 DEFAULT_PAGE_SIZE = 50
 DEFAULT_MAX_PAGES_PER_SEARCH = 3
+MAX_GRAPHQL_ATTEMPTS = 3
+GRAPHQL_RETRY_DELAY = 0.75
 
 # Searches are intentionally tied to games Lotus supports. Results still pass
 # strict title classification, so a broad Magento search match is not accepted
@@ -215,6 +217,8 @@ class MagentoAdapter(RetailerAdapter):
             "graphql_requests": 0,
             "graphql_successful": 0,
             "graphql_errors": 0,
+            "graphql_retries": 0,
+            "graphql_retry_recoveries": 0,
             "searches_attempted": 0,
             "searches_completed": 0,
             "pages_checked": 0,
@@ -358,53 +362,84 @@ class MagentoAdapter(RetailerAdapter):
         search: str,
         current_page: int,
     ) -> dict[str, Any] | None:
-        self.diagnostics["graphql_requests"] += 1
         self.diagnostics["pages_checked"] += 1
-        try:
-            async with session.post(
-                self.graphql_url,
-                json={
-                    "query": CATALOG_QUERY,
-                    "variables": {
-                        "search": search,
-                        "pageSize": self.page_size,
-                        "currentPage": current_page,
-                    },
-                },
-                allow_redirects=False,
-            ) as response:
-                self.diagnostics["last_http_status"] = int(response.status)
-                if response.status != 200:
+        request_body = {
+            "query": CATALOG_QUERY,
+            "variables": {
+                "search": search,
+                "pageSize": self.page_size,
+                "currentPage": current_page,
+            },
+        }
+
+        for attempt in range(1, MAX_GRAPHQL_ATTEMPTS + 1):
+            self.diagnostics["graphql_requests"] += 1
+            try:
+                async with session.post(
+                    self.graphql_url,
+                    json=request_body,
+                    allow_redirects=False,
+                ) as response:
+                    status = int(response.status)
+                    self.diagnostics["last_http_status"] = status
+                    if status != 200:
+                        if status in {408, 425, 429, 500, 502, 503, 504}:
+                            raise RuntimeError(f"GRAPHQL_HTTP_{status}")
+                        self.diagnostics["graphql_errors"] += 1
+                        self.diagnostics["last_error"] = f"GRAPHQL_HTTP_{status}"
+                        return None
+                    payload = await self._read_json(response)
+
+                errors = payload.get("errors") or []
+                products = (payload.get("data") or {}).get("products")
+                if errors or not isinstance(products, dict):
                     self.diagnostics["graphql_errors"] += 1
-                    self.diagnostics["last_error"] = f"GRAPHQL_HTTP_{response.status}"
+                    messages = [
+                        clean_text(item.get("message"))
+                        for item in errors
+                        if isinstance(item, dict)
+                    ]
+                    self.diagnostics["last_error"] = (
+                        "GRAPHQL_ERRORS:" + " | ".join(messages[:3])
+                        if messages
+                        else "GRAPHQL_PRODUCTS_MISSING"
+                    )
                     return None
-                payload = await self._read_json(response)
 
-            errors = payload.get("errors") or []
-            products = (payload.get("data") or {}).get("products")
-            if errors or not isinstance(products, dict):
+                self.diagnostics["graphql_successful"] += 1
+                self.diagnostics["pages_successful"] += 1
+                if attempt > 1:
+                    self.diagnostics["graphql_retry_recoveries"] += 1
+                    print(
+                        "MAGENTO GRAPHQL RETRY RECOVERED | "
+                        f"Store={self.store_name} | Search={search} | "
+                        f"Page={current_page} | Attempt={attempt}"
+                    )
+                self.diagnostics["last_error"] = None
+                return products
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
                 self.diagnostics["graphql_errors"] += 1
-                messages = [
-                    clean_text(item.get("message"))
-                    for item in errors
-                    if isinstance(item, dict)
-                ]
-                self.diagnostics["last_error"] = (
-                    "GRAPHQL_ERRORS:" + " | ".join(messages[:3])
-                    if messages
-                    else "GRAPHQL_PRODUCTS_MISSING"
-                )
-                return None
+                self.diagnostics["last_error"] = f"{type(error).__name__}:{error}"
+                if attempt >= MAX_GRAPHQL_ATTEMPTS:
+                    print(
+                        "MAGENTO GRAPHQL RETRY EXHAUSTED | "
+                        f"Store={self.store_name} | Search={search} | "
+                        f"Page={current_page} | Error={type(error).__name__}:{error}"
+                    )
+                    return None
 
-            self.diagnostics["graphql_successful"] += 1
-            self.diagnostics["pages_successful"] += 1
-            return products
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            self.diagnostics["graphql_errors"] += 1
-            self.diagnostics["last_error"] = f"{type(error).__name__}:{error}"
-            return None
+                self.diagnostics["graphql_retries"] += 1
+                print(
+                    "MAGENTO GRAPHQL RETRY | "
+                    f"Store={self.store_name} | Search={search} | "
+                    f"Page={current_page} | Attempt={attempt} | "
+                    f"Error={type(error).__name__}:{error}"
+                )
+                await asyncio.sleep(GRAPHQL_RETRY_DELAY * attempt)
+
+        return None
 
     async def fetch_products(self) -> list[dict[str, Any]]:
         headers = {
