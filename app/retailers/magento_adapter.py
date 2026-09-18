@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Magento 2 / Adobe Commerce Universal Retailer Adapter
-Version 1.0.0
+Version 1.0.1
 
 Step 6J-4A — Public Magento Catalog Foundation
 
@@ -37,7 +37,14 @@ from app.retailers.shopware_adapter import (
 )
 
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
+
+print(
+    f"LOTUS MAGENTO ADAPTER | Version={VERSION} | "
+    "Discovery=BROAD_GAME_SEARCH",
+    flush=True,
+)
+
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public Magento catalog monitor)"
 DEFAULT_TIMEOUT = 18
 DEFAULT_REQUEST_DELAY = 0.35
@@ -49,16 +56,20 @@ DEFAULT_MAX_PAGES_PER_SEARCH = 2
 # strict title classification, so a broad Magento search match is not accepted
 # merely because it appeared in a response.
 DEFAULT_SEARCH_TERMS = (
-    "pokemon tcg",
-    "one piece card game",
-    "gundam card game",
-    "dragon ball fusion world",
+    # Keep discovery searches broad. Some Magento search configurations treat
+    # multi-word searches as strict AND queries even though a single game name
+    # returns the correct catalog. Every result is still passed through Lotus's
+    # strict supported-game and non-TCG-merchandise filters before acceptance.
+    "pokemon",
+    "one piece",
+    "gundam",
+    "dragon ball",
     "riftbound",
-    "palworld card game",
-    "naruto card game",
-    "cyberpunk tcg",
-    "azuki tcg",
-    "hellbreak tcg",
+    "palworld",
+    "naruto",
+    "cyberpunk",
+    "azuki",
+    "hellbreak",
 )
 
 UNSUPPORTED_GAME_TERMS = (
@@ -199,6 +210,7 @@ class MagentoAdapter(RetailerAdapter):
         self.diagnostics: dict[str, Any] = {
             "adapter": "magento",
             "adapter_version": VERSION,
+            "discovery_mode": "DIRECT_CATALOG_API",
             "graphql_endpoint": self.graphql_url,
             "graphql_requests": 0,
             "graphql_successful": 0,
@@ -208,6 +220,9 @@ class MagentoAdapter(RetailerAdapter):
             "pages_checked": 0,
             "pages_successful": 0,
             "raw_products_seen": 0,
+            "catalog_products_discovered": 0,
+            "empty_searches": 0,
+            "search_result_counts": {},
             "products_deduplicated": 0,
             "products_accepted": 0,
             "products_rejected": 0,
@@ -431,6 +446,12 @@ class MagentoAdapter(RetailerAdapter):
                     if not isinstance(items, list):
                         break
 
+                    if current_page == 1:
+                        total_count = int(products.get("total_count") or 0)
+                        self.diagnostics["search_result_counts"][search] = total_count
+                        if total_count == 0:
+                            self.diagnostics["empty_searches"] += 1
+
                     self.diagnostics["raw_products_seen"] += len(items)
                     for item in items:
                         if not isinstance(item, dict):
@@ -458,6 +479,7 @@ class MagentoAdapter(RetailerAdapter):
             self.diagnostics["raw_products_seen"] - len(collected),
             0,
         )
+        self.diagnostics["catalog_products_discovered"] = len(collected)
         return list(collected.values())
 
     def normalize_product(self, product: Any) -> RetailerProduct | None:
