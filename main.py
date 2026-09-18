@@ -1,7 +1,7 @@
 import asyncio
 
 print(
-    f"LOTUS RUNTIME SIGNATURE | Build=2026-09-18-MAGENTO-2 | Entry={__file__}",
+    f"LOTUS RUNTIME SIGNATURE | Build=2026-09-18-MAGENTO-3 | Entry={__file__}",
     flush=True,
 )
 
@@ -7000,21 +7000,19 @@ async def setretaileractive(
                 )
                 return
 
-            # Copy only the fields scan_store needs. The final validation runs
-            # while the database row is still inactive, preventing the normal
-            # monitor from racing this production gate.
-            validation_store = type(
-                "ValidatedStore",
-                (),
-                {
-                    "id": store.id,
-                    "name": store_name,
-                    "domain": store_domain,
-                    "platform": store.platform,
-                    "region": store_region,
-                    "active": False,
-                },
-            )()
+            # Match /scanretailer's proven detached Store snapshot exactly.
+            # Validation still runs while the persisted row is inactive, so
+            # the automatic monitor cannot race this production gate.
+            validation_store = Store(
+                id=store.id,
+                name=store_name,
+                domain=store_domain,
+                platform=store.platform,
+                region=store_region,
+                active=False,
+                health_status=store.health_status or "HEALTHY",
+                consecutive_failures=store.consecutive_failures or 0,
+            )
 
         load_retailer_adapters()
         scan_result = await scan_store(
@@ -7024,6 +7022,14 @@ async def setretaileractive(
 
         products = int(scan_result.get("products", 0) or 0)
         events = int(scan_result.get("events", 0) or 0)
+        print(
+            "UNIVERSAL ACTIVATION VALIDATION RESULT | "
+            f"Store={store_name} | StoreID={store_id} | "
+            f"Success={bool(scan_result.get('success'))} | "
+            f"Products={products} | Events={events} | "
+            f"Error={scan_result.get('error')} | "
+            f"ScanMode={scan_result.get('scan_mode')}"
+        )
         if not scan_result.get("success") or products <= 0 or events != 0:
             await interaction.followup.send(
                 (
