@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Magento 2 / Adobe Commerce Universal Retailer Adapter
-Version 1.0.5
+Version 1.0.6
 
 Step 6J-4A — Public Magento Catalog Foundation
 
@@ -37,15 +37,15 @@ from app.retailers.shopware_adapter import (
 )
 
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 
 print(
     f"LOTUS MAGENTO ADAPTER | Version={VERSION} | "
-    "Discovery=BROAD_GAME_SEARCH",
+    "Discovery=BROAD_GAME_SEARCH | BodyRead=COMPLETE_STREAM",
     flush=True,
 )
 
-USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public Magento catalog monitor)"
+USER_AGENT = f"LotusTracker/{VERSION} (PonDeX Trackers; public Magento catalog monitor)"
 DEFAULT_TIMEOUT = 18
 DEFAULT_REQUEST_DELAY = 0.35
 MAX_RESPONSE_BYTES = 8_000_000
@@ -132,6 +132,10 @@ query LotusMagentoFingerprint {
   }
 }
 """
+
+
+class MagentoIncompleteDiscoveryError(RuntimeError):
+    """At least one requested catalog page failed; this is not an empty catalog."""
 
 
 def _clean_domain(value: str) -> str:
@@ -221,6 +225,9 @@ class MagentoAdapter(RetailerAdapter):
             "graphql_retry_recoveries": 0,
             "searches_attempted": 0,
             "searches_completed": 0,
+            "searches_failed": 0,
+            "failed_searches": {},
+            "discovery_complete": False,
             "pages_checked": 0,
             "pages_successful": 0,
             "raw_products_seen": 0,
@@ -241,23 +248,37 @@ class MagentoAdapter(RetailerAdapter):
         }
 
     def get_diagnostics(self) -> dict[str, Any]:
-        return dict(self.diagnostics)
+        diagnostics = dict(self.diagnostics)
+        # The universal monitor uses this common field for rejection totals.
+        diagnostics["rejected_products"] = diagnostics["products_rejected"]
+        return diagnostics
 
     @staticmethod
     async def _read_json(response: aiohttp.ClientResponse) -> dict[str, Any]:
+        """Read through EOF, with a hard limit on the decoded response bytes."""
         length = response.headers.get("Content-Length")
         if length:
             try:
-                if int(length) > MAX_RESPONSE_BYTES:
-                    raise ValueError("MAGENTO_GRAPHQL_BODY_TOO_LARGE")
-            except (TypeError, ValueError) as error:
-                if str(error) == "MAGENTO_GRAPHQL_BODY_TOO_LARGE":
-                    raise
+                declared_length = int(length)
+            except (TypeError, ValueError):
+                declared_length = 0
+            if declared_length > MAX_RESPONSE_BYTES:
+                raise ValueError("MAGENTO_GRAPHQL_BODY_TOO_LARGE")
 
-        raw = await response.content.read(MAX_RESPONSE_BYTES + 1)
-        if len(raw) > MAX_RESPONSE_BYTES:
-            raise ValueError("MAGENTO_GRAPHQL_BODY_TOO_LARGE")
-        payload = json.loads(raw.decode("utf-8-sig", errors="replace"))
+        # StreamReader.read(n) can return an early network fragment. A single
+        # call is not a complete-body read, even with a large n or Content-Length.
+        raw = bytearray()
+        while True:
+            chunk = await response.content.read(
+                min(64 * 1024, MAX_RESPONSE_BYTES + 1 - len(raw))
+            )
+            if not chunk:
+                break
+            raw.extend(chunk)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                raise ValueError("MAGENTO_GRAPHQL_BODY_TOO_LARGE")
+
+        payload = json.loads(raw.decode("utf-8-sig"))
         if not isinstance(payload, dict):
             raise ValueError("MAGENTO_GRAPHQL_INVALID_PAYLOAD")
         return payload
@@ -374,6 +395,7 @@ class MagentoAdapter(RetailerAdapter):
 
         for attempt in range(1, MAX_GRAPHQL_ATTEMPTS + 1):
             self.diagnostics["graphql_requests"] += 1
+            self.diagnostics["last_http_status"] = None
             try:
                 async with session.post(
                     self.graphql_url,
@@ -386,7 +408,7 @@ class MagentoAdapter(RetailerAdapter):
                         if status in {408, 425, 429, 500, 502, 503, 504}:
                             raise RuntimeError(f"GRAPHQL_HTTP_{status}")
                         self.diagnostics["graphql_errors"] += 1
-                        self.diagnostics["last_error"] = f"GRAPHQL_HTTP_{status}"
+                        self._record_search_failure(search, current_page, f"GRAPHQL_HTTP_{status}")
                         return None
                     payload = await self._read_json(response)
 
@@ -399,12 +421,26 @@ class MagentoAdapter(RetailerAdapter):
                         for item in errors
                         if isinstance(item, dict)
                     ]
-                    self.diagnostics["last_error"] = (
+                    error_text = (
                         "GRAPHQL_ERRORS:" + " | ".join(messages[:3])
                         if messages
                         else "GRAPHQL_PRODUCTS_MISSING"
                     )
+                    self._record_search_failure(search, current_page, error_text)
                     return None
+
+                if not isinstance(products.get("items"), list):
+                    self.diagnostics["graphql_errors"] += 1
+                    self._record_search_failure(search, current_page, "GRAPHQL_ITEMS_INVALID")
+                    return None
+
+                # Validate pagination inside the request error boundary so a
+                # malformed result cannot be counted as a successful page.
+                total_count = int(products.get("total_count") or 0)
+                page_info = products.get("page_info") or {}
+                total_pages = int(page_info.get("total_pages") or 1)
+                if total_count < 0 or total_pages < 1:
+                    raise ValueError("MAGENTO_GRAPHQL_PAGINATION_INVALID")
 
                 self.diagnostics["graphql_successful"] += 1
                 self.diagnostics["pages_successful"] += 1
@@ -415,19 +451,24 @@ class MagentoAdapter(RetailerAdapter):
                         f"Store={self.store_name} | Search={search} | "
                         f"Page={current_page} | Attempt={attempt}"
                     )
-                self.diagnostics["last_error"] = None
+                if not self.diagnostics["failed_searches"]:
+                    self.diagnostics["last_error"] = None
                 return products
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 self.diagnostics["graphql_errors"] += 1
-                self.diagnostics["last_error"] = f"{type(error).__name__}:{error}"
-                if attempt >= MAX_GRAPHQL_ATTEMPTS:
+                error_text = f"{type(error).__name__}:{error}"
+                if (
+                    attempt >= MAX_GRAPHQL_ATTEMPTS
+                    or str(error) == "MAGENTO_GRAPHQL_BODY_TOO_LARGE"
+                ):
                     print(
                         "MAGENTO GRAPHQL RETRY EXHAUSTED | "
                         f"Store={self.store_name} | Search={search} | "
                         f"Page={current_page} | Error={type(error).__name__}:{error}"
                     )
+                    self._record_search_failure(search, current_page, error_text)
                     return None
 
                 self.diagnostics["graphql_retries"] += 1
@@ -440,6 +481,21 @@ class MagentoAdapter(RetailerAdapter):
                 await asyncio.sleep(GRAPHQL_RETRY_DELAY * attempt)
 
         return None
+
+    def _record_search_failure(self, search: str, page: int, error: str) -> None:
+        error = clean_text(error)[:500]
+        self.diagnostics["failed_searches"][search] = {
+            "page": page,
+            "error": error,
+            "http_status": self.diagnostics["last_http_status"],
+        }
+        self.diagnostics["searches_failed"] = len(self.diagnostics["failed_searches"])
+        self.diagnostics["last_error"] = f"Search={search}; Page={page}; Error={error}"
+        print(
+            "MAGENTO SEARCH FAILED | "
+            f"Store={self.store_name} | Search={search} | Page={page} | Error={error}",
+            flush=True,
+        )
 
     async def fetch_products(self) -> list[dict[str, Any]]:
         headers = {
@@ -475,6 +531,7 @@ class MagentoAdapter(RetailerAdapter):
                         current_page=current_page,
                     )
                     if products is None:
+                        search_completed = False
                         break
 
                     search_completed = True
@@ -516,6 +573,9 @@ class MagentoAdapter(RetailerAdapter):
             0,
         )
         self.diagnostics["catalog_products_discovered"] = len(collected)
+        # Complete means all requested pages within the configured scan limits
+        # succeeded; it does not claim that an uncapped catalog was downloaded.
+        self.diagnostics["discovery_complete"] = not self.diagnostics["failed_searches"]
         return list(collected.values())
 
     async def get_normalized_products(self) -> list[dict[str, Any]]:
@@ -527,8 +587,24 @@ class MagentoAdapter(RetailerAdapter):
             f"Raw={self.diagnostics.get('raw_products_seen')} | "
             f"Catalog={self.diagnostics.get('catalog_products_discovered')} | "
             f"Accepted={self.diagnostics.get('products_accepted')} | "
-            f"Rejected={self.diagnostics.get('products_rejected')}"
+            f"Rejected={self.diagnostics.get('products_rejected')} | "
+            f"CompletedSearches={self.diagnostics['searches_completed']}/"
+            f"{self.diagnostics['searches_attempted']} | "
+            f"FailedSearches={self.diagnostics['failed_searches']} | "
+            f"DiscoveryComplete={self.diagnostics['discovery_complete']}",
+            flush=True,
         )
+        if self.diagnostics["failed_searches"]:
+            failed_pages = "; ".join(
+                f"{search}[page={details['page']}]:{details['error']}"
+                for search, details in self.diagnostics["failed_searches"].items()
+            )
+            # The existing monitor catches this before database updates or
+            # event publication. Final activation validation remains blocked
+            # with the actual failed search, rather than an empty-URL reason.
+            raise MagentoIncompleteDiscoveryError(
+                f"MAGENTO_DISCOVERY_INCOMPLETE:{failed_pages}"
+            )
         return products
 
     def normalize_product(self, product: Any) -> RetailerProduct | None:
