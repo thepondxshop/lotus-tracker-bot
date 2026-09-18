@@ -1,7 +1,7 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 Magento 2 / Adobe Commerce Universal Retailer Adapter
-Version 1.0.1
+Version 1.0.2
 
 Step 6J-4A — Public Magento Catalog Foundation
 
@@ -37,7 +37,7 @@ from app.retailers.shopware_adapter import (
 )
 
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 print(
     f"LOTUS MAGENTO ADAPTER | Version={VERSION} | "
@@ -49,8 +49,8 @@ USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public Magento catalog monito
 DEFAULT_TIMEOUT = 18
 DEFAULT_REQUEST_DELAY = 0.35
 MAX_RESPONSE_BYTES = 8_000_000
-DEFAULT_PAGE_SIZE = 24
-DEFAULT_MAX_PAGES_PER_SEARCH = 2
+DEFAULT_PAGE_SIZE = 50
+DEFAULT_MAX_PAGES_PER_SEARCH = 3
 
 # Searches are intentionally tied to games Lotus supports. Results still pass
 # strict title classification, so a broad Magento search match is not accepted
