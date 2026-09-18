@@ -1,5 +1,8 @@
 import asyncio
 
+# Release automation entry marker: confirms this complete main.py is running.
+print(f"LOTUS RELEASE AUTOMATION ENTRY | Build=RELEASE-INGESTION-1.1.0 | Entry={__file__}", flush=True)
+
 print(
     f"LOTUS RUNTIME SIGNATURE | Build=2026-09-18-MAGENTO-3 | Entry={__file__}",
     flush=True,
@@ -1102,6 +1105,8 @@ class LotusTrackerBot(
 
         self.major_retailer_monitor_task = None
 
+        self.release_ingestion_task = None
+
 
     async def setup_hook(
         self,
@@ -1234,6 +1239,9 @@ class LotusTrackerBot(
             "(promotion-gated; idle until production retailers exist)."
         )
 
+        if self.database_ready:
+            self.release_ingestion_task = start_release_ingestion(self)
+
         synced = (
             await self.tree.sync()
         )
@@ -1241,6 +1249,10 @@ class LotusTrackerBot(
         print(
             f"Synced {len(synced)} slash command(s)."
         )
+
+    async def close(self):
+        await stop_release_ingestion(self)
+        await super().close()
 
 
 bot = (
@@ -9524,6 +9536,7 @@ async def on_app_command_error(
 # =========================================================
 
 from app.release_catalog.commands import register_release_catalog_commands
+from app.release_catalog.ingestion_runner import start_release_ingestion, stop_release_ingestion
 
 register_release_catalog_commands(bot)
 
