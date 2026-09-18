@@ -1,5 +1,10 @@
 import asyncio
 
+print(
+    f"LOTUS RUNTIME SIGNATURE | Build=2026-09-18-MAGENTO-2 | Entry={__file__}",
+    flush=True,
+)
+
 import discord
 
 from discord.ext import commands
