@@ -163,7 +163,8 @@ def public_source_url(value: str | None, *, required: bool) -> str | None:
     else:
         if not address.is_global:
             raise CatalogError("Source URL cannot point to a private or local address.")
-    # Saved as evidence only; this application NEVER requests the URL.
+    # Manual evidence is saved only. The opt-in source worker separately uses
+    # DNS and redirect checks before requesting public source URLs.
     return value
 
 
@@ -328,7 +329,10 @@ class ReleaseCatalog:
             row = await self._release(session, guild_id, release_id)
             sources = (await session.scalars(select(ReleaseSource).where(ReleaseSource.release_id == row.id).order_by(ReleaseSource.id.desc()).limit(5))).all()
             audits = (await session.scalars(select(ReleaseAudit).where(ReleaseAudit.release_id == row.id).order_by(ReleaseAudit.id.desc()).limit(5))).all()
-            return {"release": snapshot(row), "sources": [snapshot(s) for s in sources], "audit": [snapshot(a) for a in audits]}
+            result = snapshot(row)
+            confirmation = await session.scalar(select(ReleaseAudit).where(ReleaseAudit.release_id == row.id, ReleaseAudit.action.in_(("CONFIRMED", "AUTO_CONFIRMED", "RETRACTED", "ARCHIVED"))).order_by(ReleaseAudit.id.desc()).limit(1))
+            result["confirmation_mode"] = "AUTOMATIC_SOURCE_POLICY" if confirmation and confirmation.action == "AUTO_CONFIRMED" and row.status == "CONFIRMED" else "MANUAL"
+            return {"release": result, "sources": [snapshot(s) for s in sources], "audit": [snapshot(a) for a in audits]}
 
     async def sources(self, guild_id: int, release_id: int, page: int = 1) -> dict:
         self._page(page)
