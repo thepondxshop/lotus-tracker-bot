@@ -11,7 +11,7 @@ from . import VERSION
 from .service import CatalogError, FORMATS, SOURCE_KINDS, STATUSES, ReleaseCatalog
 
 LOG = logging.getLogger(__name__)
-SAFETY = "Admin preview • Manual review only • No AI ingestion or stock/preorder alerts"
+SAFETY = "Admin preview • Source evidence retained • Release/preorder alert publishing OFF"
 
 
 def safe(value, maximum: int = 1000) -> str:
@@ -30,7 +30,7 @@ def release_embed(row: dict, heading: str = "Release record") -> discord.Embed:
     for name, value in (
         ("State", row["status"]), ("Game", row["game"]), ("Format", row["product_format"]),
         ("Region", row["region"]), ("Language", row["language"]),
-        ("Release date (admin-reviewed)", row["release_date"] or "Unknown / not confirmed"),
+        ("Confirmed release date", row["release_date"] or "Unknown / not confirmed"),
     ):
         result.add_field(name=name, value=safe(value, 180), inline=True)
     parts = []
@@ -44,10 +44,13 @@ def release_embed(row: dict, heading: str = "Release record") -> discord.Embed:
     result.add_field(name="Reported details — NOT independently verified", value="\n".join(parts), inline=False)
     result.add_field(name="Original reported text (excerpt)", value=safe(row["reported_details"], 850), inline=False)
     if row["confirmed_source_id"] is not None:
+        automatic = row.get("confirmation_mode") == "AUTOMATIC_SOURCE_POLICY"
         result.add_field(
             name="Confirmation provenance",
-            value=f"Source #{row['confirmed_source_id']} • reviewed by admin ID {row['confirmed_by']}\n"
-                  "Human attestation of release/date only; not automated verification or a preorder.",
+            value=(f"Source #{row['confirmed_source_id']} • automatic source policy approved by admin ID {row['confirmed_by']}\n"
+                   "Extracted automatically; no per-item human attestation."
+                   if automatic else f"Source #{row['confirmed_source_id']} • reviewed by admin ID {row['confirmed_by']}\n"
+                   "Human attestation of release/date only; not a customer preorder."),
             inline=False,
         )
     return result
@@ -75,6 +78,9 @@ class ReleaseCommands(app_commands.Group):
             guild_only=True, default_permissions=discord.Permissions(administrator=True),
         )
         self.catalog = catalog
+        from .ingestion_commands import ReleaseWatchCommands
+        self.watch_group = ReleaseWatchCommands(self)
+        self.add_command(self.watch_group)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # UI defaults can be overridden in a server: runtime authorization is
@@ -120,8 +126,9 @@ class ReleaseCommands(app_commands.Group):
             f"Lotus Release Catalog v{VERSION}",
             "Database: ready\nMode: administrator-only preview\n"
             + "\n".join(f"{key}: {value}" for key, value in counts.items())
-            + "\n\nAI ingestion: OFF\nAutomatic retailer matching: OFF\nAlert publishing: OFF\n"
-              "Dates are human-reviewed, region/language-specific, date-only records.",
+            + "\n\nAutomatic sources: configure /release watch add\nWorker state: /release watch status\n"
+              "AI model calls: OFF\nRelease/preorder alert publishing: OFF\n"
+              "Calendar dates carry manual or approved source-policy provenance.",
         ))
 
     @app_commands.command(name="add", description="Save an unverified release lead; a source link is optional")
@@ -267,6 +274,7 @@ def register_release_catalog_commands(bot, *, catalog: ReleaseCatalog | None = N
         from app.database import engine
         catalog = ReleaseCatalog(engine)
     group = ReleaseCommands(catalog)
+    bot.release_ingestion = group.watch_group.runner
     bot.tree.add_command(group)
     print(f"LOTUS RELEASE CATALOG | Version={VERSION} | Commands=REGISTERED | Mode=ADMIN_ONLY | AI=OFF | Alerts=OFF", flush=True)
     return group
