@@ -7,6 +7,8 @@ from discord import app_commands
 from .extraction import GAMES
 from .ingestion_store import IngestionStore
 from .ingestion_runner import IngestionRunner
+from .distributors import PRESETS, ADAPTER_VERSION
+from .service import CatalogError
 
 class ReleaseItemsView(discord.ui.View):
     """Private item navigation, scoped to the opening administrator and guild."""
@@ -111,6 +113,34 @@ class ReleaseWatchCommands(app_commands.Group):
         self.root=parent;self.store=IngestionStore(parent.catalog);self.runner=IngestionRunner(self.store)
     async def interaction_check(self,interaction): return await self.root.interaction_check(interaction)
     async def on_error(self,interaction,error): await self.root.on_error(interaction,error)
+    @app_commands.command(name='distributors',description='Show distributor presets, public access limits and integration readiness')
+    async def distributors(self,interaction:discord.Interaction):
+        from .commands import embed
+        async def info(): return PRESETS
+        def render(rows):
+            return embed('Distributor sources '+ADAPTER_VERSION,'\n\n'.join(
+                f"**{p['label']}** • {'PREVIEW' if p['ready'] else 'PENDING'}\n{p['note']}"
+                for p in rows.values())+'\n\nAdd a preview: /release watch distributor. These are public metadata sources, not customer stock or preorder alerts.')
+        await self.root._run(interaction,info,render)
+
+    @app_commands.command(name='distributor',description='Add a supported public distributor preset for all ten games')
+    @app_commands.choices(source=[app_commands.Choice(name=p['label'],value=k) for k,p in PRESETS.items()])
+    async def distributor(self,interaction:discord.Interaction,source:str):
+        async def add_source():
+            preset=PRESETS.get(source)
+            if not preset: raise CatalogError('Unknown distributor preset.')
+            if not preset['ready']: raise CatalogError(preset['note']+' No watch was created.')
+            from .extraction import url_key
+            for row in await self.store.watches(interaction.guild_id):
+                if url_key(row['url'])==url_key(preset['url']): return row
+            return await self.store.add_watch(interaction.guild_id,interaction.user.id,
+                url=preset['url'],kind='DISTRIBUTOR',label=preset['label'],game=None,
+                region=preset['region'],language='UNKNOWN',interval_minutes=60,auto_confirm=False)
+        def render(row):
+            result=self.watch_embed(row)
+            result.description += '\n\n**Preview integration:** '+PRESETS[source]['note']
+            return result
+        await self.root._run(interaction,add_source,render)
     @staticmethod
     def watch_embed(row):
         from .commands import embed,safe
