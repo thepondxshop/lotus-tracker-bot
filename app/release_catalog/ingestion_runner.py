@@ -27,6 +27,7 @@ def record_games(stats,products,seen):
         key=url_key(product.url)
         if key not in seen:
             seen.add(key)
+            stats['products_seen']+=1
             counts=stats['games_seen']
             counts[product.game]=counts.get(product.game,0)+1
 
@@ -87,7 +88,6 @@ class IngestionRunner:
                             if error in STOP_ERRORS: break
                             products=doc.products
                             if is_product(seed) and len(products)>1: products=[p for p in products if url_key(p.url)==url_key(page.url)]
-                            stats['products_seen']+=len(products)
                             record_games(stats,products,game_products)
                             stats['unchanged']+=await self.store.stage(w,token,products)
                             if not is_product(seed):
