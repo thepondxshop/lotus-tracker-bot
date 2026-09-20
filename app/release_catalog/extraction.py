@@ -275,6 +275,7 @@ class Document:
     listing_links: list = field(default_factory=list)
     issues: list = field(default_factory=list)
     supported: bool = False
+    diagnostics: list = field(default_factory=list)
 
 
 def candidate(data, url, settings, extractor):
@@ -672,7 +673,7 @@ def extract(url, body, settings=None, content_type="text/html"):
                     ))),
                 )
 
-    distributor = public_data(url, body) if 'html' in content_type else None
+    distributor = public_data(url, body, doc.diagnostics) if 'html' in content_type else None
     if distributor is not None:
         data, doc.product_links, doc.listing_links, extra_issues = distributor
         doc.issues.extend(extra_issues)
