@@ -175,7 +175,28 @@ class ReleaseWatchCommands(app_commands.Group):
     @app_commands.command(name='scan',description='Run a bounded source scan now; rate-limit backoff still applies')
     async def scan(self,interaction:discord.Interaction,watch_id:int):
         from .commands import embed
-        await self.root._run(interaction,lambda:self.runner.scan(interaction.guild_id,watch_id),lambda r:embed(f"Source scan #{r['watch_id']}",'\n'.join(f"{k.replace('_',' ').title()}: {v}" for k,v in r['stats'].items())+f"\nRemaining discovery pages: {r['remaining_pages']}\nResult: {r['error'] or 'Completed'}\n\nRecords: /release list\nExtracted items: /release watch items\nExceptions: /release watch review"))
+        await self.root._run(interaction,lambda:self.runner.scan(interaction.guild_id,watch_id),lambda r:embed(f"Source scan #{r['watch_id']}",'\n'.join(f"{k.replace('_',' ').title()}: {v}" for k,v in r['stats'].items() if k not in ('diagnostics','diagnostics_truncated'))+f"\nRemaining discovery pages: {r['remaining_pages']}\nResult: {r['error'] or 'Completed'}\n\nRecords: /release list\nExtracted items: /release watch items\nSaved-item exceptions: /release watch review\nSkipped article blocks: /release watch diagnostics watch_id:{watch_id}"))
+    @app_commands.command(name='diagnostics',description='Show article URLs and reasons for skipped blocks in the latest source scan')
+    async def diagnostics(self,interaction:discord.Interaction,watch_id:int,page:app_commands.Range[int,1,20]=1):
+        from .commands import embed,safe
+        async def read():
+            row=next((w for w in await self.store.watches(interaction.guild_id) if w['id']==watch_id),None)
+            if row is None: raise CatalogError('Source watch not found in this server.')
+            return json.loads(row['last_json'])
+        def render(last):
+            stats=last.get('stats',{});rows=stats.get('diagnostics',[])
+            lines=[f"Scan: {safe(last.get('at','Not scanned'),60)}",f"Result: {safe(last.get('error') or 'Completed',100)}"]
+            for row in rows[page-1:page]:
+                lines.append(f"**{safe(row['reason'],100)}**\nArticle: {safe(row['url'],1500)}\nBlock: {row.get('block') or 'Unknown'} • SKU: {safe(row.get('sku') or 'Unknown',100)}\n{safe(row.get('context') or '',220)}")
+            if not rows:
+                lines.append('No article-block diagnostics were retained for this scan. Run a new scan after installing 1.3.1; previous scans cannot be reconstructed here.')
+            elif not rows[page-1:page]: lines.append('No entries on this page.')
+            lines.append(f"Page {page} of {max(1,len(rows))} • {len(rows)} retained details. Use the page option for more.")
+            if stats.get('diagnostics_truncated'): lines.append('Only the first 20 details are retained.')
+            lines.append('Latest completed scan only; the next scan replaces these details. Saved-product issues remain in /release watch review.')
+            return embed(f'Source #{watch_id} article diagnostics','\n\n'.join(lines))
+        await self.root._run(interaction,read,render)
+
     @app_commands.command(name='status',description='Check the installed ingestion version and background worker')
     async def status(self,interaction:discord.Interaction):
         from .commands import embed,safe
