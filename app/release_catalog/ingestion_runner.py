@@ -8,9 +8,10 @@ from . import VERSION
 from .extraction import Candidate,canonical_url,extract,is_product,same_site,url_key
 from .public_http import PublicHTTP,FetchError
 from .service import CatalogError,utcnow
+from .distributors import listing_allowed, ADAPTER_VERSION
 
 LOG=logging.getLogger(__name__)
-STOP_ERRORS={'RATE_LIMITED','ACCESS_DENIED','CROSS_SITE_REDIRECT'}
+STOP_ERRORS={'RATE_LIMITED','ACCESS_DENIED','CROSS_SITE_REDIRECT','ACCESS_CHALLENGE','LOGIN_REQUIRED'}
 def listing_key(url):
     """Deduplicate GTS page aliases without changing the URL we request."""
     value=canonical_url(url)
@@ -31,6 +32,8 @@ def record_games(stats,products,seen):
 
 def allowed_listing(seed,link):
     if not same_site(seed,link) or is_product(seed): return False
+    distributor_policy=listing_allowed(seed,link)
+    if distributor_policy is not None: return distributor_policy
     a,b=urlsplit(seed),urlsplit(link)
     if a.path.lower().endswith(('.xml','.rss','.atom')): return b.path.lower().endswith(('.xml','.rss','.atom'))
     filters=lambda query:{k.lower():v for k,v in parse_qsl(query) if v and k.lower() not in ('page','p','offset','start')}
@@ -53,7 +56,7 @@ class IngestionRunner:
         self.state='STOPPED'
     async def status(self,guild):
         sources=await self.store.watches(guild)
-        return {'version':VERSION,'worker':self.state,'last_tick':self.last_tick,'last_error':self.last_error,'sources':len(sources),'enabled_sources':sum(w['enabled'] for w in sources),'scan_in_progress':self.lock.locked()}
+        return {'version':VERSION,'distributor_adapters':ADAPTER_VERSION,'worker':self.state,'last_tick':self.last_tick,'last_error':self.last_error,'sources':len(sources),'enabled_sources':sum(w['enabled'] for w in sources),'scan_in_progress':self.lock.locked()}
     async def scan(self,guild,wid):
         if self.lock.locked(): raise CatalogError('Another source scan is running. This watch remains scheduled; try again shortly.')
         async with self.lock:
@@ -81,6 +84,7 @@ class IngestionRunner:
                             doc=extract(page.url,page.text,settings,page.content_type)
                             supported=supported or doc.supported or bool(doc.product_links)
                             if doc.issues: error=doc.issues[0];stats['errors']+=1
+                            if error in STOP_ERRORS: break
                             products=doc.products
                             if is_product(seed) and len(products)>1: products=[p for p in products if url_key(p.url)==url_key(page.url)]
                             stats['products_seen']+=len(products)
@@ -113,10 +117,14 @@ class IngestionRunner:
                                 try:
                                     page=await http.get(item['url'],seed);stats['pages_ok']+=1
                                     doc=extract(page.url,page.text,settings,page.content_type)
+                                    if doc.issues:
+                                        error=doc.issues[0];stats['errors']+=1
                                     candidates=doc.products
                                     if len(candidates)>1: candidates=[p for p in candidates if url_key(p.url)==url_key(page.url)]
                                     if not candidates:
-                                        await self.store.fetched(w,token,item['url'],doc.issues[0] if doc.issues else 'NO_SUPPORTED_PRODUCT');continue
+                                        await self.store.fetched(w,token,item['url'],doc.issues[0] if doc.issues else 'NO_SUPPORTED_PRODUCT')
+                                        if error in STOP_ERRORS: break
+                                        continue
                                 except FetchError as exc:
                                     await self.store.fetched(w,token,item['url'],exc.code);error=exc.code;stats['errors']+=1
                                     if error in STOP_ERRORS: break
