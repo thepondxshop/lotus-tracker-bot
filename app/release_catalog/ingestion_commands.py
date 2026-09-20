@@ -119,7 +119,7 @@ class ReleaseWatchCommands(app_commands.Group):
         async def info(): return PRESETS
         def render(rows):
             return embed('Distributor sources '+ADAPTER_VERSION,'\n\n'.join(
-                f"**{p['label']}** • {'PREVIEW' if p['ready'] else 'PENDING'}\n{p['note']}"
+                f"**{p['label']}** • {p.get('status') or ('PREVIEW' if p['ready'] else 'PENDING')}\n{p['note']}"
                 for p in rows.values())+'\n\nAdd a preview: /release watch distributor. These are public metadata sources, not customer stock or preorder alerts.')
         await self.root._run(interaction,info,render)
 
@@ -130,15 +130,15 @@ class ReleaseWatchCommands(app_commands.Group):
             preset=PRESETS.get(source)
             if not preset: raise CatalogError('Unknown distributor preset.')
             if not preset['ready']: raise CatalogError(preset['note']+' No watch was created.')
-            from .extraction import url_key
+            from .ingestion_runner import listing_key
             for row in await self.store.watches(interaction.guild_id):
-                if url_key(row['url'])==url_key(preset['url']): return row
+                if listing_key(row['url'])==listing_key(preset['url']): return row
             return await self.store.add_watch(interaction.guild_id,interaction.user.id,
                 url=preset['url'],kind='DISTRIBUTOR',label=preset['label'],game=None,
                 region=preset['region'],language='UNKNOWN',interval_minutes=60,auto_confirm=False)
         def render(row):
             result=self.watch_embed(row)
-            result.description += '\n\n**Preview integration:** '+PRESETS[source]['note']
+            result.description += '\n\n**Source integration:** '+PRESETS[source]['note']
             return result
         await self.root._run(interaction,add_source,render)
     @staticmethod
