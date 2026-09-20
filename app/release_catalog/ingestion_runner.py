@@ -20,6 +20,17 @@ def selected_products(doc, requested, fetched):
     return [p for p in doc.products if url_key(p.url)==url_key(fetched)] if len(doc.products)>1 else doc.products
 
 LOG=logging.getLogger(__name__)
+
+def capture_diagnostics(stats,doc):
+    """Bounded latest-scan details, deduplicated across cached article reads."""
+    rows=stats.setdefault('diagnostics',[])
+    for detail in doc.diagnostics:
+        if detail in rows: continue
+        if len(rows)>=20:
+            stats['diagnostics_truncated']=True
+            break
+        rows.append(detail)
+        LOG.info('LOTUS RELEASE PARSE DIAGNOSTIC | %s',json.dumps(detail,ensure_ascii=True))
 STOP_ERRORS={'RATE_LIMITED','ACCESS_DENIED','CROSS_SITE_REDIRECT','ACCESS_CHALLENGE','LOGIN_REQUIRED'}
 def listing_key(url):
     """Deduplicate GTS page aliases without changing the URL we request."""
@@ -92,6 +103,7 @@ class IngestionRunner:
                         try:
                             page=await http.get(article_url(url) if phd_sku_fragment(url) else url,seed);stats['pages_ok']+=1
                             doc=extract(page.url,page.text,settings,page.content_type)
+                            capture_diagnostics(stats,doc)
                             supported=supported or doc.supported or bool(doc.product_links)
                             if doc.issues: error=doc.issues[0];stats['errors']+=1
                             if error in STOP_ERRORS: break
@@ -134,6 +146,7 @@ class IngestionRunner:
                                         doc=extract(page.url,page.text,settings,page.content_type)
                                         if hostname(page.url)=='phdgames.com' and product_url(page.url):
                                             article_cache[request_url]=(page,doc)
+                                    capture_diagnostics(stats,doc)
                                     if doc.issues:
                                         error=doc.issues[0];stats['errors']+=1
                                     candidates=selected_products(doc,item['url'],page.url)
