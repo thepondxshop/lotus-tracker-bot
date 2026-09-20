@@ -8,7 +8,16 @@ from . import VERSION
 from .extraction import Candidate,canonical_url,extract,is_product,same_site,url_key
 from .public_http import PublicHTTP,FetchError
 from .service import CatalogError,utcnow
-from .distributors import listing_allowed, ADAPTER_VERSION
+from .distributors import listing_allowed, ADAPTER_VERSION, article_url, phd_sku_fragment, hostname, product_url
+
+def selected_products(doc, requested, fetched):
+    if hostname(fetched)=='phdgames.com' and product_url(fetched):
+        rows=[p for p in doc.products if p.extractor=='PHD_PUBLIC_ANNOUNCEMENT'
+              and url_key(article_url(p.url))==url_key(article_url(fetched))]
+        if phd_sku_fragment(requested):
+            rows=[p for p in rows if phd_sku_fragment(p.url)==phd_sku_fragment(requested)]
+        return rows
+    return [p for p in doc.products if url_key(p.url)==url_key(fetched)] if len(doc.products)>1 else doc.products
 
 LOG=logging.getLogger(__name__)
 STOP_ERRORS={'RATE_LIMITED','ACCESS_DENIED','CROSS_SITE_REDIRECT','ACCESS_CHALLENGE','LOGIN_REQUIRED'}
@@ -77,17 +86,17 @@ class IngestionRunner:
             error=None;supported=False;done=set();inflight=None
             try:
                 async with asyncio.timeout(self.budget),self.http_factory() as http:
-                    todo=[seed];visited=set()
+                    todo=[seed];visited=set();article_cache={}
                     while todo and len(visited)<self.listing_limit:
                         url=todo.pop(0);inflight=url;visited.add(listing_key(url))
                         try:
-                            page=await http.get(url,seed);stats['pages_ok']+=1
+                            page=await http.get(article_url(url) if phd_sku_fragment(url) else url,seed);stats['pages_ok']+=1
                             doc=extract(page.url,page.text,settings,page.content_type)
                             supported=supported or doc.supported or bool(doc.product_links)
                             if doc.issues: error=doc.issues[0];stats['errors']+=1
                             if error in STOP_ERRORS: break
                             products=doc.products
-                            if is_product(seed) and len(products)>1: products=[p for p in products if url_key(p.url)==url_key(page.url)]
+                            if is_product(seed): products=selected_products(doc,seed,page.url)
                             record_games(stats,products,game_products)
                             stats['unchanged']+=await self.store.stage(w,token,products)
                             if not is_product(seed):
@@ -112,15 +121,22 @@ class IngestionRunner:
                             if item['pending_json'] and item['pending_policy']==w['revision']:
                                 candidates=[Candidate(**json.loads(item['pending_json']))]
                             else:
-                                if is_product(seed) or fetches>=20: continue
-                                fetches+=1
+                                if is_product(seed): continue
+                                request_url=article_url(item['url']) if phd_sku_fragment(item['url']) else item['url']
+                                cached=article_cache.get(request_url)
+                                if not cached and fetches>=20: continue
                                 try:
-                                    page=await http.get(item['url'],seed);stats['pages_ok']+=1
-                                    doc=extract(page.url,page.text,settings,page.content_type)
+                                    if cached:
+                                        page,doc=cached
+                                    else:
+                                        fetches+=1
+                                        page=await http.get(request_url,seed);stats['pages_ok']+=1
+                                        doc=extract(page.url,page.text,settings,page.content_type)
+                                        if hostname(page.url)=='phdgames.com' and product_url(page.url):
+                                            article_cache[request_url]=(page,doc)
                                     if doc.issues:
                                         error=doc.issues[0];stats['errors']+=1
-                                    candidates=doc.products
-                                    if len(candidates)>1: candidates=[p for p in candidates if url_key(p.url)==url_key(page.url)]
+                                    candidates=selected_products(doc,item['url'],page.url)
                                     if not candidates:
                                         await self.store.fetched(w,token,item['url'],doc.issues[0] if doc.issues else 'NO_SUPPORTED_PRODUCT')
                                         if error in STOP_ERRORS: break
@@ -135,6 +151,7 @@ class IngestionRunner:
                                 result=await self.store.apply(w,token,c);done.add(url_key(c.url));stats[result['state'].lower()]+=1
                                 if result['issues'] and result['state']!='REVIEW': stats['review']+=1
                             if len(candidates)==1: await self.store.fetched(w,token,item['url'],alias=candidates[0].url)
+                            elif candidates: await self.store.fetched(w,token,item['url'])
                     if not supported and not error: error='NO_SUPPORTED_PRODUCT_DATA'
             except TimeoutError: error='SCAN_BUDGET_REACHED'
             except asyncio.CancelledError: error='SCAN_CANCELLED';raise
