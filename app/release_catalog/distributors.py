@@ -7,14 +7,14 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlsplit, urljoin, parse_qsl, urlencode, urlunsplit
 
-ADAPTER_VERSION = '1.2.1-preview'
+ADAPTER_VERSION = '1.3.0-preview'
 PRESETS = {
     'gts': dict(label='GTS Distribution', url='https://gtsdistribution.com/pc_combined_results.asp?faceted_search_terms=Category~04552AD14A72447B95ECFC368E1CB6BD', region='UNKNOWN', ready=True, status='SUPPORTED',
                 note='Existing public card-game catalog importer. Reuses a matching watch and preserves its settings.'),
     'southern': dict(label='Southern Hobby Distribution', url='https://www.southernhobby.com/products_recent.php', region='UNKNOWN', ready=True,
                      note='Preview: recent public products. Automated access challenge observed; scan on Railway to verify access.'),
     'phd': dict(label='PHD Games', url='https://www.phdgames.com/blog-tcgs/', region='UNKNOWN', ready=True,
-                note='Preview: public TCG announcements. Single-SKU articles only; multi-SKU articles require review.'),
+                note='Preview: public TCG announcements. Separates product blocks by SKU; ambiguous blocks still require review.'),
     'grosnor': dict(label='Grosnor Distribution (Canada)', url='https://www.grosnor.com/product-category/234', region='CA', ready=True,
                     note='Preview: public category titles/SKUs only. Detail pages require login; no inferred release dates. HTTP 403 observed.'),
     'alliance': dict(label='Alliance Game Distributors', url='https://www.alliance-games.com/', region='UNKNOWN', ready=False,
@@ -141,19 +141,69 @@ def public_data(url, body):
                     _extractor='SOUTHERN_PUBLIC_PRODUCT')]
         links=[];listings=[]
     elif domain=='phdgames.com' and product_url(url):
-        # Limit parsing to the article, excluding navigation and recent-post cards.
-        text=text.split('Recent posts',1)[0]
-        markers=list(re.finditer(r'Item Code\s*:\s*([A-Z0-9][A-Z0-9_-]*)',text,re.I))
-        if len(markers)>1:
-            issues.append('MULTIPLE_ARTICLE_PRODUCTS_REQUIRES_REVIEW')
-        elif len(markers)==1:
-            before=text[:markers[0].start()]
-            pub=re.search(r'(?:^|\n)Publisher\s*:\s*([^\n]+)',before,re.I)
-            title=before[:pub.start()].strip().splitlines()[-1] if pub else None
-            if title:
-                description=text[max(0,before.rfind(title)):]
-                products=[dict(name=title,sku=markers[0][1],url=url,description=description,
-                    manufacturer=pub[1],release_date=first(r'\bReleases\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})',description),
-                    _extractor='PHD_PUBLIC_ANNOUNCEMENT')]
+        products, issues = phd_products(url, text)
         links=[];listings=[]
     return products,links,listings,issues
+
+
+
+def article_url(url):
+    """Remove Lotus's local SKU fragment before fetching the real article."""
+    p=urlsplit(url)
+    return urlunsplit((p.scheme,p.netloc,p.path,p.query,''))
+
+
+def phd_sku_fragment(url):
+    p=urlsplit(url)
+    if hostname(url)=='phdgames.com' and product_url(url) and re.fullmatch(r'lotus-sku=[A-Z0-9_-]{1,100}',p.fragment):
+        return p.fragment
+    return ''
+
+
+def phd_products(url, text):
+    """Parse adjacent title/Publisher/Item Code blocks, with per-block dates.
+
+    SKU fragments are Lotus record identifiers, not publisher-provided anchors.
+    Requests always use the original article URL. Single-SKU URLs stay unchanged
+    to preserve earlier item identities.
+    """
+    text=re.split(r'(?im)^Recent posts\s*$',text,maxsplit=1)[0]
+    markers=list(re.finditer(r'(?im)^Item Code\s*:\s*([^\n]+)',text))
+    products=[];issues=[];blocks=[]
+    if len(markers)>100: return [],['PHD_ARTICLE_PRODUCT_LIMIT']
+    previous_end=0
+    for m in markers:
+        before=text[previous_end:m.start()]
+        pubs=list(re.finditer(r'(?im)^Publisher\s*:\s*([^\n]+)',before))
+        if not pubs:
+            issues.append('PHD_PRODUCT_BLOCK_AMBIGUOUS');previous_end=m.end();continue
+        pub=pubs[-1]
+        prefix=before[:pub.start()].rstrip()
+        title=prefix.splitlines()[-1] if prefix else ''
+        sku_match=re.fullmatch(r'([A-Z0-9][A-Z0-9_-]{0,99})(?:\s+\([^\n]*\))?\s*',m[1],re.I)
+        if not title or not sku_match:
+            issues.append('PHD_PRODUCT_BLOCK_AMBIGUOUS');previous_end=m.end();continue
+        start=previous_end+len(prefix)-len(title)
+        blocks.append((start,m.end(),title,sku_match[1].upper(),pub[1].strip()))
+        previous_end=m.end()
+    for i,(start,end,title,sku,maker) in enumerate(blocks):
+        # Never read through even a malformed following SKU block.
+        next_marker=next((m.start() for m in markers if m.start()>=end),len(text))
+        stop=min(blocks[i+1][0] if i+1<len(blocks) else len(text),next_marker)
+        description=text[start:stop]
+        dates=set(re.findall(r'(?i)\bReleases\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})',description))
+        row_issues=[]
+        if len(dates)>1: row_issues.append('PHD_RELEASE_DATE_CONFLICT')
+        if not dates: row_issues.append('PHD_RELEASE_DATE_MISSING')
+        products.append(dict(name=title,sku=sku,url=article_url(url)+(('#lotus-sku='+sku) if len(markers)>1 else ''),
+            description=description,manufacturer=maker,
+            release_date=next(iter(dates)) if len(dates)==1 else None,
+            _extractor='PHD_PUBLIC_ANNOUNCEMENT',_issues=row_issues))
+    unique={};conflicts=set()
+    for row in products:
+        old=unique.get(row['sku'])
+        if old and any(old[k]!=row[k] for k in ('name','release_date','manufacturer')):
+            conflicts.add(row['sku'])
+        else: unique[row['sku']]=row
+    if conflicts: issues.append('PHD_DUPLICATE_SKU_CONFLICT')
+    return [row for sku,row in unique.items() if sku not in conflicts],sorted(set(issues))
