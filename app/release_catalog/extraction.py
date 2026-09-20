@@ -12,6 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 from .service import CatalogError, digest, public_source_url
+from .distributors import product_url, public_data
 
 
 GAMES = (
@@ -113,7 +114,7 @@ def url_key(value):
 
 def is_product(value):
     path = urlsplit(value).path.lower()
-    return bool(
+    return product_url(value) or bool(
         re.search(r"/(?:products?/[^/]+|pc_product_detail\.asp)", path)
         or (
             host(value) == "gtsdistribution.com"
@@ -388,7 +389,7 @@ def candidate(data, url, settings, extractor):
     for name, key, heading in date_fields:
         date_value, bad = parse_date(
             data.get(key) or data.get(name) or label(body, heading),
-            host(url) == "gtsdistribution.com",
+            host(url) in ("gtsdistribution.com", "southernhobby.com"),
         )
         setattr(row, name, date_value)
         if bad:
@@ -668,7 +669,11 @@ def extract(url, body, settings=None, content_type="text/html"):
                     ))),
                 )
 
-    doc.supported = bool(data)
+    distributor = public_data(url, body) if 'html' in content_type else None
+    if distributor is not None:
+        data, doc.product_links, doc.listing_links, extra_issues = distributor
+        doc.issues.extend(extra_issues)
+    doc.supported = bool(data or doc.product_links or doc.listing_links)
 
     for product in data[:200]:
         raw = product.get("url") or (
@@ -688,11 +693,13 @@ def extract(url, body, settings=None, content_type="text/html"):
             product,
             link,
             settings,
-            "GTS_PUBLIC_PRODUCT_JSON" if gts else "PRODUCT_DATA",
+            product.get('_extractor') or ("GTS_PUBLIC_PRODUCT_JSON" if gts else "PRODUCT_DATA"),
         )
         if row:
+            row.issues = sorted(set(row.issues + product.get('_issues', [])))
             doc.products.append(row)
-            doc.product_links.append(link)
+            if row.extractor != 'GROSNOR_PUBLIC_LISTING':
+                doc.product_links.append(link)
 
     unique = {}
     for row in doc.products:
