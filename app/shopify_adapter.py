@@ -2,6 +2,9 @@ import asyncio
 import json
 import re
 import time
+import math
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 
 from urllib.parse import (
@@ -18,7 +21,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C5
+# Component Version 1.0.6-C7
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -1696,11 +1699,10 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C5"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C7"
 _STORE_CURRENCY_CACHE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
-SHOPIFY_MAX_429_RETRIES = 3
 SHOPIFY_MAX_5XX_RETRIES = 2
 SHOPIFY_MAX_BACKOFF_SECONDS = 30.0
 SHOPIFY_COLLECTION_CACHE_SECONDS = 30 * 60
@@ -1729,6 +1731,8 @@ PRIORITY_COLLECTION_TERMS = (
 # hitting the same Shopify storefront while another request is in flight.
 _DOMAIN_REQUEST_LOCKS = {}
 _DOMAIN_LAST_REQUEST_AT = {}
+_DOMAIN_RETRY_NOT_BEFORE = {}
+_DOMAIN_THROTTLE_FAILURES = {}
 _PRIORITY_COLLECTION_CACHE = {}
 _GENERAL_FEED_LAST_ATTEMPT_AT = {}
 _GENERAL_FEED_CURSOR = {}
@@ -1844,15 +1848,26 @@ def _collection_score(handle, title=""):
 
 
 def _retry_after_seconds(value, attempt):
-    try:
-        if value is not None:
-            parsed = float(str(value).strip())
-            if parsed >= 0:
-                return min(max(parsed, 1.0), SHOPIFY_MAX_BACKOFF_SECONDS)
-    except (TypeError, ValueError):
-        pass
-    # Respectful exponential fallback when Retry-After is absent/non-numeric.
-    return min(2.0 ** (attempt + 1), SHOPIFY_MAX_BACKOFF_SECONDS)
+    # Retry-After is a minimum delay, not a value to truncate to 30 seconds.
+    if value is not None:
+        try:
+            seconds=float(str(value).strip())
+            if math.isfinite(seconds) and seconds>=0:
+                return max(1.0,seconds)
+        except (TypeError,ValueError,OverflowError):
+            pass
+        try:
+            date=parsedate_to_datetime(str(value))
+            if date.tzinfo is None: date=date.replace(tzinfo=timezone.utc)
+            seconds=(date-datetime.now(timezone.utc)).total_seconds()
+            if seconds>=0: return max(1.0,seconds)
+        except (TypeError,ValueError,OverflowError):
+            pass
+    return min(60.0 * 2 ** min(attempt,4),900.0)
+
+
+def shopify_cooldown_remaining(domain):
+    return max(0.0,_DOMAIN_RETRY_NOT_BEFORE.get(normalize_shopify_domain(domain),0.0)-time.monotonic())
 
 
 class ShopifyAdapter:
@@ -1904,7 +1919,14 @@ class ShopifyAdapter:
         lock = self._domain_lock()
 
         async with lock:
-            retry_429 = 0
+            remaining=shopify_cooldown_remaining(self.domain)
+            if remaining>0:
+                self.diagnostics["partial_due_to_rate_limit"]=1
+                self.diagnostics["rate_limit_exhausted"]=1
+                self.diagnostics["cooldown_remaining_seconds"]=remaining
+                if required:
+                    raise ShopifyRateLimitError(429,f"Store cooldown active for {remaining:.1f}s",url=url,purpose=purpose)
+                return None
             retry_5xx = 0
 
             while True:
@@ -1939,40 +1961,18 @@ class ShopifyAdapter:
 
                         if status == 429:
                             self.diagnostics["http_429"] += 1
-                            if retry_429 < SHOPIFY_MAX_429_RETRIES:
-                                wait_seconds = _retry_after_seconds(
-                                    response.headers.get("Retry-After"),
-                                    retry_429,
-                                )
-                                retry_429 += 1
-                                self.diagnostics["retries"] += 1
-                                self.diagnostics["backoff_seconds"] += wait_seconds
-                                print(
-                                    "SHOPIFY RATE LIMIT BACKOFF | "
-                                    f"Store={self.domain} | Purpose={purpose} | "
-                                    f"Retry={retry_429}/{SHOPIFY_MAX_429_RETRIES} | "
-                                    f"Wait={wait_seconds:.1f}s"
-                                )
-                                await asyncio.sleep(wait_seconds)
-                                continue
-
-                            self.diagnostics["rate_limit_exhausted"] += 1
-                            self.diagnostics["partial_due_to_rate_limit"] = 1
-                            message = (
-                                f"Shopify HTTP 429 after {SHOPIFY_MAX_429_RETRIES} retries "
-                                f"for {purpose}"
-                            )
+                            failures=_DOMAIN_THROTTLE_FAILURES.get(self.domain,0)
+                            wait_seconds=_retry_after_seconds(response.headers.get("Retry-After"),failures)
+                            _DOMAIN_THROTTLE_FAILURES[self.domain]=failures+1
+                            _DOMAIN_RETRY_NOT_BEFORE[self.domain]=time.monotonic()+wait_seconds
+                            self.diagnostics["backoff_seconds"]+=wait_seconds
+                            self.diagnostics["cooldown_remaining_seconds"]=wait_seconds
+                            self.diagnostics["rate_limit_exhausted"]+=1
+                            self.diagnostics["partial_due_to_rate_limit"]=1
+                            print("SHOPIFY DOMAIN COOLDOWN | "
+                                  f"Store={self.domain} | Purpose={purpose} | Wait={wait_seconds:.1f}s | ImmediateRetries=0")
                             if required:
-                                raise ShopifyRateLimitError(
-                                    429,
-                                    message,
-                                    url=url,
-                                    purpose=purpose,
-                                )
-                            print(
-                                "SHOPIFY OPTIONAL REQUEST RATE LIMITED | "
-                                f"Store={self.domain} | Purpose={purpose}"
-                            )
+                                raise ShopifyRateLimitError(429,f"Store rate-limited; cooldown {wait_seconds:.1f}s",url=url,purpose=purpose)
                             return None
 
                         if 500 <= status <= 599:
@@ -2375,6 +2375,8 @@ class ShopifyAdapter:
                   f"NextPage={self.diagnostics['general_next_page']} | "
                   f"SweepComplete={bool(self.diagnostics.get('general_sweep_complete'))}")
         products = list(products_by_key.values()) + anonymous_products
+        if products and not self.diagnostics["partial_due_to_rate_limit"]:
+            _DOMAIN_THROTTLE_FAILURES.pop(self.domain,None)
 
         if not products and self.diagnostics["rate_limit_exhausted"]:
             raise ShopifyRateLimitError(
