@@ -1,11 +1,109 @@
 """Administrator-only source configuration and private ingestion diagnostics."""
 from __future__ import annotations
+import asyncio
 import json
 import discord
 from discord import app_commands
 from .extraction import GAMES
 from .ingestion_store import IngestionStore
 from .ingestion_runner import IngestionRunner
+
+class ReleaseItemsView(discord.ui.View):
+    """Private item navigation, scoped to the opening administrator and guild."""
+
+    def __init__(self, group, interaction, data, review=False):
+        super().__init__(timeout=600)
+        self.group = group
+        self.owner_id = interaction.user.id
+        self.guild_id = interaction.guild_id
+        self.review = review
+        self.page = data['page']
+        self.has_more = data['has_more']
+        self.message = None
+        self.lock = asyncio.Lock()
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.previous.disabled = self.page <= 1
+        self.next_page.disabled = not self.has_more or self.page >= 10000
+        self.page_label.label = f'Page {self.page}'
+
+    async def interaction_check(self, interaction):
+        if (interaction.user.id != self.owner_id
+                or interaction.guild_id != self.guild_id):
+            await interaction.response.send_message(
+                'Open your own list with /release watch items or /release watch review.',
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return False
+        return await self.group.interaction_check(interaction)
+
+    async def move(self, interaction, step):
+        # Also guard direct callback calls; permissions may change after opening.
+        if not await self.interaction_check(interaction):
+            return
+        await interaction.response.defer()
+        if self.lock.locked():
+            await interaction.followup.send(
+                'A page is loading. Please wait a moment.', ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        async with self.lock:
+            if self.is_finished():
+                await interaction.followup.send(
+                    'These buttons expired. Run the list command again.', ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
+            target = self.page + step
+            if target < 1 or target > 10000 or (step > 0 and not self.has_more):
+                return
+            old_page, old_more = self.page, self.has_more
+            try:
+                data = await self.group.store.items(
+                    self.guild_id, target, self.review,
+                )
+                title = ('Release ingestion exceptions' if self.review
+                         else 'Automatically discovered items')
+                result = self.group.items_embed(data, title)
+                self.page, self.has_more = data['page'], data['has_more']
+                self.update_buttons()
+                await interaction.edit_original_response(
+                    embed=result, view=self,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception as error:
+                self.page, self.has_more = old_page, old_more
+                self.update_buttons()
+                await self.group.on_error(interaction, error)
+
+    @discord.ui.button(label='Previous', style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.move(interaction, -1)
+
+    @discord.ui.button(label='Page 1', style=discord.ButtonStyle.secondary, disabled=True)
+    async def page_label(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label='Next', style=discord.ButtonStyle.primary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.move(interaction, 1)
+
+    async def on_timeout(self):
+        async with self.lock:
+            self.stop()
+            for button in self.children:
+                button.disabled = True
+            self.page_label.label = f'Page {self.page} · Expired'
+            if self.message is not None:
+                try:
+                    await self.message.edit(view=self)
+                except discord.HTTPException:
+                    pass
+
+    async def on_error(self, interaction, error, item):
+        await self.group.on_error(interaction, error)
 
 class ReleaseWatchCommands(app_commands.Group):
     def __init__(self,parent):
@@ -59,13 +157,33 @@ class ReleaseWatchCommands(app_commands.Group):
         for row in data['items']:
             payload=json.loads(row['payload_json']);issues=json.loads(row['issues_json'])
             lines.append(f"**Item #{row['id']} • {safe(payload.get('title',row['state']),120)}**\nRelease: {row['release_id'] or 'Unmatched'} • {row['state']}\n{safe(', '.join(issues) or 'No extraction issues',140)}")
-        return embed(title,('\n\n'.join(lines) or 'No matching items.')+f"\n\nPage {data['page']} • {'More available' if data['has_more'] else 'End'}\nDetails: /release watch item")
+        return embed(title,('\n\n'.join(lines) or 'No matching items.')+f"\n\nPage {data['page']} • {'More available' if data['has_more'] else 'End'}\nUse Previous / Next below. Buttons expire after 10 minutes of inactivity or a bot restart.\nDetails: /release watch item")
+
+    async def _show_items(self, interaction, page, review=False):
+        if not await self.interaction_check(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        view = None
+        try:
+            data = await self.store.items(interaction.guild_id, page, review)
+            title = 'Release ingestion exceptions' if review else 'Automatically discovered items'
+            result = self.items_embed(data, title)
+            view = ReleaseItemsView(self, interaction, data, review)
+            view.message = await interaction.followup.send(
+                embed=result, view=view, ephemeral=True, wait=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception as error:
+            if view is not None:
+                view.stop()
+            await self.on_error(interaction, error)
+
     @app_commands.command(name='items',description='List automatically discovered items and their release IDs')
     async def items(self,interaction:discord.Interaction,page:app_commands.Range[int,1,10000]=1):
-        await self.root._run(interaction,lambda:self.store.items(interaction.guild_id,page),lambda r:self.items_embed(r,'Automatically discovered items'))
+        await self._show_items(interaction, page)
     @app_commands.command(name='review',description='Show items that need extraction or identity review')
     async def review(self,interaction:discord.Interaction,page:app_commands.Range[int,1,10000]=1):
-        await self.root._run(interaction,lambda:self.store.items(interaction.guild_id,page,True),lambda r:self.items_embed(r,'Release ingestion exceptions'))
+        await self._show_items(interaction, page, True)
     @app_commands.command(name='item',description='Inspect extracted dates, packaging, source evidence and the linked release')
     async def item(self,interaction:discord.Interaction,item_id:int):
         from .commands import embed,safe
