@@ -7,7 +7,7 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlsplit, urljoin, parse_qsl, urlencode, urlunsplit
 
-ADAPTER_VERSION = '1.3.1-preview'
+ADAPTER_VERSION = '1.3.2-preview'
 PRESETS = {
     'gts': dict(label='GTS Distribution', url='https://gtsdistribution.com/pc_combined_results.asp?faceted_search_terms=Category~04552AD14A72447B95ECFC368E1CB6BD', region='UNKNOWN', ready=True, status='SUPPORTED',
                 note='Existing public card-game catalog importer. Reuses a matching watch and preserves its settings.'),
@@ -172,6 +172,14 @@ def phd_products(url, text, diagnostics=None):
             diagnostics.append(dict(url=article_url(url),reason=reason,block=block,
                 sku=sku,context=' '.join(context.split())[:220]))
     text=re.split(r'(?im)^Recent posts\s*$',text,maxsplit=1)[0]
+    # Apply game scope before reporting malformed fields in unrelated articles.
+    # The article slug also supplies context when a supported block is incomplete.
+    from .extraction import GAMES, norm
+    def supported(value):
+        return any(re.search(pattern,norm(value)) for _,pattern in GAMES)
+    article_context=text+' '+urlsplit(url).path.replace('-',' ').replace('_',' ')
+    if not supported(article_context):
+        return [],[]
     markers=list(re.finditer(r'(?im)^Item Code\s*:\s*([^\n]+)',text))
     products=[];issues=[];blocks=[]
     if len(markers)>100:
@@ -187,6 +195,14 @@ def phd_products(url, text, diagnostics=None):
         pub=pubs[-1]
         prefix=before[:pub.start()].rstrip()
         title=prefix.splitlines()[-1] if prefix else ''
+        # Mixed-game articles can contain unsupported products beside valid ones.
+        # Keep incomplete generic titles diagnostic, but skip explicitly unrelated games.
+        unrelated=re.search(r'\b(lorcana|magic the gathering|flesh and blood|'
+                            r'shadowverse|weiss schwarz|union arena|digimon|'
+                            r'yu gi oh|yugioh|star wars unlimited|hololive|'
+                            r'grand archive|cookie ?run|universus)\b',norm(title).replace('-',' '))
+        if unrelated and not supported(title):
+            previous_end=m.end();continue
         sku_match=re.fullmatch(r'([A-Z0-9][A-Z0-9_-]{0,99})(?:\s+\([^\n]*\))?\s*',m[1],re.I)
         if not title or not sku_match:
             report('MISSING_PRODUCT_TITLE' if not title else 'ITEM_CODE_NOT_A_SINGLE_SKU',block_number,context=m[0])
