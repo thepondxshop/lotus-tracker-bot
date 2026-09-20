@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 from .service import CatalogError, digest, public_source_url
-from .distributors import product_url, public_data
+from .distributors import product_url, public_data, phd_sku_fragment
 
 
 GAMES = (
@@ -87,7 +87,7 @@ def canonical_url(value):
         hostname,
         parsed.path or "/",
         urlencode(sorted(query)),
-        "",
+        phd_sku_fragment(value),
     ))
     if len(result) > 1500:
         raise CatalogError("Source URL is too long.")
@@ -109,6 +109,9 @@ def same_site(first, second):
 
 def url_key(value):
     parsed = urlsplit(canonical_url(value))
+    fragment = phd_sku_fragment(value)
+    if fragment:
+        return digest(host(value), parsed.path, parsed.query, fragment)
     return digest(host(value), parsed.path, parsed.query)
 
 
