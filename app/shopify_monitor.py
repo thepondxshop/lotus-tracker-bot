@@ -53,6 +53,7 @@ from app.shopify_adapter import (
     ShopifyAdapter,
     ShopifyRateLimitError,
     normalize_shopify_domain,
+    shopify_cooldown_remaining,
 )
 
 from app.store_health import (
@@ -69,7 +70,7 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C4
+# Component Version 1.0.6-C7
 # Step 6K-2C4 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
@@ -3233,9 +3234,10 @@ async def _scan_all_shopify_stores_unlocked():
                 )
             )
 
-            await record_store_success(
-                store.id
-            )
+            if result.get('partial_rate_limited'):
+                await _record_shopify_throttle(store.id,'Partial scan; store cooldown active')
+            else:
+                await record_store_success(store.id)
 
             results.append(
                 result
@@ -3337,6 +3339,7 @@ async def _scan_all_shopify_stores_unlocked():
             # Do not increment the store-health failure counter here.
             MONITOR_STATUS["stores_failed"] += 1
             MONITOR_STATUS["last_error"] = error_text
+            await _record_shopify_throttle(store.id,str(error))
             print(
                 "SHOPIFY SCAN RATE LIMITED | "
                 f"Store={store.name} | Error={error}"
@@ -3731,6 +3734,17 @@ def _refresh_background_status():
         MONITOR_STATUS[key] = sum(v.get("families", {}).get(family, 0) for v in values)
 
 
+async def _record_shopify_throttle(store_id, message):
+    """Expose transient throttling without auto-disabling a retailer."""
+    async with SessionLocal() as session:
+        store=await session.get(Store,store_id)
+        if store is None or not store.active: return
+        store.health_status='DEGRADED'
+        store.last_failure_at=datetime.utcnow()
+        store.last_error=('Shopify rate limited: '+str(message))[:1000]
+        await session.commit()
+
+
 async def _run_scheduled_store(store_id):
     global _BACKGROUND_SCANS
     failures = 0
@@ -3751,10 +3765,14 @@ async def _run_scheduled_store(store_id):
                 cooldown = min(300, 30 * 2 ** min(failures - 1, 4))
             else:
                 failures = 0
-            await record_store_success(store.id)
+            if result.get('partial_rate_limited'):
+                await _record_shopify_throttle(store.id,'Partial scan; store cooldown active')
+                MONITOR_STATUS['last_error']=f'{store.name}: partial scan due to rate limiting'
+            else:
+                await record_store_success(store.id)
             _refresh_background_status()
             MONITOR_STATUS["last_scan"] = datetime.utcnow().isoformat()
-            MONITOR_STATUS["last_scan_outcome"] = "SUCCESS"
+            MONITOR_STATUS["last_scan_outcome"] = "PARTIAL_RATE_LIMITED" if result.get('partial_rate_limited') else "SUCCESS"
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -3764,19 +3782,24 @@ async def _run_scheduled_store(store_id):
             MONITOR_STATUS["last_error"] = f"{store.name}: {type(error).__name__}: {error}"
             MONITOR_STATUS["last_scan_outcome"] = "STORE_ERROR"
             print("SHOPIFY SCHEDULED ERROR | " + MONITOR_STATUS["last_error"])
-            if not isinstance(error, ShopifyRateLimitError):
+            if isinstance(error, ShopifyRateLimitError):
+                await _record_shopify_throttle(store.id,str(error))
+            else:
                 await record_store_failure(store.id, str(error))
         finally:
             _BACKGROUND_SCANS -= 1
         # No catch-up bursts. Healthy short scans target a five-second
         # start-to-start period; throttled/error sources get a full cooldown.
         delay = cooldown if failures else max(1.0, POLL_SECONDS - (time.monotonic() - started))
+        delay=max(delay,shopify_cooldown_remaining(store.domain))
+        if failures:
+            print(f'SHOPIFY NEXT SCAN | Store={store.name} | WaitSeconds={delay:.1f} | ThrottledOrFailed=True')
         await asyncio.sleep(delay)
 
 
 async def run_shopify_monitor():
     MONITOR_STATUS["running"] = True
-    print("Lotus Shopify Monitor 6K-2C4 (component 1.0.6-C4) started. "
+    print("Lotus Shopify Monitor 6K-2C7 (component 1.0.6-C7) started. "
           "Independent stores; target=5s; max concurrent scans=4.")
     tasks = {}
     health_task = None
