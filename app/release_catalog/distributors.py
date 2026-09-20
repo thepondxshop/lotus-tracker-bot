@@ -7,8 +7,10 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlsplit, urljoin, parse_qsl, urlencode, urlunsplit
 
-ADAPTER_VERSION = '1.2.0-preview'
+ADAPTER_VERSION = '1.2.1-preview'
 PRESETS = {
+    'gts': dict(label='GTS Distribution', url='https://gtsdistribution.com/pc_combined_results.asp?faceted_search_terms=Category~04552AD14A72447B95ECFC368E1CB6BD', region='UNKNOWN', ready=True, status='SUPPORTED',
+                note='Existing public card-game catalog importer. Reuses a matching watch and preserves its settings.'),
     'southern': dict(label='Southern Hobby Distribution', url='https://www.southernhobby.com/products_recent.php', region='UNKNOWN', ready=True,
                      note='Preview: recent public products. Automated access challenge observed; scan on Railway to verify access.'),
     'phd': dict(label='PHD Games', url='https://www.phdgames.com/blog-tcgs/', region='UNKNOWN', ready=True,
@@ -102,7 +104,14 @@ def public_data(url, body):
     if urlsplit(url).path.rstrip('/') in ('/login','/sign-in'):
         return [],[],[],['LOGIN_REQUIRED']
     for href, title in page.anchors:
-        target=urljoin(url,href)
+        # Distributor navigation may include HTTP, malformed URLs, or script links.
+        # Apply the same validation used by generic extraction before returning links.
+        from .extraction import canonical_url
+        from .service import CatalogError
+        try:
+            target=canonical_url(urljoin(url,href))
+        except (CatalogError, ValueError):
+            continue
         if hostname(target)!=domain: continue
         if domain=='grosnor.com' and re.fullmatch(r'/product/[^/]+/?',urlsplit(target).path):
             if not title: continue
