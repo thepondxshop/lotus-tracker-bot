@@ -1,4 +1,5 @@
 import json
+import time
 
 from app.database import SessionLocal
 
@@ -408,6 +409,8 @@ async def push_product_event(
                 event
             )
         )
+
+        payload["_lotus_enqueued_at"] = time.time()
 
         await redis_client.rpush(
 
