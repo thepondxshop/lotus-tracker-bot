@@ -1586,11 +1586,16 @@ async def _priority_handles(store):
     cached=_PRIORITY_CANDIDATES.get(store.id)
     if not cached or now-cached[0]>=AUTO_PRIORITY_CACHE_SECONDS:
         async with SessionLocal() as session:
-            urls=(await session.scalars(select(StoreProduct.url).where(
+            from app.event_listing_filter import is_event_listing
+            # Read a bounded wider pool so excluded tickets do not occupy all slots.
+            rows=(await session.execute(select(StoreProduct.url, Product.name, Product.product_type).join(
+                Product, Product.id==StoreProduct.product_id).where(
                 StoreProduct.store_id==store.id,
                 StoreProduct.status.in_(['PREORDER_PAGE','PREORDER_LIVE'])
-            ).order_by(StoreProduct.id.desc()).limit(AUTO_PRIORITY_LIMIT))).all()
-        handles=[handle_from_url(url,domain) for url in urls]
+            ).order_by(StoreProduct.id.desc()).limit(200))).all()
+        handles=[handle_from_url(url,domain) for url,name,kind in rows
+                 if not is_event_listing(name,kind,url)]
+        handles=[h for h in handles if h][:AUTO_PRIORITY_LIMIT]
         cached=(now,[h for h in handles if h]);_PRIORITY_CANDIDATES[store.id]=cached
     return choose_handles(domain,cached[1])
 
