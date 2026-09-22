@@ -3775,6 +3775,7 @@ async def _run_scheduled_store(store_id):
     while True:
         # Reload live activation/domain settings before every scan. Manual
         # removal/disable therefore stops further polling without a restart.
+        print(f"SHOPIFY STORE CYCLE | UTC={datetime.now(timezone.utc).isoformat()} | StoreID={store_id} | Phase=LOAD_SETTINGS")
         store = await get_shopify_store(store_id)
         if store is None or not store.active or store.platform != "shopify":
             return
@@ -3782,7 +3783,9 @@ async def _run_scheduled_store(store_id):
         cooldown = POLL_SECONDS
         _BACKGROUND_SCANS += 1
         try:
+            print(f"SHOPIFY STORE CYCLE | UTC={datetime.now(timezone.utc).isoformat()} | StoreID={store_id} | Store={store.name} | Phase=SCAN_START")
             result = await scan_shopify_store(store)
+            print(f"SHOPIFY STORE CYCLE | UTC={datetime.now(timezone.utc).isoformat()} | StoreID={store_id} | Store={store.name} | Phase=SCAN_FINISHED | Seen={result.get('seen')} | Events={result.get('events')} | Partial={result.get('partial_rate_limited')} | Seconds={time.monotonic()-started:.3f}")
             _STORE_RESULTS[store_id] = result
             if result.get("partial_rate_limited"):
                 failures += 1
@@ -3818,6 +3821,7 @@ async def _run_scheduled_store(store_id):
         delay=max(delay,shopify_cooldown_remaining(store.domain))
         if failures:
             print(f'SHOPIFY NEXT SCAN | Store={store.name} | WaitSeconds={delay:.1f} | ThrottledOrFailed=True')
+        print(f"SHOPIFY STORE CYCLE | UTC={datetime.now(timezone.utc).isoformat()} | StoreID={store_id} | Store={store.name} | Phase=WAIT | WaitSeconds={delay:.1f}")
         await asyncio.sleep(delay)
 
 
