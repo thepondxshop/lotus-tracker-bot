@@ -81,6 +81,8 @@ class ReleaseCommands(app_commands.Group):
         from .ingestion_commands import ReleaseWatchCommands
         self.watch_group = ReleaseWatchCommands(self)
         self.add_command(self.watch_group)
+        from .official_commands import OfficialCommands
+        self.add_command(OfficialCommands(self))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # UI defaults can be overridden in a server: runtime authorization is
@@ -176,12 +178,19 @@ class ReleaseCommands(app_commands.Group):
 
     @app_commands.command(name="show", description="Inspect a release, reported details and recent provenance")
     async def show(self, interaction: discord.Interaction, release_id: int):
+        async def read():
+            data = await self.catalog.get(interaction.guild_id, release_id)
+            data['official'] = await self.watch_group.runner.official.result(interaction.guild_id, release_id)
+            return data
         def render(data):
             result = release_embed(data["release"])
             result.add_field(name="Latest evidence (use /release sources for links)", value="\n".join(f"#{s['id']} • {s['kind']} • {safe(s['label'], 110)}" for s in data["sources"]) or "None", inline=False)
+            check=data['official']['check']
+            windows=[w['label']+' ('+w['precision']+', '+e['match_scope']+')' for e in check.get('evidence',[]) for w in e['windows']]
+            result.add_field(name="Official publisher check", value=safe(check['state']+'\n'+' / '.join(windows),750)+f"\nDetails: /release official check release_id:{release_id}", inline=False)
             result.add_field(name="Recent history (UTC)", value="\n".join(f"{a['recorded_at'][:19]} • {a['action']} • admin {a['actor_id']}" for a in data["audit"]) or "None", inline=False)
             return result
-        await self._run(interaction, lambda: self.catalog.get(interaction.guild_id, release_id), render)
+        await self._run(interaction, read, render)
 
     @app_commands.command(name="sources", description="List evidence IDs, links and excerpts for a release")
     async def sources(self, interaction: discord.Interaction, release_id: int, page: app_commands.Range[int, 1, 10000] = 1):
@@ -253,6 +262,34 @@ class ReleaseCommands(app_commands.Group):
         page: app_commands.Range[int, 1, 10000] = 1,
     ):
         await self._run(interaction, lambda: self.catalog.calendar(interaction.guild_id, start=start, days=days, game=game, region=region, language=language, page=page), lambda data: page_embed(data, "Confirmed release calendar — admin preview"))
+
+    @app_commands.command(name="trace", description="Inspect a retailer product, recorded events and linked Discord deliveries")
+    async def trace(self, interaction: discord.Interaction, store_id: int, url: str):
+        from app.alert_trace import trace_product
+        async def read():
+            try:
+                return await trace_product(self.catalog.sessions, store_id, url,
+                    [c.id for c in list(interaction.guild.channels)+list(interaction.guild.threads)])
+            except ValueError as error:
+                raise CatalogError(str(error)) from None
+        def render(data):
+            lines=[f"Store: {safe(data['store'],80)} • Active: {data['active']} • {data['health']}"]
+            if data['last_store_error']: lines.append('Store error: '+safe(data['last_store_error'],250))
+            product=data['product']
+            if product:
+                lines.append(f"Stored product #{product['id']} • In stock: {product['in_stock']}\nStatus: {safe(product['status'],80)} • Last seen (UTC): {product['last_seen']}\nVariant: {product['variant_id'] or 'Unknown'}")
+            else:
+                lines.append('No unique stored product match. Discovery/classification may not have captured it; this is not proof the page was never live.')
+            lines.append('**Recent recorded events**')
+            lines.extend(f"{safe(e['type'],60)} • {e['at']} UTC • In stock: {e['in_stock']}" for e in data['events'])
+            if not data['events']: lines.append('No matching event history. Earlier availability cannot be reconstructed.')
+            lines.append('**Linked deliveries in this server**')
+            for d in data['deliveries']:
+                lines.append(f"{safe(d['type'],60)} • {d['at']} UTC\nhttps://discord.com/channels/{interaction.guild_id}/{d['channel']}/{d['message']}")
+            if not data['deliveries']: lines.append('No linked delivery found. Older delivery rows lack product/store IDs; absence does not prove no alert was sent.')
+            lines.append('Read-only: no scan or test ping was sent. Event records alone do not prove successful queueing or delivery.')
+            return embed('Product alert trace','\n\n'.join(lines)[:3900])
+        await self._run(interaction,read,render)
 
     @app_commands.command(name="retract", description="Return a release to unverified; remove its date from the calendar")
     async def retract(self, interaction: discord.Interaction, release_id: int, reason: str):
