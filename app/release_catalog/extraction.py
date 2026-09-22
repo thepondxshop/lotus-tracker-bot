@@ -129,6 +129,14 @@ def is_product(value):
 
 def product_format(title, body=""):
     title = norm(title).replace("_", " ")
+    # A deck case is an accessory, not a wholesale shipping case.
+    # Explicit outer packaging wins for accessory cartons/cases.
+    if (re.search(r"\b(?:deck case|deck box|binder|sleeves|playmat)\b", title)
+            and not re.search(r"\b(?:booster|elite trainer|collection)\b", title)):
+        if re.search(r"\b(?:case of|carton|case pack)\b|\bcases?\s*\(\d+ct\)|\b(?:deck case|deck box|binder|sleeves|playmat).*\bcase\b", title):
+            return "CASE"
+        if not re.search(r"\bbinder collection\b", title):
+            return "ACCESSORY"
     if re.search(r"\bcase\b", title):
         return "CASE"
     if (
@@ -136,6 +144,8 @@ def product_format(title, body=""):
         or re.search(r"sold as (?:a )?display", body, re.I)
     ):
         return "BOX"
+    if re.search(r"\b(?:booster bundle|premium collection|binder collection|knockout collection|collector chest|(?:mini |ex )?tin)\b", title):
+        return "SET"
     if re.search(r"\b(deck|starter)\b", title):
         return "DECK"
     if re.search(r"\bpack\b", title):
