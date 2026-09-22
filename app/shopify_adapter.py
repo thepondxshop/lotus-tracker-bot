@@ -1822,6 +1822,9 @@ def _collection_handle_from_url(url):
 
 
 def _collection_score(handle, title=""):
+    from app.event_listing_filter import is_event_listing, normalized
+    if normalized(handle) in {"events", "event", "tournaments", "tournament", "event calendar", "event tickets"} or is_event_listing(title, url=handle):
+        return 0
     probe = normalize_text(f"{title or ''} {handle or ''}")
     if not probe:
         return 0
@@ -2195,6 +2198,9 @@ class ShopifyAdapter:
             for incoming in page_products or []:
                 if not isinstance(incoming, dict):
                     continue
+                from app.event_listing_filter import raw_event_listing
+                if raw_event_listing(incoming):
+                    continue
                 product = dict(incoming)
                 _append_discovery_source(product, source)
                 key = _product_dedupe_key(product)
@@ -2234,6 +2240,9 @@ class ShopifyAdapter:
             if on_batch is not None:
                 from app.shopify_priority import ajax_product
                 for handle in priority_handles:
+                    from app.event_listing_filter import is_event_listing
+                    if is_event_listing(url=handle):
+                        continue
                     if shopify_cooldown_remaining(self.domain): break
                     if self.domain not in _STORE_CURRENCY_CACHE:
                         print(f"SHOPIFY PRIORITY CHECK | Store={self.domain} | Handle={handle} | Result=CURRENCY_UNVERIFIED")
@@ -2462,6 +2471,10 @@ class ShopifyAdapter:
         self,
         product,
     ):
+        from app.event_listing_filter import raw_event_listing
+        if raw_event_listing(product):
+            print(f"SHOPIFY PRODUCT SKIPPED | Store={self.domain} | Reason=EVENT_REGISTRATION | Product={product.get('title')}")
+            return None
 
         title = (
             product.get(
