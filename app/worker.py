@@ -1628,6 +1628,11 @@ async def run_event_worker(bot):
             if event is None:
                 continue
 
+            enqueued = event.get("_lotus_enqueued_at")
+            queue_age = max(0.0, time.time()-enqueued) if isinstance(enqueued,(int,float)) else None
+            print(f"LOTUS QUEUE TIMING | Store={event.get('store_name')} | "
+                  f"Event={event.get('event_type')} | QueueAgeSeconds={queue_age} | "
+                  f"ProductURL={event.get('product_url')}")
             try:
                 await asyncio.wait_for(
                     route_event_to_discord(
