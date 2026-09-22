@@ -2259,6 +2259,8 @@ class ShopifyAdapter:
                         continue
                     await merge_products([product], "PRIORITY_PRODUCT")
                     key = _product_dedupe_key(product)
+                    if key not in products_by_key:
+                        continue
                     await on_batch([products_by_key[key]], "PRIORITY_PRODUCT:" + handle)
                     delivered_keys.add(key)
                     print(f"SHOPIFY PRIORITY CHECK | Store={self.domain} | Handle={handle} | "
@@ -2410,10 +2412,11 @@ class ShopifyAdapter:
                     if on_batch is not None:
                         fresh = []
                         for raw in page_products:
-                            if not isinstance(raw, dict):
+                            from app.event_listing_filter import raw_event_listing
+                            if not isinstance(raw, dict) or raw_event_listing(raw):
                                 continue
                             key = _product_dedupe_key(raw)
-                            if key is not None and key not in delivered_keys:
+                            if key in products_by_key and key not in delivered_keys:
                                 fresh.append(products_by_key[key])
                                 delivered_keys.add(key)
                             elif key is None:
