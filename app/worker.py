@@ -1335,6 +1335,11 @@ async def route_event_to_discord(
     bot,
     event,
 ):
+    from app.event_listing_filter import is_event_listing
+    if is_event_listing(event.get('product_name') or event.get('title'),
+                        event.get('product_type'), event.get('product_url')):
+        print(f"EVENT SUPPRESSED | Reason=EVENT_REGISTRATION | Store={event.get('store_name')} | ProductURL={event.get('product_url')}")
+        return False
     dispatch_started = time.monotonic()
     # =====================================================
     # GAME SAFETY CHECK BEFORE ROLE PING
