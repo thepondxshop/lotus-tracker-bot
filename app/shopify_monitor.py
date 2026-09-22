@@ -70,7 +70,7 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C7
+# Component Version 1.0.6-C8
 # Step 6K-2C4 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
@@ -1576,6 +1576,25 @@ async def get_deal_data(
         return None
 
 
+_PRIORITY_CANDIDATES = {}
+
+async def _priority_handles(store):
+    from app.shopify_priority import (choose_handles, handle_from_url,
+        AUTO_PRIORITY_CACHE_SECONDS, AUTO_PRIORITY_LIMIT)
+    domain=normalize_shopify_domain(store.domain)
+    now=time.monotonic()
+    cached=_PRIORITY_CANDIDATES.get(store.id)
+    if not cached or now-cached[0]>=AUTO_PRIORITY_CACHE_SECONDS:
+        async with SessionLocal() as session:
+            urls=(await session.scalars(select(StoreProduct.url).where(
+                StoreProduct.store_id==store.id,
+                StoreProduct.status.in_(['PREORDER_PAGE','PREORDER_LIVE'])
+            ).order_by(StoreProduct.id.desc()).limit(AUTO_PRIORITY_LIMIT))).all()
+        handles=[handle_from_url(url,domain) for url in urls]
+        cached=(now,[h for h in handles if h]);_PRIORITY_CANDIDATES[store.id]=cached
+    return choose_handles(domain,cached[1])
+
+
 async def _scan_shopify_store_unlocked(store):
     adapter = ShopifyAdapter(store.domain, region=store.region or "US")
     native_currency = await adapter.fetch_store_currency()
@@ -1614,7 +1633,7 @@ async def _scan_shopify_store_unlocked(store):
 
     try:
         if seeded:
-            await adapter.fetch_products(on_batch=process_batch)
+            await adapter.fetch_products(on_batch=process_batch, priority_handles=await _priority_handles(store))
         else:
             raw = await adapter.fetch_products()
             await process_batch(raw, "INITIAL_BASELINE")
@@ -3799,7 +3818,7 @@ async def _run_scheduled_store(store_id):
 
 async def run_shopify_monitor():
     MONITOR_STATUS["running"] = True
-    print("Lotus Shopify Monitor 6K-2C7 (component 1.0.6-C7) started. "
+    print("Lotus Shopify Monitor 6K-2C8 (component 1.0.6-C8) started. "
           "Independent stores; target=5s; max concurrent scans=4.")
     tasks = {}
     health_task = None
