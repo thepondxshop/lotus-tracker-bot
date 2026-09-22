@@ -21,7 +21,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C7
+# Component Version 1.0.6-C8
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -1699,7 +1699,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C7"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C8"
 _STORE_CURRENCY_CACHE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
@@ -1736,8 +1736,14 @@ _DOMAIN_THROTTLE_FAILURES = {}
 _PRIORITY_COLLECTION_CACHE = {}
 _GENERAL_FEED_LAST_ATTEMPT_AT = {}
 _GENERAL_FEED_CURSOR = {}
-GENERAL_PAGES_PER_PASS = 2
+GENERAL_PAGES_PER_PASS = 1
 _COLLECTION_MEMBERSHIP_CACHE = {}
+_COLLECTION_ROTATION_CURSOR = {}
+_HEAD_LAST_ATTEMPT = {}
+_LAST_PRIORITY_CHECK = {}
+CATALOG_COLLECTIONS_PER_PASS = 2
+HEAD_REFRESH_SECONDS = 15
+
 
 
 class ShopifyHTTPError(RuntimeError):
@@ -1977,7 +1983,7 @@ class ShopifyAdapter:
 
                         if 500 <= status <= 599:
                             self.diagnostics["http_5xx"] += 1
-                            if retry_5xx < SHOPIFY_MAX_5XX_RETRIES:
+                            if required and retry_5xx < SHOPIFY_MAX_5XX_RETRIES:
                                 wait_seconds = min(
                                     2.0 ** (retry_5xx + 1),
                                     SHOPIFY_MAX_BACKOFF_SECONDS,
@@ -2175,7 +2181,7 @@ class ShopifyAdapter:
         self.diagnostics["priority_collection_handles"] = [row[1] for row in ranked]
         return ranked
 
-    async def fetch_products(self, max_pages=20, *, on_batch=None):
+    async def fetch_products(self, max_pages=20, *, on_batch=None, priority_handles=()):
         products_by_key = {}
         anonymous_products = []
 
@@ -2224,10 +2230,60 @@ class ShopifyAdapter:
             headers=headers,
             connector=aiohttp.TCPConnector(limit=4, limit_per_host=2),
         ) as session:
-            # =================================================
-            # 1. FAST LANE — PRIORITY COLLECTIONS FIRST
-            # =================================================
+            delivered_keys = set()
+            if on_batch is not None:
+                from app.shopify_priority import ajax_product
+                for handle in priority_handles:
+                    if shopify_cooldown_remaining(self.domain): break
+                    if self.domain not in _STORE_CURRENCY_CACHE:
+                        print(f"SHOPIFY PRIORITY CHECK | Store={self.domain} | Handle={handle} | Result=CURRENCY_UNVERIFIED")
+                        continue
+                    requested = time.monotonic()
+                    previous_check = _LAST_PRIORITY_CHECK.get((self.domain,handle))
+                    revisit = round(requested-previous_check,3) if previous_check is not None else None
+                    _LAST_PRIORITY_CHECK[(self.domain,handle)] = requested
+                    data = await self._get_json(session, f"{self.base_url}/products/{handle}.js",
+                                                purpose="PRIORITY_PRODUCT:" + handle, required=False)
+                    product = ajax_product(data, handle)
+                    if product is None:
+                        print(f"SHOPIFY PRIORITY CHECK | Store={self.domain} | Handle={handle} | Result=NO_USABLE_OBSERVATION")
+                        continue
+                    await merge_products([product], "PRIORITY_PRODUCT")
+                    key = _product_dedupe_key(product)
+                    await on_batch([products_by_key[key]], "PRIORITY_PRODUCT:" + handle)
+                    delivered_keys.add(key)
+                    print(f"SHOPIFY PRIORITY CHECK | Store={self.domain} | Handle={handle} | "
+                          f"Available={any(v['available'] for v in product['variants'])} | RevisitSeconds={revisit} | Seconds={time.monotonic()-requested:.3f}")
+
+                # Revisit the first product page independently of the deep catalog cursor.
+                now = time.monotonic()
+                last_head = _HEAD_LAST_ATTEMPT.get(self.domain)
+                if not shopify_cooldown_remaining(self.domain) and (last_head is None or now-last_head >= HEAD_REFRESH_SECONDS):
+                    _HEAD_LAST_ATTEMPT[self.domain] = now
+                    data = await self._get_json(session, f"{self.base_url}/products.json?limit=250&page=1",
+                                                purpose="GENERAL_HEAD", required=False)
+                    if isinstance(data, dict) and isinstance(data.get('products'), list):
+                        rows = data['products']
+                        await merge_products(rows, "PRODUCTS_JSON")
+                        fresh = [products_by_key[_product_dedupe_key(r)] for r in rows
+                                 if isinstance(r, dict) and _product_dedupe_key(r) in products_by_key
+                                 and _product_dedupe_key(r) not in delivered_keys]
+                        for offset in range(0,len(fresh),100): await on_batch(fresh[offset:offset+100], "GENERAL_HEAD")
+                        delivered_keys.update(_product_dedupe_key(r) for r in rows if isinstance(r,dict))
+                        self.diagnostics['general_pages_successful'] += 1
+                        self.diagnostics['general_products_seen'] += len(rows)
+                        if _GENERAL_FEED_CURSOR.get(self.domain,1)==1:
+                            _GENERAL_FEED_CURSOR[self.domain] = 2 if len(rows)>=250 else 1
+                            if len(rows)<250: _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain]=time.monotonic()
+
+            # Rotate bounded collection work; direct checks happen before discovery.
             priority_collections = await self._discover_priority_collections(session)
+            if on_batch is not None and priority_collections:
+                start = _COLLECTION_ROTATION_CURSOR.get(self.domain,0) % len(priority_collections)
+                count = min(CATALOG_COLLECTIONS_PER_PASS,len(priority_collections))
+                chosen = [priority_collections[(start+i)%len(priority_collections)] for i in range(count)]
+                _COLLECTION_ROTATION_CURSOR[self.domain]=(start+count)%len(priority_collections)
+                priority_collections=chosen
 
             for _, handle, title in priority_collections:
                 source_label = "COLLECTION:" + handle
@@ -2291,9 +2347,8 @@ class ShopifyAdapter:
 
             # Finish merging collection memberships before publishing them.
             # Each product is processed once per pass, even across overlaps.
-            delivered_keys = set()
             if on_batch is not None:
-                priority_products = list(products_by_key.values()) + anonymous_products
+                priority_products = [v for k,v in products_by_key.items() if k not in delivered_keys] + anonymous_products
                 for offset in range(0, len(priority_products), 100):
                     await on_batch(priority_products[offset:offset + 100], "PRIORITY_COLLECTIONS")
                 delivered_keys.update(products_by_key)
