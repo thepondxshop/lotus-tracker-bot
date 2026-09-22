@@ -64,12 +64,16 @@ class IngestionRunner:
     def __init__(self,store,http_factory=PublicHTTP,budget=180,listing_limit=8):
         self.store=store;self.http_factory=http_factory;self.budget=budget;self.listing_limit=listing_limit
         self.lock=asyncio.Lock();self.task=None;self.state='NOT_STARTED';self.last_tick=None;self.last_error=None
+        from .official import OfficialVerifier
+        self.official=OfficialVerifier(store)
     def start(self,bot):
+        self.official.start(bot)
         if self.task is None or self.task.done():
             self.state='STARTING';self.task=asyncio.create_task(self.run(bot),name='lotus-release-ingestion')
             print(f'LOTUS RELEASE INGESTION | Version={VERSION} | Task=CREATED | Alerts=OFF',flush=True)
         return self.task
     async def stop(self):
+        await self.official.stop()
         if self.task and not self.task.done():
             self.task.cancel()
             try: await self.task
@@ -77,7 +81,7 @@ class IngestionRunner:
         self.state='STOPPED'
     async def status(self,guild):
         sources=await self.store.watches(guild)
-        return {'version':VERSION,'distributor_adapters':ADAPTER_VERSION,'worker':self.state,'last_tick':self.last_tick,'last_error':self.last_error,'sources':len(sources),'enabled_sources':sum(w['enabled'] for w in sources),'scan_in_progress':self.lock.locked()}
+        return {'version':VERSION,'official_verifier':self.official.version,'official_worker':self.official.state,'distributor_adapters':ADAPTER_VERSION,'worker':self.state,'last_tick':self.last_tick,'last_error':self.last_error,'sources':len(sources),'enabled_sources':sum(w['enabled'] for w in sources),'scan_in_progress':self.lock.locked()}
     async def scan(self,guild,wid):
         if self.lock.locked(): raise CatalogError('Another source scan is running. This watch remains scheduled; try again shortly.')
         async with self.lock:
