@@ -83,6 +83,8 @@ class ReleaseCommands(app_commands.Group):
         self.add_command(self.watch_group)
         from .official_commands import OfficialCommands
         self.add_command(OfficialCommands(self))
+        from .radar_commands import RadarCommands
+        self.add_command(RadarCommands(self))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # UI defaults can be overridden in a server: runtime authorization is
