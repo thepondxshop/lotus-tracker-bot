@@ -1519,6 +1519,8 @@ async def route_event_to_discord(
           f"DispatchSeconds={time.monotonic() - dispatch_started:.3f} | "
           f"EligibleMentions={len(eligible_members)}")
     await save_alert_delivery(
+        product_url=event.get("product_url"),
+        store_name=event.get("store_name"),
         alert_type=alert_type,
         minimum_tier=(
             access.get(
