@@ -100,6 +100,52 @@ def formats_embed(data):
     return out
 
 
+def unknowns_embed(data):
+    out=card('Unknown product formats • '+safe(data.get('game') or 'All games',70),
+             'Read-only inspection of active catalog records. Titles and reported details are evidence for review, not verified packaging.')
+    for item in data['items']:
+        row=item['release']
+        value=(f"{safe(row['game'],60)} • {safe(row['region'],40)} / {safe(row['language'],40)}\n"
+               f"Set code: {safe(row['set_code'] or 'Unknown',40)} • Title parser: {item['suggested']}\n"
+               f"Reported details (excerpt): {safe(row['reported_details'] or 'None',500)}\n"
+               f"Full record: /release show release_id:{row['id']}\nSources: /release sources release_id:{row['id']}")
+        out.add_field(name=f"#{row['id']} • {safe(row['title'],180)}",value=value,inline=False)
+    if not data['items']:
+        out.description+='\n\nNo unknown formats in this filter.'
+    out.add_field(name=f"Page {data['page']} of {data['pages']} • {data['total']} unknown formats",
+                  value='Previous / Next below. Buttons expire after 10 minutes of inactivity or a bot restart.',inline=False)
+    return out
+
+
+def offers_embed(data):
+    target=data['release']
+    out=card(f"Saved retailer offers • Release #{target['id']}",
+             f"Compare with: **{safe(target['title'],180)}**\n"
+             f"Catalog: {safe(target['product_format'],20)} • {safe(target['region'],40)} / {safe(target['language'],40)} • Code: {safe(target['set_code'] or 'Unknown',40)}\n"
+             'All saved offers for this game, including disabled stores and non-candidates. Sharing a game does not establish a product match.')
+    for item in data['items']:
+        p,o,t=item['product'],item['offer'],item['store']; saved=item['saved']
+        reason='No saved decision'
+        if saved:
+            import json
+            reason=saved['state']+' • '+str(json.loads(saved['details_json']).get('reason') or 'No saved reason')
+            if saved['release_id']:
+                reason+=f" • Release #{saved['release_id']}"
+        value=(f"**{safe(p['name'],240)}**\n"
+               f"SKU: {safe(o['sku'] or 'Unknown',65)} • Type: {safe(p['product_type'] or 'Unknown',65)}\n"
+               f"Parsed title/type formats: {item['title_format']} / {item['type_format']}\n"
+               f"Product region/language: {safe(p['region'] or 'Unknown',40)} / {safe(p['language'] or 'Unknown',40)}\n"
+               f"Store region: {safe(t['region'] or 'Unknown',40)} • {'Enabled' if t['active'] else 'Disabled'}\n"
+               f"Identity candidate: {'Yes' if item['identity_candidate'] else 'No'} • {safe(reason,130)}\n"
+               f"Last seen (UTC): {safe(o['last_seen_at'] or 'Unknown',40)}\n{link(o['url'])}")
+        out.add_field(name=f"{safe(t['name'],90)} • Product #{o['id']}",value=value[:1024],inline=False)
+    if not data['items']:
+        out.description+='\n\nNo saved offers for this game.'
+    out.add_field(name=f"Page {data['page']} of {data['pages']} • {data['total']} saved offers",
+                  value='Read-only; no new scans, stock checks or matching decisions. Previous / Next shows every saved offer for this game. Buttons expire after 10 minutes of inactivity.',inline=False)
+    return out
+
+
 def list_embed(data):
     out = card('Release Radar • ' + safe(data.get('game') or 'All games', 80),
                'Upcoming dated releases first, then undated leads and past dated records. Archived releases are excluded.\n'
@@ -294,3 +340,15 @@ class RadarCommands(app_commands.Group):
             await interaction.followup.send(embed=formats_embed(data),ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
         except Exception as error:
             await self.failure(interaction,error)
+
+
+    @app_commands.command(name='unknowns', description='Inspect remaining UNKNOWN format titles and reported details')
+    @app_commands.choices(game=[app_commands.Choice(name=g,value=g) for g,_ in GAMES])
+    async def unknowns(self, interaction: discord.Interaction, game: str | None = None,
+                       page: app_commands.Range[int, 1, 10000] = 1):
+        await self.open(interaction, lambda p: self.diagnostics.unknowns(interaction.guild_id,game,p), unknowns_embed, page)
+
+    @app_commands.command(name='offers', description='Inspect all saved retailer offers for a release game, including non-candidates')
+    async def offers(self, interaction: discord.Interaction, release_id: app_commands.Range[int, 1],
+                     page: app_commands.Range[int, 1, 10000] = 1):
+        await self.open(interaction, lambda p: self.diagnostics.offers(interaction.guild_id,release_id,p), offers_embed, page)
