@@ -617,6 +617,8 @@ async def save_alert_delivery(
     minimum_tier: str,
     discord_channel_id: int,
     discord_message_id: int,
+    product_url: str | None = None,
+    store_name: str | None = None,
 ):
 
     if SessionLocal is None:
@@ -626,11 +628,21 @@ async def save_alert_delivery(
 
         async with SessionLocal() as session:
 
+            linked = None
+            if product_url and store_name:
+                from app.alert_trace import lookup_store_product
+                try:
+                    linked = await lookup_store_product(session, store_name, product_url)
+                except Exception as error:
+                    # Delivery already happened. Preserve its record even if correlation fails.
+                    await session.rollback()
+                    print(f"LOTUS DELIVERY LINK ERROR | Type={type(error).__name__}")
+
             record = Alert(
 
-                product_id=None,
+                product_id=linked.product_id if linked else None,
 
-                store_id=None,
+                store_id=linked.store_id if linked else None,
 
                 alert_type=(
                     alert_type
