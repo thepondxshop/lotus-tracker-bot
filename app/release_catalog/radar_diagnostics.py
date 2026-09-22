@@ -7,7 +7,7 @@ from .service import Release, CatalogError, identity, snapshot, positive_id, utc
 from .ingestion_store import RetailerLink, match
 from .extraction import Candidate, CODE, canonical_url, code, languages, norm, product_format, scope
 
-VERSION = '1.5.1-preview'
+VERSION = '1.5.2-preview'
 
 
 def related(row, product, offer):
@@ -132,3 +132,48 @@ class RadarDiagnostics:
             pages=max(1,(len(items)+3)//4); page=min(page,pages)
             return {'release':snapshot(target),'items':items[(page-1)*4:page*4], 'total':len(items),
                     'page':page,'pages':pages,'has_more':page<pages,'examined':len(rows),'limited':limited}
+
+
+    async def unknowns(self, guild, game=None, page=1):
+        positive_id(guild, 'Server ID'); self.catalog._page(page)
+        await self.store.ensure_schema()
+        async with self.store.sessions() as s:
+            conditions = [Release.guild_id == guild, Release.status != 'ARCHIVED', Release.product_format == 'UNKNOWN']
+            if game:
+                conditions.append(func.lower(Release.game) == game.lower())
+            total = await s.scalar(select(func.count()).select_from(Release).where(*conditions))
+            pages = max(1, (total + 3) // 4); page = min(page, pages)
+            rows = (await s.scalars(select(Release).where(*conditions).order_by(Release.id)
+                                   .offset((page-1)*4).limit(4))).all()
+            return {'items': [{'release': snapshot(r), 'suggested': product_format(r.title)} for r in rows],
+                    'total': total, 'page': page, 'pages': pages, 'has_more': page < pages, 'game': game}
+
+    async def offers(self, guild, release_id, page=1):
+        """Inspect all saved same-game offers, including non-candidates and disabled stores.
+
+        Offer inventory is shared by the existing monitor; release and saved decisions
+        are scoped to the current guild. This is an admin-only inspection, not a match.
+        """
+        from app.models import Store, StoreProduct, Product
+        positive_id(guild, 'Server ID'); self.catalog._page(page)
+        await self.store.ensure_schema()
+        async with self.store.sessions() as s:
+            target = await self.catalog._release(s, guild, release_id)
+            query = select(StoreProduct, Product, Store).join(Product, Product.id == StoreProduct.product_id).join(
+                Store, Store.id == StoreProduct.store_id).where(func.lower(Product.game) == target.game.lower())
+            total = await s.scalar(select(func.count()).select_from(query.subquery()))
+            pages = max(1, (total + 2) // 3); page = min(page, pages)
+            rows = (await s.execute(query.order_by(StoreProduct.id).offset((page-1)*3).limit(3))).all()
+            ids = [o.id for o,p,t in rows]
+            links = {l.store_product_id:l for l in (await s.scalars(select(RetailerLink).where(
+                RetailerLink.guild_id == guild, RetailerLink.store_product_id.in_(ids)))).all()} if ids else {}
+            items = []
+            for offer, product, shop in rows:
+                decision = links.get(offer.id)
+                items.append({'offer': snapshot(offer), 'product': snapshot(product), 'store': snapshot(shop),
+                              'identity_candidate': related(target, product, offer),
+                              'title_format': product_format(product.name),
+                              'type_format': product_format(product.product_type or ''),
+                              'saved': snapshot(decision) if decision else None})
+            return {'release': snapshot(target), 'items': items, 'total': total,
+                    'page': page, 'pages': pages, 'has_more': page < pages}
