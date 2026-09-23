@@ -175,7 +175,7 @@ def compatible(c, row):
     )
 
 
-from .title_identity import title_relation
+from .title_identity import title_relation, PACK_NOTE
 
 
 def match(c, rows, sources, retailer=False):
@@ -228,8 +228,26 @@ def match(c, rows, sources, retailer=False):
     # Additional retailer title candidates never erase differing/missing counts,
     # even if another identity signal (code/SKU/source URL) also agrees.
     relation = title_relation(c.title, row.title) if retailer else None
-    if relation in ('PACK_COUNT_REVIEW', 'PACK_COUNT_CONFLICT'):
+    if relation == 'PACK_COUNT_CONFLICT':
         return None, relation
+    if relation == 'PACK_COUNT_REVIEW':
+        counts = PACK_NOTE.findall(c.title or '') + PACK_NOTE.findall(row.title or '')
+        expected = getattr(row, 'reported_packs_per_box', None)
+        supported = False
+        # SET bundles use packs_per_box only if the admin explicitly supplies that
+        # field; absent or ambiguous evidence never clears the count guard.
+        for source in sources:
+            if source.release_id != row.id or source.kind not in ('PUBLISHER','DISTRIBUTOR'):
+                continue
+            try:
+                data = json.loads(source.note)
+                if isinstance(data, dict) and data.get('catalog_enrichment_v1', {}).get('packs_per_box') == expected and expected is not None:
+                    supported = True
+            except (ValueError, TypeError, AttributeError):
+                continue
+        if not counts or not supported or any(int(n) != expected for n in counts):
+            return None, 'PACK_COUNT_REVIEW'
+
 
     if c.product_format == "UNKNOWN" or row.product_format == "UNKNOWN":
         return None, "FORMAT_REQUIRED_FOR_MATCH"
