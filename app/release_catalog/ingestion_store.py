@@ -175,6 +175,9 @@ def compatible(c, row):
     )
 
 
+from .title_identity import title_relation
+
+
 def match(c, rows, sources, retailer=False):
     ids = {
         source.release_id
@@ -210,6 +213,7 @@ def match(c, rows, sources, retailer=False):
             if (
                 (c.set_code and c.set_code == release_code)
                 or norm(c.title) == norm(row.title)
+                or (retailer and title_relation(c.title, row.title) is not None)
                 or sku
             ):
                 found.append(row)
@@ -220,6 +224,12 @@ def match(c, rows, sources, retailer=False):
         return None, None
 
     row = found[0]
+
+    # Additional retailer title candidates never erase differing/missing counts,
+    # even if another identity signal (code/SKU/source URL) also agrees.
+    relation = title_relation(c.title, row.title) if retailer else None
+    if relation in ('PACK_COUNT_REVIEW', 'PACK_COUNT_CONFLICT'):
+        return None, relation
 
     if c.product_format == "UNKNOWN" or row.product_format == "UNKNOWN":
         return None, "FORMAT_REQUIRED_FOR_MATCH"
@@ -303,7 +313,7 @@ class IngestionStore:
             )
 
         if type(interval) is not int or not 15 <= interval <= 10080:
-            raise CatalogError("Interval must be 15–10080 minutes.")
+            raise CatalogError("Interval must be 15ā€“10080 minutes.")
 
         if type(auto) is not bool:
             raise CatalogError(
