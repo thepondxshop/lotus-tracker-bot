@@ -7,7 +7,8 @@ from .service import Release, CatalogError, identity, snapshot, positive_id, utc
 from .ingestion_store import RetailerLink, match
 from .extraction import Candidate, CODE, canonical_url, code, languages, norm, product_format, scope
 
-VERSION = '1.5.2-preview'
+VERSION = '1.5.3-preview'
+from .title_identity import title_relation
 
 
 def related(row, product, offer):
@@ -18,7 +19,7 @@ def related(row, product, offer):
         target_codes.add(code(row.set_code))
     sku = bool(offer.sku and re.search(
         rf'(?i)\bSKU["\s]*:\s*["\s]*{re.escape(offer.sku)}(?![A-Z0-9])', row.reported_details))
-    return bool(norm(row.title) == norm(product.name) or codes & target_codes or sku)
+    return bool(title_relation(row.title, product.name) is not None or codes & target_codes or sku)
 
 
 def evaluate_offer(offer, product, shop, releases, sources):
@@ -125,6 +126,8 @@ class RadarDiagnostics:
                 else:
                     current=reason or 'NO_COMPATIBLE_RELEASE (check format, region, language and identity)'
                 items.append({'store':shop.name,'title':product.name,'url':offer.url,'product_id':offer.id,
+                              'title_relation':title_relation(target.title,product.name),
+                              'catalog_scope_missing':any(scope(getattr(target,k))=='unknown' for k in ('region','language')),
                               'current':current,'other_release':found.id if found and found.id!=release_id else None,
                               'saved_state':saved.state if saved else 'NO_SAVED_DECISION',
                               'saved_reason':json.loads(saved.details_json).get('reason') if saved else None,
