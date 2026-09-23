@@ -9,7 +9,8 @@ from discord import app_commands
 from .commands import safe
 from .extraction import GAMES
 from .radar import ReleaseRadar
-from .radar_diagnostics import RadarDiagnostics, VERSION
+from .radar_diagnostics import RadarDiagnostics
+VERSION = "1.5.4-preview"
 from .service import CatalogError
 
 LOG = logging.getLogger(__name__)
@@ -354,3 +355,25 @@ class RadarCommands(app_commands.Group):
     async def offers(self, interaction: discord.Interaction, release_id: app_commands.Range[int, 1],
                      page: app_commands.Range[int, 1, 10000] = 1):
         await self.open(interaction, lambda p: self.diagnostics.offers(interaction.guild_id,release_id,p), offers_embed, page)
+
+
+    @app_commands.command(name='enrich', description='Record source-reviewed packaging or edition facts without confirming a date')
+    async def enrich_command(self, interaction: discord.Interaction, release_id: app_commands.Range[int,1],
+                             source_id: app_commands.Range[int,1], reviewed: bool, note: str,
+                             cards_per_pack: app_commands.Range[int,1,10000] | None = None,
+                             packs_per_box: app_commands.Range[int,1,10000] | None = None,
+                             boxes_per_case: app_commands.Range[int,1,10000] | None = None,
+                             region: str | None = None, language: str | None = None):
+        if not await self.interaction_check(interaction):return
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        try:
+            from .enrichment import enrich
+            row=await enrich(self.root.watch_group.store,interaction.guild_id,interaction.user.id,
+                             release_id,source_id,reviewed,note,cards_per_pack=cards_per_pack,
+                             packs_per_box=packs_per_box,boxes_per_case=boxes_per_case,region=region,language=language)
+            result=card(f"Evidence enrichment saved • #{release_id}",safe(row['title'],180))
+            result.add_field(name='Saved packaging',value=f"Cards/pack: {row['reported_cards_per_pack']} • Packs/display: {row['reported_packs_per_box']} • Displays/case: {row['reported_boxes_per_case']}",inline=False)
+            result.add_field(name='Edition',value=safe(row['region']+' / '+row['language'],120),inline=False)
+            result.add_field(name='Provenance',value=f"Admin attestation to source #{source_id}. History: /release history release_id:{release_id}\nDate/status unchanged; no stock alert sent. Recheck /release radar diagnose.",inline=False)
+            await interaction.followup.send(embed=result,ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error:await self.failure(interaction,error)
