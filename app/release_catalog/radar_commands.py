@@ -71,9 +71,11 @@ def diagnostic_embed(data):
     out=card(f"Retailer diagnosis • #{row['id']}", safe(row['title'],180)+
              f"\nInspected {data['examined']} newest saved offers for this game. "
              + ('Search limited to 1,000 offers; older offers were not examined.' if data['limited'] else 'All currently saved offers for this game were examined.')+
-             '\nCandidates share a set code, exact normalized title, or reported SKU. Other naming variations may be missed.')
+             '\nCandidates share a code, SKU, or narrowly comparable title. Pack annotations remain review-only; other naming variations may be missed.')
     for item in data['items']:
         value=(f"{safe(item['title'],150)}\nCurrent evaluation: {safe(item['current'],150)}\n"
+               f"Title comparison: {safe(item.get('title_relation') or 'Other identity evidence',60)}\n"
+               f"Catalog region/language incomplete: {'Yes' if item.get('catalog_scope_missing') else 'No'}\n"
                f"Saved decision: {safe(item['saved_state'],40)} • {safe(item['saved_reason'] or 'No saved reason',90)}\n"
                f"Last match check: {safe(item['checked_at'] or 'Not recorded',40)}\n"
                + (f"Other release: #{item['other_release']}\n" if item['other_release'] else '')
