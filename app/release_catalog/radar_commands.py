@@ -10,7 +10,7 @@ from .commands import safe
 from .extraction import GAMES
 from .radar import ReleaseRadar
 from .radar_diagnostics import RadarDiagnostics
-VERSION = "1.5.5-preview"
+VERSION = "1.5.6-preview"
 from .service import CatalogError
 
 LOG = logging.getLogger(__name__)
@@ -400,6 +400,23 @@ class RadarCommands(app_commands.Group):
                 f"Updated reasons: /release radar diagnose release_id:{release_id}\n"
                 f"Audit: /release history release_id:{release_id}\nNo live stock scan or alert was sent.")
             await interaction.followup.send(embed=result,ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error: await self.failure(interaction,error)
+
+
+
+    @app_commands.command(name='preview', description='Privately preview a release or saved preorder listing; no publishing')
+    @app_commands.choices(kind=[app_commands.Choice(name='Release update',value='RELEASE'), app_commands.Choice(name='Preorder listing',value='PREORDER')])
+    @app_commands.describe(store_product_id='For PREORDER: product ID from /release radar offers')
+    async def preview(self, interaction: discord.Interaction, release_id: app_commands.Range[int,1],
+                      kind: str = 'RELEASE', store_product_id: app_commands.Range[int,1] | None = None):
+        if not await self.interaction_check(interaction): return
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        try:
+            from .alert_preview import build_preview, preview_embeds
+            data = await build_preview(self.radar,self.root.watch_group.store,interaction.guild_id,
+                                       release_id,kind,store_product_id)
+            await interaction.followup.send(embeds=preview_embeds(data),ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
         except Exception as error: await self.failure(interaction,error)
 
 
