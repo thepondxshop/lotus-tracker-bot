@@ -10,7 +10,7 @@ from .commands import safe
 from .extraction import GAMES
 from .radar import ReleaseRadar
 from .radar_diagnostics import RadarDiagnostics
-VERSION = "1.5.4-preview"
+VERSION = "1.5.5-preview"
 from .service import CatalogError
 
 LOG = logging.getLogger(__name__)
@@ -377,3 +377,59 @@ class RadarCommands(app_commands.Group):
             result.add_field(name='Provenance',value=f"Admin attestation to source #{source_id}. History: /release history release_id:{release_id}\nDate/status unchanged; no stock alert sent. Recheck /release radar diagnose.",inline=False)
             await interaction.followup.send(embed=result,ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
         except Exception as error:await self.failure(interaction,error)
+
+
+    @app_commands.command(name='reviews', description='Browse pending retailer identity decisions from saved observations')
+    @app_commands.choices(game=[app_commands.Choice(name=g,value=g) for g,_ in GAMES])
+    async def reviews(self, interaction: discord.Interaction, game: str | None = None,
+                      page: app_commands.Range[int,1,10000] = 1):
+        from .retailer_review import RetailerReview
+        await self.open(interaction, lambda p: RetailerReview(self.root.watch_group.store).pending(interaction.guild_id,game,p), reviews_embed, page)
+
+    @app_commands.command(name='recheck', description='Save fresh retailer match decisions for one release; no stock scans or alerts')
+    async def recheck(self, interaction: discord.Interaction, release_id: app_commands.Range[int,1]):
+        if not await self.interaction_check(interaction): return
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        try:
+            from .retailer_review import RetailerReview
+            d = await RetailerReview(self.root.watch_group.store).recheck(interaction.guild_id,interaction.user.id,release_id)
+            result = card(f'Retailer recheck saved • #{release_id}',
+                f"Saved offers examined: {d['examined']}\nDecisions refreshed: {d['checked']}\n"
+                f"Matched: {d['matched']} • Review: {d['review']} • Unmatched: {d['unmatched']}\nDisabled-store candidates skipped: {d['disabled']}\n\n"
+                f"Matches are evaluated against the full catalog and may resolve to another release.\n"
+                f"Updated reasons: /release radar diagnose release_id:{release_id}\n"
+                f"Audit: /release history release_id:{release_id}\nNo live stock scan or alert was sent.")
+            await interaction.followup.send(embed=result,ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error: await self.failure(interaction,error)
+
+
+def review_hint(reason):
+    if reason == 'EDITION_REQUIRED_FOR_MATCH':
+        return 'Add source-supported region/language with /release radar enrich, then recheck.'
+    if 'PACK_COUNT' in reason:
+        return 'Review pack counts against distributor/publisher packaging evidence.'
+    if 'FORMAT' in reason:
+        return 'Compare product packaging and retailer product type; resolve conflicting formats.'
+    if 'LANGUAGE' in reason or 'EDITION' in reason:
+        return 'Review conflicting edition/language evidence before changing the catalog.'
+    if reason == 'READY_TO_SAVE':
+        return 'Run /release radar recheck to save the current decision.'
+    return 'Use diagnose and sources to review identity and competing catalog records.'
+
+
+def reviews_embed(data):
+    lines = [f"Read-only • {data['examined']} newest saved offers from enabled stores examined.",
+             'Coverage limited to 1,000 offers; filter by game to narrow the search.' if data['limited'] else 'All saved offers within this store/game filter examined.',
+             'Only identity candidates are shown; undiscovered listings and unrelated titles are outside this view.']
+    for item in data['items']:
+        candidates = item['candidates']
+        refs = '; '.join('#'+str(c['id'])+' missing: '+(', '.join(c['missing']) or 'none of region/language/format') for c in candidates[:3])
+        if len(candidates)>3: refs += f"; +{len(candidates)-3} other candidates"
+        lines.append(f"**{safe(item['store'],60)} • Product #{item['offer_id']}**\n{safe(item['title'],160)}\n"
+                     f"Current: {safe(item['reason'],100)}\n{safe(refs,260)}\n"
+                     f"Next: {review_hint(item['reason'])}\n"
+                     f"Saved: {safe(item['saved'],40)} • Checked: {item['checked_at'] or 'Never'}\n"
+                     f"Inspect: /release radar diagnose release_id:{candidates[0]['id']}")
+    if not data['items']: lines.append('No pending identity candidates in the inspected observations. This does not establish complete retailer coverage.')
+    lines.append(f"Page {data['page']} of {data['pages']} • {data['total']} pending offers\nAfter enrichment: /release radar recheck release_id:<ID>")
+    return card('Retailer match review queue', '\n\n'.join(lines))
