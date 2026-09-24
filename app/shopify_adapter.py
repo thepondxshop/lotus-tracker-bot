@@ -21,7 +21,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C8
+# Component Version 1.0.6-C9
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -1699,7 +1699,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C8"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C9"
 _STORE_CURRENCY_CACHE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
@@ -1741,6 +1741,7 @@ _COLLECTION_MEMBERSHIP_CACHE = {}
 _COLLECTION_ROTATION_CURSOR = {}
 _HEAD_LAST_ATTEMPT = {}
 _LAST_PRIORITY_CHECK = {}
+_LAST_COLLECTION_CHECK = {}
 CATALOG_COLLECTIONS_PER_PASS = 2
 HEAD_REFRESH_SECONDS = 15
 
@@ -2237,6 +2238,104 @@ class ShopifyAdapter:
             connector=aiohttp.TCPConnector(limit=4, limit_per_host=2),
         ) as session:
             delivered_keys = set()
+            # Keep the strongest release collection hot; rotate the remaining
+            # slot without increasing the two-collection request budget.
+            priority_collections = await self._discover_priority_collections(session)
+            if on_batch is not None and priority_collections:
+                hot = next((row for row in priority_collections if any(term in
+                    (row[1] + " " + row[2]).lower() for term in
+                    ("preorder", "pre-order", "pre order", "new-arrivals", "new arrivals"))), None)
+                rotating = [row for row in priority_collections if row != hot]
+                slots = CATALOG_COLLECTIONS_PER_PASS - (1 if hot else 0)
+                start = _COLLECTION_ROTATION_CURSOR.get(self.domain, 0) % max(1, len(rotating))
+                chosen = ([hot] if hot else []) + [rotating[(start+i) % len(rotating)]
+                    for i in range(min(slots, len(rotating)))]
+                _COLLECTION_ROTATION_CURSOR[self.domain] = (start + slots) % max(1, len(rotating))
+                priority_collections = chosen
+
+            for _, handle, title in priority_collections:
+                source_label = "COLLECTION:" + handle
+                membership_key = (self.domain, handle)
+                previous_members = _COLLECTION_MEMBERSHIP_CACHE.get(membership_key)
+                current_members = set()
+                collection_complete = True
+                successful_pages = 0
+                collection_started = time.monotonic()
+                previous_check = _LAST_COLLECTION_CHECK.get(membership_key)
+                _LAST_COLLECTION_CHECK[membership_key] = collection_started
+                print(f"SHOPIFY COLLECTION TIMING | UTC={datetime.now(timezone.utc).isoformat()} | "
+                      f"Store={self.domain} | Collection={handle} | "
+                      f"RevisitSeconds={round(collection_started-previous_check,3) if previous_check is not None else None}")
+
+                for page in range(1, MAX_COLLECTION_PAGES + 1):
+                    data = await self._get_json(
+                        session,
+                        (
+                            f"{self.base_url}/collections/{handle}/products.json"
+                            f"?limit=250&page={page}"
+                        ),
+                        purpose=f"PRIORITY_COLLECTION:{handle}:PAGE:{page}",
+                        required=False,
+                    )
+                    if not isinstance(data, dict):
+                        collection_complete = False
+                        break
+
+                    page_products = data.get("products", []) or []
+                    successful_pages += 1
+                    self.diagnostics["collection_pages_successful"] += 1
+                    self.diagnostics["collection_products_seen"] += len(page_products)
+
+                    if not page_products:
+                        break
+
+                    prepared = []
+                    for raw_product in page_products:
+                        if not isinstance(raw_product, dict):
+                            continue
+                        product = dict(raw_product)
+                        key = _product_dedupe_key(product)
+                        if key:
+                            current_members.add(key)
+                            if previous_members is not None and key not in previous_members:
+                                _append_new_collection_membership(product, handle)
+                                self.diagnostics["new_collection_memberships"] += 1
+                        prepared.append(product)
+
+                    await merge_products(prepared, source_label)
+                    # Publish each fetched page before waiting on other feeds.
+                    if on_batch is not None:
+                        fresh = [products_by_key[_product_dedupe_key(p)] for p in prepared
+                                 if _product_dedupe_key(p) in products_by_key
+                                 and _product_dedupe_key(p) not in delivered_keys]
+                        for offset in range(0, len(fresh), 100):
+                            await on_batch(fresh[offset:offset+100], source_label)
+                        delivered_keys.update(_product_dedupe_key(p) for p in fresh)
+
+                    if len(page_products) < 250:
+                        break
+                    if page == MAX_COLLECTION_PAGES:
+                        # We intentionally cap large collections. The first
+                        # 500 entries remain useful, but do not pretend this
+                        # was a complete membership snapshot.
+                        collection_complete = False
+
+                if successful_pages:
+                    # Ever-observed membership: slice movement is not a new
+                    # listing. Preserve additions even when the feed is capped
+                    # or a later page fails. Stock transitions remain separate.
+                    _COLLECTION_MEMBERSHIP_CACHE[membership_key] = (
+                        (previous_members or set()) | current_members
+                    )
+
+            # Finish merging collection memberships before publishing them.
+            # Each product is processed once per pass, even across overlaps.
+            if on_batch is not None:
+                priority_products = [v for k,v in products_by_key.items() if k not in delivered_keys] + anonymous_products
+                for offset in range(0, len(priority_products), 100):
+                    await on_batch(priority_products[offset:offset + 100], "PRIORITY_COLLECTIONS")
+                delivered_keys.update(products_by_key)
+
             if on_batch is not None:
                 from app.shopify_priority import ajax_product
                 for handle in priority_handles:
@@ -2246,6 +2345,8 @@ class ShopifyAdapter:
                     if shopify_cooldown_remaining(self.domain): break
                     if self.domain not in _STORE_CURRENCY_CACHE:
                         print(f"SHOPIFY PRIORITY CHECK | Store={self.domain} | Handle={handle} | Result=CURRENCY_UNVERIFIED")
+                        continue
+                    if any(p.get('handle') == handle for p in products_by_key.values()):
                         continue
                     requested = time.monotonic()
                     previous_check = _LAST_PRIORITY_CHECK.get((self.domain,handle))
@@ -2286,83 +2387,6 @@ class ShopifyAdapter:
                         if _GENERAL_FEED_CURSOR.get(self.domain,1)==1:
                             _GENERAL_FEED_CURSOR[self.domain] = 2 if len(rows)>=250 else 1
                             if len(rows)<250: _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain]=time.monotonic()
-
-            # Rotate bounded collection work; direct checks happen before discovery.
-            priority_collections = await self._discover_priority_collections(session)
-            if on_batch is not None and priority_collections:
-                start = _COLLECTION_ROTATION_CURSOR.get(self.domain,0) % len(priority_collections)
-                count = min(CATALOG_COLLECTIONS_PER_PASS,len(priority_collections))
-                chosen = [priority_collections[(start+i)%len(priority_collections)] for i in range(count)]
-                _COLLECTION_ROTATION_CURSOR[self.domain]=(start+count)%len(priority_collections)
-                priority_collections=chosen
-
-            for _, handle, title in priority_collections:
-                source_label = "COLLECTION:" + handle
-                membership_key = (self.domain, handle)
-                previous_members = _COLLECTION_MEMBERSHIP_CACHE.get(membership_key)
-                current_members = set()
-                collection_complete = True
-                successful_pages = 0
-
-                for page in range(1, MAX_COLLECTION_PAGES + 1):
-                    data = await self._get_json(
-                        session,
-                        (
-                            f"{self.base_url}/collections/{handle}/products.json"
-                            f"?limit=250&page={page}"
-                        ),
-                        purpose=f"PRIORITY_COLLECTION:{handle}:PAGE:{page}",
-                        required=False,
-                    )
-                    if not isinstance(data, dict):
-                        collection_complete = False
-                        break
-
-                    page_products = data.get("products", []) or []
-                    successful_pages += 1
-                    self.diagnostics["collection_pages_successful"] += 1
-                    self.diagnostics["collection_products_seen"] += len(page_products)
-
-                    if not page_products:
-                        break
-
-                    prepared = []
-                    for raw_product in page_products:
-                        if not isinstance(raw_product, dict):
-                            continue
-                        product = dict(raw_product)
-                        key = _product_dedupe_key(product)
-                        if key:
-                            current_members.add(key)
-                            if previous_members is not None and key not in previous_members:
-                                _append_new_collection_membership(product, handle)
-                                self.diagnostics["new_collection_memberships"] += 1
-                        prepared.append(product)
-
-                    await merge_products(prepared, source_label)
-
-                    if len(page_products) < 250:
-                        break
-                    if page == MAX_COLLECTION_PAGES:
-                        # We intentionally cap large collections. The first
-                        # 500 entries remain useful, but do not pretend this
-                        # was a complete membership snapshot.
-                        collection_complete = False
-
-                if successful_pages and collection_complete:
-                    _COLLECTION_MEMBERSHIP_CACHE[membership_key] = current_members
-                elif successful_pages and previous_members is None:
-                    # Baseline the observed slice only; additions to that
-                    # slice can still be detected on later scans.
-                    _COLLECTION_MEMBERSHIP_CACHE[membership_key] = current_members
-
-            # Finish merging collection memberships before publishing them.
-            # Each product is processed once per pass, even across overlaps.
-            if on_batch is not None:
-                priority_products = [v for k,v in products_by_key.items() if k not in delivered_keys] + anonymous_products
-                for offset in range(0, len(priority_products), 100):
-                    await on_batch(priority_products[offset:offset + 100], "PRIORITY_COLLECTIONS")
-                delivered_keys.update(products_by_key)
 
             # =================================================
             # 2. GENERAL PRODUCT FEED — THIRTY-SECOND REFRESH TARGET
