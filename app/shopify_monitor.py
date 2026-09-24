@@ -533,7 +533,9 @@ def save_inventory_platform_data(
 
     if discovery_sources is not None:
 
-        normalized_sources = []
+        # Discovery is historical evidence, not a complete membership snapshot.
+        # General/direct feeds must not erase previously observed collections.
+        normalized_sources = sorted(get_previous_discovery_sources(store_product))
 
         for source in (
             discovery_sources
@@ -1632,7 +1634,7 @@ async def _scan_shopify_store_unlocked(store):
                 totals[key] = totals.get(key, 0) + value
             else:
                 totals[key] = value
-        print(f"SHOPIFY BATCH TIMING | Store={store.name} | Source={source} | "
+        print(f"SHOPIFY BATCH TIMING | UTC={datetime.utcnow().isoformat()}Z | Store={store.name} | Source={source} | "
               f"Products={len(products)} | BatchSeconds={time.monotonic()-batch_started:.3f} | "
               f"PassElapsedSeconds={time.monotonic()-started:.3f} | Events={result.get('events', 0)}")
 
