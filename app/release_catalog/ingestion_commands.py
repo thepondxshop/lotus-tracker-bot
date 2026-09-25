@@ -200,7 +200,7 @@ class ReleaseWatchCommands(app_commands.Group):
     @app_commands.command(name='status',description='Check the installed ingestion version and background worker')
     async def status(self,interaction:discord.Interaction):
         from .commands import embed,safe
-        await self.root._run(interaction,lambda:self.runner.status(interaction.guild_id),lambda r:embed('Release ingestion status','\n'.join(f"{k.replace('_',' ').title()}: {safe(v,100)}" for k,v in r.items())+'\n\nExtraction: deterministic public product data\nRetailer matching: existing monitor database, in batches\nAI model calls: OFF\nRelease/preorder alert publishing: OFF'))
+        await self.root._run(interaction,lambda:self.runner.status(interaction.guild_id),lambda r:embed('Release ingestion status','\n'.join(f"{k.replace('_',' ').title()}: {safe(v,100)}" for k,v in r.items())+'\n\nExtraction: deterministic public product data\nRetailer matching: existing monitor database, in batches\nAI model calls: OFF\nPublishing settings: /release radar publishing'))
     @staticmethod
     def items_embed(data,title):
         from .commands import embed,safe
