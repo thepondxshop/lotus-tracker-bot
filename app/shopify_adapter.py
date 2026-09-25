@@ -22,7 +22,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C10
+# Component Version 1.0.6-C11
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -1700,9 +1700,11 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C10"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C11"
 _STORE_CURRENCY_CACHE = {}
+_CURRENCY_REFRESH_NOT_BEFORE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
+CURRENCY_RETRY_SECONDS = 1800
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
 SHOPIFY_MAX_5XX_RETRIES = 2
 SHOPIFY_MAX_BACKOFF_SECONDS = 30.0
@@ -1734,6 +1736,7 @@ _DOMAIN_REQUEST_LOCKS = {}
 _DOMAIN_LAST_REQUEST_AT = {}
 _DOMAIN_RETRY_NOT_BEFORE = {}
 _DOMAIN_THROTTLE_FAILURES = {}
+_DOMAIN_LAST_RATE_LIMIT = {}
 _PRIORITY_COLLECTION_CACHE = {}
 _GENERAL_FEED_LAST_ATTEMPT_AT = {}
 _GENERAL_FEED_CURSOR = {}
@@ -1881,6 +1884,18 @@ def shopify_cooldown_remaining(domain):
     return max(0.0,_DOMAIN_RETRY_NOT_BEFORE.get(normalize_shopify_domain(domain),0.0)-time.monotonic())
 
 
+def shopify_last_rate_limit(domain):
+    """Last actual HTTP response, retained when a later request only skips."""
+    return dict(_DOMAIN_LAST_RATE_LIMIT.get(normalize_shopify_domain(domain), {}))
+
+
+def _header_summary(headers):
+    # Deliberate allowlist: never log cookies, authorization, or response bodies.
+    names = ('Retry-After', 'Server', 'Age', 'CF-Ray', 'X-Cache', 'X-Request-ID')
+    return {name: re.sub(r'[\r\n|]', ' ', str(headers.get(name)))[:120]
+            for name in names if headers.get(name) is not None}
+
+
 class ShopifyAdapter:
 
     def __init__(
@@ -1985,8 +2000,14 @@ class ShopifyAdapter:
                             self.diagnostics["cooldown_remaining_seconds"]=wait_seconds
                             self.diagnostics["rate_limit_exhausted"]+=1
                             self.diagnostics["partial_due_to_rate_limit"]=1
+                            evidence = dict(at=datetime.now(timezone.utc).isoformat(),
+                                            purpose=purpose, path=urlparse(url).path,
+                                            wait_seconds=wait_seconds,
+                                            headers=_header_summary(response.headers))
+                            _DOMAIN_LAST_RATE_LIMIT[self.domain] = evidence
                             print("SHOPIFY DOMAIN COOLDOWN | "
-                                  f"Store={self.domain} | Purpose={purpose} | Wait={wait_seconds:.1f}s | ImmediateRetries=0")
+                                  f"Store={self.domain} | Purpose={purpose} | Wait={wait_seconds:.1f}s | ImmediateRetries=0 | "
+                                  f"Evidence={json.dumps(evidence, ensure_ascii=True)}")
                             if required:
                                 raise ShopifyRateLimitError(429,f"Store rate-limited; cooldown {wait_seconds:.1f}s",url=url,purpose=purpose)
                             return None
@@ -2048,9 +2069,19 @@ class ShopifyAdapter:
 
     async def fetch_store_currency(self):
         cached = _STORE_CURRENCY_CACHE.get(self.domain)
-        if cached and time.monotonic() - cached[0] < STORE_CURRENCY_CACHE_SECONDS:
+        now = time.monotonic()
+        if cached:
             self.currency = cached[1]
+        if cached and now - cached[0] < STORE_CURRENCY_CACHE_SECONDS:
             return self.currency
+        # Optional cart metadata must not win every post-cooldown attempt.
+        # Retain the last verified value without pretending it was refreshed.
+        if (shopify_pacing.recovering(self.domain)
+                or shopify_cooldown_remaining(self.domain) > 0
+                or now < _CURRENCY_REFRESH_NOT_BEFORE.get(self.domain, 0)):
+            self.diagnostics['currency_refresh_deferred'] = True
+            return self.currency
+        _CURRENCY_REFRESH_NOT_BEFORE[self.domain] = now + CURRENCY_RETRY_SECONDS
         url = f"{self.base_url}/cart.js"
         timeout = aiohttp.ClientTimeout(total=20)
         headers = {
@@ -2071,6 +2102,7 @@ class ShopifyAdapter:
                     if currency:
                         self.currency = str(currency).strip().upper()
                         _STORE_CURRENCY_CACHE[self.domain] = (time.monotonic(), self.currency)
+                        _CURRENCY_REFRESH_NOT_BEFORE.pop(self.domain, None)
         except Exception as error:
             print(
                 "SHOPIFY CURRENCY DETECTION ERROR | "
@@ -2252,7 +2284,10 @@ class ShopifyAdapter:
             delivered_keys = set()
             # Keep the strongest release collection hot; rotate the remaining
             # slot without increasing the two-collection request budget.
-            priority_collections = await self._discover_priority_collections(session)
+            # A recovery pass gets one small product head, even when an old
+            # collection exists. Cart/sitemap/collection failures cannot consume
+            # every attempt before the product feed is reached.
+            priority_collections = [] if recovery else await self._discover_priority_collections(session)
             if on_batch is not None and priority_collections:
                 hot = next((row for row in priority_collections if any(term in
                     (row[1] + " " + row[2]).lower() for term in
@@ -2416,10 +2451,10 @@ class ShopifyAdapter:
             )
 
             if recovery:
-                # A usable collection page is enough for this recovery pass.
-                # Otherwise revisit the general head, preserving the deep cursor.
-                run_general = not self.diagnostics['collection_pages_successful']
+                # Recovery checks the small head and preserves the deep cursor.
+                run_general = True
                 cursor = 1
+            page_limit = 25 if recovery else 250
             general_pages = 0
             if run_general:
                 # Set this before requesting so a rate-limited general scan is
@@ -2433,7 +2468,7 @@ class ShopifyAdapter:
                     existing_product_count = len(products_by_key) + len(anonymous_products)
                     data = await self._get_json(
                         session,
-                        f"{self.base_url}/products.json?limit=250&page={page}",
+                        f"{self.base_url}/products.json?limit={page_limit}&page={page}",
                         purpose=f"GENERAL_PRODUCTS_PAGE_{page}",
                         required=(existing_product_count == 0 and page == 1),
                     )
