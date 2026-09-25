@@ -58,7 +58,7 @@ def notice_embed(n):
     e.add_field(name='Admin review', value=text[:1000], inline=False)
     e.add_field(name='Availability', value='Release/source discovery only. This is not a stock or purchasable-preorder confirmation.', inline=False)
     ref = f"Release #{n['release_id']}" if n.get('release_id') else 'Unmatched source lead'
-    e.set_footer(text=f"Lotus Release Radar 1.6.0 • Alert #{n['id']} • {ref}")
+    e.set_footer(text=f"Lotus Release Radar 1.6.1 • Alert #{n['id']} • {ref}")
     return e
 
 
