@@ -10,7 +10,7 @@ from .commands import safe
 from .extraction import GAMES
 from .radar import ReleaseRadar
 from .radar_diagnostics import RadarDiagnostics
-VERSION = "1.5.6-preview"
+VERSION = "1.6.0"
 from .service import CatalogError
 
 LOG = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def link(url):
 
 def card(title, description=''):
     out = discord.Embed(title=title, description=description, colour=0x667ACD)
-    out.set_footer(text=f'Release Radar {VERSION} • Admin preview • Release/preorder publishing OFF')
+    out.set_footer(text=f'Release Radar {VERSION} • Admin tools • Publishing: /release radar publishing')
     return out
 
 
@@ -403,6 +403,89 @@ class RadarCommands(app_commands.Group):
         except Exception as error: await self.failure(interaction,error)
 
 
+
+    @app_commands.command(name='publishing', description='Configure automatic release leads or inspect publishing health')
+    async def publishing(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None,
+                         enabled: bool | None = None):
+        if not await self.interaction_check(interaction): return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            publisher = self.root.publisher
+            current = await publisher.store.settings(interaction.guild_id)
+            if channel is not None or enabled is not None:
+                cfg = current['configuration']
+                if channel is None and cfg:
+                    channel = interaction.guild.get_channel(cfg['channel_id'])
+                if channel is None:
+                    raise CatalogError('Choose the destination channel once, for example /release radar publishing channel:#release-radar enabled:True.')
+                if channel.guild.id != interaction.guild_id:
+                    raise CatalogError('Choose a channel in this server.')
+                perms = channel.permissions_for(interaction.guild.me)
+                if not all(getattr(perms, name, False) for name in ('view_channel', 'send_messages', 'embed_links', 'read_message_history')):
+                    raise CatalogError('The bot needs View Channel, Send Messages, Embed Links and Read Message History in that channel.')
+                await publisher.store.configure(interaction.guild_id, interaction.user.id, channel.id,
+                    enabled if enabled is not None else bool(cfg and cfg['enabled']))
+                current = await publisher.store.settings(interaction.guild_id)
+            cfg = current['configuration']
+            text = (f"Automatic publishing: {'ON' if cfg and cfg['enabled'] else 'OFF'}\n"
+                    f"Channel: {('<#'+str(cfg['channel_id'])+'>') if cfg else 'Not configured'}\n"
+                    f"Worker: {publisher.state}\nLast tick (UTC): {publisher.last_tick or 'Not yet'}\n"
+                    f"Last worker error: {publisher.last_error or 'None'}\n"
+                    f"Delivery states: {safe(current['deliveries'],350)}\n\n"
+                    + ('Recent delivery notes:\n' + '\n'.join(f"Alert #{x['id']} • {x['state']} • {x['error']}" for x in current['errors']) + '\n\n' if current['errors'] else '') +
+                    'New leads publish automatically, including uncertain and unmatched source leads. Admin review follows publication.\n'
+                    'First setup baselines existing records. To post one existing record: /release radar announce release_id:<ID>.\n'
+                    'Pause with enabled:False. Review buttons keep working while paused.\n'
+                    'Retailer stock/preorder alerts continue through their existing worker.\n'
+                    'UNCERTAIN means a delivery acknowledgement was lost; the worker searches for the original instead of blindly duplicating it.')
+            await interaction.followup.send(embed=card('Automatic release publishing',text), ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error: await self.failure(interaction,error)
+
+    @app_commands.command(name='announce', description='Queue one existing release lead; repeat calls reuse its original alert')
+    async def announce(self, interaction: discord.Interaction, release_id: app_commands.Range[int,1]):
+        if not await self.interaction_check(interaction): return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            notice = await self.root.publisher.store.queue_existing(interaction.guild_id, release_id)
+            await interaction.followup.send(f"Alert #{notice['id']} • {notice['state']}. The automatic publisher handles delivery. Existing messages are reused.",
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error: await self.failure(interaction,error)
+
+    @app_commands.command(name='reviewlog', description='Inspect saved admin decisions for a public release alert')
+    async def reviewlog(self, interaction: discord.Interaction, alert_id: app_commands.Range[int,1]):
+        if not await self.interaction_check(interaction): return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            import json
+            rows = await self.root.publisher.store.audit(interaction.guild_id,alert_id)
+            lines = []
+            for row in rows:
+                d = json.loads(row['details_json'])
+                lines.append(f"{row['recorded_at']} • Admin {row['actor_id']} • {row['action']}\n"
+                    + safe(f"{d.get('field') or 'Review'}: {d.get('value') or 'No replacement'} • {d.get('note') or 'No note'}",260))
+            await interaction.followup.send(embed=card(f'Alert #{alert_id} • latest reviews','\n\n'.join(lines) or 'No admin reviews yet.'),
+                ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error: await self.failure(interaction,error)
+
+    @app_commands.command(name='reconcile', description='Attach a delivered bot message after a lost delivery acknowledgement')
+    async def reconcile(self, interaction: discord.Interaction, alert_id: app_commands.Range[int,1], message_id: str):
+        if not await self.interaction_check(interaction): return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if not message_id.isdigit(): raise CatalogError('Supply the Discord message ID.')
+            publisher = self.root.publisher
+            n = await publisher.store.refresh(interaction.guild_id, alert_id)
+            channel = await publisher.channel(n)
+            msg = await channel.fetch_message(int(message_id))
+            marker = f' • Alert #{alert_id} • '
+            if msg.author.id != interaction.client.user.id or not any(marker in (e.footer.text or '') for e in msg.embeds):
+                raise CatalogError('This is not the original bot message for that alert.')
+            await publisher.store.delivery(interaction.guild_id, alert_id, state='SENT', message=msg.id)
+            await publisher.sync(await publisher.store.refresh(interaction.guild_id, alert_id))
+            await interaction.followup.send('Original message attached. No duplicate alert was sent.',ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error: await self.failure(interaction,error)
 
     @app_commands.command(name='preview', description='Privately preview a release or saved preorder listing; no publishing')
     @app_commands.choices(kind=[app_commands.Choice(name='Release update',value='RELEASE'), app_commands.Choice(name='Preorder listing',value='PREORDER')])
