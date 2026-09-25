@@ -12,6 +12,7 @@ from urllib.parse import (
 )
 
 import aiohttp
+from app import shopify_pacing
 
 from app.product_family import (
     detect_product_family,
@@ -21,7 +22,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C9
+# Component Version 1.0.6-C10
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -1699,7 +1700,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C9"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C10"
 _STORE_CURRENCY_CACHE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
 SHOPIFY_REQUEST_DELAY_SECONDS = 0.75
@@ -1942,8 +1943,9 @@ class ShopifyAdapter:
             while True:
                 last_request_at = _DOMAIN_LAST_REQUEST_AT.get(self.domain, 0.0)
                 elapsed = time.monotonic() - last_request_at
-                if elapsed < SHOPIFY_REQUEST_DELAY_SECONDS:
-                    await asyncio.sleep(SHOPIFY_REQUEST_DELAY_SECONDS - elapsed)
+                interval = max(SHOPIFY_REQUEST_DELAY_SECONDS, shopify_pacing.request_interval(self.domain))
+                if elapsed < interval:
+                    await asyncio.sleep(interval - elapsed)
 
                 self.diagnostics["requests_attempted"] += 1
 
@@ -1956,9 +1958,12 @@ class ShopifyAdapter:
                         if status == 200:
                             self.diagnostics["http_200"] += 1
                             if not expect_json:
+                                shopify_pacing.succeeded(self.domain)
                                 return body
                             try:
-                                return json.loads(body)
+                                data = json.loads(body)
+                                shopify_pacing.succeeded(self.domain)
+                                return data
                             except Exception as error:
                                 if required:
                                     raise ShopifyHTTPError(
@@ -1971,6 +1976,7 @@ class ShopifyAdapter:
 
                         if status == 429:
                             self.diagnostics["http_429"] += 1
+                            shopify_pacing.throttled(self.domain)
                             failures=_DOMAIN_THROTTLE_FAILURES.get(self.domain,0)
                             wait_seconds=_retry_after_seconds(response.headers.get("Retry-After"),failures)
                             _DOMAIN_THROTTLE_FAILURES[self.domain]=failures+1
@@ -2098,13 +2104,17 @@ class ShopifyAdapter:
     async def _discover_priority_collections(self, session):
         now = time.monotonic()
         cached = _PRIORITY_COLLECTION_CACHE.get(self.domain)
-        if cached and now - cached[0] < SHOPIFY_COLLECTION_CACHE_SECONDS:
+        if cached and (now - cached[0] < SHOPIFY_COLLECTION_CACHE_SECONDS or shopify_pacing.recovering(self.domain)):
             self.diagnostics["priority_collection_cache_hit"] = 1
             collections = list(cached[1])
             self.diagnostics["priority_collections"] = len(collections)
             self.diagnostics["priority_collection_handles"] = [c[1] for c in collections]
             return collections
 
+        # During recovery use a saved collection, or fall back to one product
+        # page. Do not spend recovery requests rediscovering the sitemap tree.
+        if shopify_pacing.recovering(self.domain):
+            return []
         candidates = {}
 
         def add_candidate(handle, title=""):
@@ -2188,6 +2198,8 @@ class ShopifyAdapter:
     async def fetch_products(self, max_pages=20, *, on_batch=None, priority_handles=()):
         products_by_key = {}
         anonymous_products = []
+        recovery = shopify_pacing.recovering(self.domain)
+        self.diagnostics['recovery_mode'] = recovery
 
         timeout = aiohttp.ClientTimeout(total=45)
         headers = {
@@ -2252,6 +2264,8 @@ class ShopifyAdapter:
                     for i in range(min(slots, len(rotating)))]
                 _COLLECTION_ROTATION_CURSOR[self.domain] = (start + slots) % max(1, len(rotating))
                 priority_collections = chosen
+            if recovery:
+                priority_collections = priority_collections[:1]
 
             for _, handle, title in priority_collections:
                 source_label = "COLLECTION:" + handle
@@ -2267,7 +2281,7 @@ class ShopifyAdapter:
                       f"Store={self.domain} | Collection={handle} | "
                       f"RevisitSeconds={round(collection_started-previous_check,3) if previous_check is not None else None}")
 
-                for page in range(1, MAX_COLLECTION_PAGES + 1):
+                for page in range(1, (1 if recovery else MAX_COLLECTION_PAGES) + 1):
                     data = await self._get_json(
                         session,
                         (
@@ -2336,7 +2350,7 @@ class ShopifyAdapter:
                     await on_batch(priority_products[offset:offset + 100], "PRIORITY_COLLECTIONS")
                 delivered_keys.update(products_by_key)
 
-            if on_batch is not None:
+            if on_batch is not None and not recovery:
                 from app.shopify_priority import ajax_product
                 for handle in priority_handles:
                     from app.event_listing_filter import is_event_listing
@@ -2401,14 +2415,20 @@ class ShopifyAdapter:
                 or now - last_general >= SHOPIFY_GENERAL_REFRESH_SECONDS
             )
 
+            if recovery:
+                # A usable collection page is enough for this recovery pass.
+                # Otherwise revisit the general head, preserving the deep cursor.
+                run_general = not self.diagnostics['collection_pages_successful']
+                cursor = 1
             general_pages = 0
             if run_general:
                 # Set this before requesting so a rate-limited general scan is
                 # not immediately retried by the next scheduled scan.
                 if on_batch is None:
                     _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = now
-                pages = (range(cursor, cursor + GENERAL_PAGES_PER_PASS)
-                         if on_batch is not None else range(1, max_pages + 1))
+                pages = (range(1, 2) if recovery else
+                         range(cursor, cursor + GENERAL_PAGES_PER_PASS) if on_batch is not None
+                         else range(1, max_pages + 1))
                 for page in pages:
                     existing_product_count = len(products_by_key) + len(anonymous_products)
                     data = await self._get_json(
@@ -2422,7 +2442,7 @@ class ShopifyAdapter:
 
                     page_products = data.get("products", []) or []
                     if not page_products:
-                        if on_batch is not None:
+                        if on_batch is not None and not recovery:
                             _GENERAL_FEED_CURSOR[self.domain] = 1
                             _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = time.monotonic()
                             self.diagnostics["general_sweep_complete"] = True
@@ -2450,9 +2470,10 @@ class ShopifyAdapter:
                         for offset in range(0, len(fresh), 100):
                             await on_batch(fresh[offset:offset + 100], f"GENERAL_PAGE_{page}")
                         # Advance only after every callback for this page succeeds.
-                        _GENERAL_FEED_CURSOR[self.domain] = page + 1
+                        if not recovery:
+                            _GENERAL_FEED_CURSOR[self.domain] = page + 1
                     if len(page_products) < 250:
-                        if on_batch is not None:
+                        if on_batch is not None and not recovery:
                             _GENERAL_FEED_CURSOR[self.domain] = 1
                             _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain] = time.monotonic()
                             self.diagnostics["general_sweep_complete"] = True
