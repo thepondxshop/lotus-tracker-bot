@@ -1,5 +1,5 @@
 discord.py
-SQLAlchemy
+SQLAlchemy[asyncio]
 asyncpg
 redis
 aiohttp
