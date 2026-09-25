@@ -55,6 +55,7 @@ from app.shopify_adapter import (
     ShopifyRateLimitError,
     normalize_shopify_domain,
     shopify_cooldown_remaining,
+    shopify_last_rate_limit,
 )
 
 from app.store_health import (
@@ -71,7 +72,7 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C10
+# Component Version 1.0.6-C11
 # Step 6K-2C4 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
@@ -3595,6 +3596,10 @@ async def run_health_recovery_probes():
 
     for store in stores:
 
+        # Active stores already have independent recovery attempts.
+        if store.active:
+            continue
+
         try:
 
             recovered = (
@@ -3864,7 +3869,7 @@ async def _run_scheduled_store(store_id):
 async def run_shopify_monitor():
     global _SCHEDULER_HEARTBEAT
     MONITOR_STATUS["running"] = True
-    print("Lotus Shopify Monitor 1.0.6-C10 started. Independent stores; adaptive recovery; max concurrent scans=4.")
+    print("Lotus Shopify Monitor 1.0.6-C11 started. Independent stores; adaptive recovery; max concurrent scans=4.")
     tasks = {}
     health_task = None
     last_health_probe = 0.0
@@ -3928,14 +3933,15 @@ def get_shopify_monitor_status():
                    overdue_seconds=round(max(0.0, now-due), 1) if due is not None else None,
                    phase_age_seconds=round(max(0.0, now-saved.get('phase_monotonic', now)), 1),
                    cooldown_seconds=round(shopify_cooldown_remaining(domain), 1),
+                   last_rate_limit=shopify_last_rate_limit(domain),
                    request_interval_seconds=shopify_pacing.request_interval(domain),
                    recovery_mode=shopify_pacing.recovering(domain))
         runtime.append(row)
     data.update({
-        'component_version': '1.0.6-C10',
+        'component_version': '1.0.6-C11',
         'scheduler_heartbeat_age_seconds': round(now-_SCHEDULER_HEARTBEAT, 1) if _SCHEDULER_HEARTBEAT is not None else None,
         'store_runtime': runtime,
-        "scheduler": "INDEPENDENT_STORES_C10",
+        "scheduler": "INDEPENDENT_STORES_C11",
         "target_interval_seconds": POLL_SECONDS,
         "max_concurrent_stores": MAX_CONCURRENT_STORE_SCANS,
         "background_scans": _BACKGROUND_SCANS,
