@@ -8104,113 +8104,12 @@ async def shopifystatus(
     interaction,
 ):
 
-    data = (
-        get_shopify_monitor_status()
-    )
-
-    worker_online = (
-        bot.shopify_monitor_task
-        is not None
-        and
-        not bot.shopify_monitor_task.done()
-    )
-
-    scan_in_progress = bool(
-        data.get("scan_in_progress")
-    )
-
-    embed = discord.Embed(
-        title="🛍️ Lotus Shopify Monitor",
-        description=(
-            f"**Worker:** "
-            f"{'✅ Online' if worker_online else '❌ Offline'}\n"
-            f"**Monitor Loop:** "
-            f"{'✅ Running' if data.get('running') else '❌ Stopped'}\n"
-            f"**Scan In Progress:** "
-            f"{'🟡 Yes' if scan_in_progress else '⚪ No'}\n"
-            f"**Active Shopify Stores:** "
-            f"`{data.get('active_shopify_stores', 0)}`\n"
-            f"**Last Outcome:** "
-            f"`{data.get('last_scan_outcome', 'NOT_YET')}`\n"
-            f"**Stores Scanned:** "
-            f"`{data.get('stores_scanned', 0)}`\n"
-            f"**Stores Failed:** "
-            f"`{data.get('stores_failed', 0)}`\n"
-            f"**TCG Products Seen:** "
-            f"`{data.get('products_seen', 0)}`\n"
-            f"**Events:** "
-            f"`{data.get('events_created', 0)}`\n"
-            f"**Flickers:** "
-            f"`{data.get('flickers_detected', 0)}`\n\n"
-            "**Rate Limit Protection:**\n"
-            f"429s: `{data.get('rate_limit_responses', 0)}` | "
-            f"Retries: `{data.get('rate_limit_retries', 0)}` | "
-            f"Backoff: "
-            f"`{data.get('rate_limit_backoff_seconds', 0)}s`\n"
-            f"Overlap Skips: "
-            f"`{data.get('scan_skipped_overlap', 0)}`\n\n"
-            "**Priority Discovery:**\n"
-            f"Collections: "
-            f"`{data.get('priority_collections', 0)}` | "
-            f"Collection Products: "
-            f"`{data.get('collection_products_seen', 0)}`\n"
-            f"General Products: "
-            f"`{data.get('general_products_seen', 0)}` | "
-            f"General Feed Skips: "
-            f"`{data.get('general_feed_skipped', 0)}`\n"
-            f"New Priority Memberships: "
-            f"`{data.get('new_priority_collection_memberships', 0)}` | "
-            f"Membership Alerts: "
-            f"`{data.get('priority_membership_alerts', 0)}`"
-        ),
-    )
-
-    embed.add_field(
-        name="Current Scan Started",
-        value=(
-            data.get("scan_started_at")
-            if scan_in_progress
-            else "Not scanning"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="Last Completed Scan",
-        value=(
-            data.get("last_scan")
-            or "Not yet"
-        ),
-        inline=False,
-    )
-
-    duration = data.get(
-        "scan_duration_seconds"
-    )
-
-    embed.add_field(
-        name="Last Scan Duration",
-        value=(
-            f"{duration}s"
-            if duration is not None
-            else "Not yet"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="Last Error",
-        value=(
-            str(data.get("last_error"))[:1000]
-            if data.get("last_error")
-            else "None ✅"
-        ),
-        inline=False,
-    )
-
+    from app.shopify_status import build_shopify_status
+    data = get_shopify_monitor_status()
+    worker_online = bot.shopify_monitor_task is not None and not bot.shopify_monitor_task.done()
     await interaction.response.send_message(
-        embed=embed,
-        ephemeral=True,
+        embed=build_shopify_status(data, worker_online), ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
     )
 
 
