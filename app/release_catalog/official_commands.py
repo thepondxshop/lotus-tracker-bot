@@ -13,6 +13,40 @@ class OfficialCommands(app_commands.Group):
     async def interaction_check(self,interaction): return await self.root.interaction_check(interaction)
     async def on_error(self,interaction,error): await self.root.on_error(interaction,error)
 
+    @app_commands.command(name='discovery',description='Enable automatic One Piece booster-page leads or view discovery status')
+    async def discovery(self,interaction:discord.Interaction,enabled:bool|None=None):
+        from .commands import embed
+        async def work():
+            if enabled is not None:
+                await self.verifier.discovery.configure(interaction.guild_id,interaction.user.id,enabled)
+            return await self.verifier.discovery.status(interaction.guild_id)
+        def render(data):
+            result=embed('Official page discovery 1.6.1',
+                f"Automatic discovery: {'ON' if data['enabled'] else 'OFF'}\n"
+                'Supported: English One Piece OP / EB / PRB booster product pages.\n'
+                'The product index is checked on a five-minute target while enabled; source cooldowns still apply.\n'
+                'New leads use your existing Release Radar publishing channel and post before admin review.\n'
+                'Known pages/links are baselined at first setup.\n'
+                f"Saved page states: {data['counts']}")
+            result.add_field(name='Existing page',value='Add/scan its specific official source, then use /release official importpage source_id:<ID>.',inline=False)
+            result.add_field(name='Delivery',value='Check /release radar publishing. Discovery does not enable publishing or confirm retailer availability.',inline=False)
+            return result
+        await self.root._run(interaction,work,render)
+
+    @app_commands.command(name='importpage',description='Import one saved official One Piece booster page into Release Radar')
+    async def importpage(self,interaction:discord.Interaction,source_id:int):
+        from .commands import embed
+        async def work():
+            result=await self.verifier.discovery.import_source(interaction.guild_id,interaction.user.id,source_id)
+            await self.verifier.reconcile(interaction.guild_id,'One Piece')
+            return result
+        await self.root._run(interaction,work,lambda data:embed('Official page discovery',
+            f"Result: {data['state']} • Release #{data['release_id']}\n"
+            'New records are eligible for automatic publishing when publishing is enabled.\n'
+            'Existing records reuse their catalog entry. To announce an existing entry: '
+            f"/release radar announce release_id:{data['release_id']}\n"
+            'No retailer stock or preorder availability was asserted.'))
+
     @app_commands.command(name='sources',description='Show official publisher sources for all ten games')
     async def sources(self,interaction:discord.Interaction):
         from .commands import embed,safe
