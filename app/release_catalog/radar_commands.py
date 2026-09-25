@@ -10,7 +10,7 @@ from .commands import safe
 from .extraction import GAMES
 from .radar import ReleaseRadar
 from .radar_diagnostics import RadarDiagnostics
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 from .service import CatalogError
 
 LOG = logging.getLogger(__name__)
