@@ -70,7 +70,7 @@ class IngestionRunner:
         self.official.start(bot)
         if self.task is None or self.task.done():
             self.state='STARTING';self.task=asyncio.create_task(self.run(bot),name='lotus-release-ingestion')
-            print(f'LOTUS RELEASE INGESTION | Version={VERSION} | Task=CREATED | Alerts=OFF',flush=True)
+            print(f'LOTUS RELEASE INGESTION | Version={VERSION} | Task=CREATED | Publishing=SEPARATE_WORKER',flush=True)
         return self.task
     async def stop(self):
         await self.official.stop()
@@ -203,8 +203,12 @@ class IngestionRunner:
         finally: self.state='STOPPED'
 
 def start_release_ingestion(bot):
+    publisher=getattr(bot,'release_publisher',None)
+    if publisher: publisher.start()
     runner=getattr(bot,'release_ingestion',None)
     if runner: return runner.start(bot)
 async def stop_release_ingestion(bot):
+    publisher=getattr(bot,'release_publisher',None)
+    if publisher: await publisher.stop()
     runner=getattr(bot,'release_ingestion',None)
     if runner: await runner.stop()
