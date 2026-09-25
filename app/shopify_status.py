@@ -1,5 +1,16 @@
 """Render live scheduler state separately from process-lifetime counters."""
 import discord
+from datetime import datetime, timezone
+
+
+def observation_age(row):
+    try:
+        at = datetime.fromisoformat(row['last_observation_at'])
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc)-at).total_seconds())
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 def safe(value, limit=220):
@@ -14,6 +25,10 @@ def build_shopify_status(data, worker_online):
         f"Scan in progress: {'Yes' if data.get('scan_in_progress') else 'No — see each store below'}\n"
         f"Active stores: {data.get('active_shopify_stores', 0)}\nHeartbeat age: {heartbeat if heartbeat is not None else 'Unknown'}s")
     rows = sorted(data.get('store_runtime', []), key=lambda r: r['store_id'])
+    stale = sum(observation_age(row) is None or observation_age(row) > 300 for row in rows)
+    if stale:
+        out.description += f'\n⚠️ {stale}/{len(rows)} stores lack a TCG observation within 5 minutes.'
+        out.colour = 0xE6A23C
     for row in rows[:6]:
         phase = row.get('phase', 'UNKNOWN')
         if (row.get('overdue_seconds') or 0) > 30:
@@ -29,8 +44,12 @@ def build_shopify_status(data, worker_online):
         value += f"Last scan without rate limiting: {row.get('last_success_at') or 'Not yet'}\n"
         value += f"Last TCG observation: {row.get('last_observation_at') or 'Not yet'}\n"
         if row.get('last_error'):
-            value += 'Error: ' + safe(row['last_error'], 150)
-        out.add_field(name=safe(f"#{row['store_id']} • {row.get('store', 'Loading store')}", 100), value=value[:650], inline=False)
+            value += 'Error: ' + safe(row['last_error'], 90) + '\n'
+        evidence = row.get('last_rate_limit') or {}
+        if evidence:
+            value += 'Last HTTP 429: ' + safe(evidence.get('purpose', 'Unknown'), 80) + '\n'
+            value += '429 time: ' + safe(evidence.get('at', 'Unknown'), 40)
+        out.add_field(name=safe(f"#{row['store_id']} • {row.get('store', 'Loading store')}", 80), value=value[:760], inline=False)
     if not rows:
         out.add_field(name='Store workers', value='No per-store state recorded yet. Check scheduler heartbeat and Railway logs.', inline=False)
     if len(rows) > 6:
