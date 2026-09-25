@@ -1,4 +1,4 @@
-"""Admin-only /release commands. All responses are private; no alerts are sent."""
+"""Private catalog commands; automatic public notices use the separate publisher."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ from . import VERSION
 from .service import CatalogError, FORMATS, SOURCE_KINDS, STATUSES, ReleaseCatalog
 
 LOG = logging.getLogger(__name__)
-SAFETY = "Admin preview • Source evidence retained • Release/preorder alert publishing OFF"
+SAFETY = "Admin tools • Source evidence retained • Publishing: /release radar publishing"
 
 
 def safe(value, maximum: int = 1000) -> str:
@@ -131,7 +131,7 @@ class ReleaseCommands(app_commands.Group):
             "Database: ready\nMode: administrator-only preview\n"
             + "\n".join(f"{key}: {value}" for key, value in counts.items())
             + "\n\nAutomatic sources: configure /release watch add\nWorker state: /release watch status\n"
-              "AI model calls: OFF\nRelease/preorder alert publishing: OFF\n"
+              "AI model calls: OFF\nPublishing settings: /release radar publishing\n"
               "Calendar dates carry manual or approved source-policy provenance.",
         ))
 
@@ -314,6 +314,9 @@ def register_release_catalog_commands(bot, *, catalog: ReleaseCatalog | None = N
         catalog = ReleaseCatalog(engine)
     group = ReleaseCommands(catalog)
     bot.release_ingestion = group.watch_group.runner
+    from .publisher import ReleasePublisher
+    group.publisher = ReleasePublisher(bot, group.watch_group.store, group.watch_group.runner.official)
+    bot.release_publisher = group.publisher
     bot.tree.add_command(group)
-    print(f"LOTUS RELEASE CATALOG | Version={VERSION} | Commands=REGISTERED | Mode=ADMIN_ONLY | AI=OFF | Alerts=OFF", flush=True)
+    print(f"LOTUS RELEASE CATALOG | Version={VERSION} | Commands=REGISTERED | Mode=ADMIN_ONLY | AI=OFF | Publishing=CONFIGURED_SEPARATELY", flush=True)
     return group
