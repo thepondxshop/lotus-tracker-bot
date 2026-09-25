@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from .extraction import canonical_url, host, norm, code, CODE
 
-VERSION = '1.4.0-preview'
+VERSION = '1.6.1'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'One Piece': ('https://en.onepiece-cardgame.com/products/', 'EN', 'UNKNOWN'),
@@ -131,6 +131,19 @@ def release_windows(text):
     return found
 
 
+def primary_product_text(page):
+    """Do not let related One Piece products supply the main product's date."""
+    if (urlsplit(page['url']).hostname != 'en.onepiece-cardgame.com'
+            or not re.fullmatch(r'/products/(?:op|eb|prb)\d+\.html', urlsplit(page['url']).path, re.I)):
+        return page['text']
+    text = page['text']
+    start = re.search(r'\bPRODUCT DETAILS\b', text, re.I)
+    if start:
+        text = text[start.end():]
+    end = re.search(r'\bRELATED\b|What is\s+(?:a |an )?(?:Starter Deck|Booster Pack)', text, re.I)
+    return text[:end.start()] if end else text
+
+
 def identity_match(release, page):
     """Match headings, never navigation or an arbitrary mention in article text."""
     titles = page['headings'][:3] + [page['title'].split('|')[0].split('｜')[0]]
@@ -157,7 +170,7 @@ def evaluate(release, page, language, region):
                    or ('jaws' in norm(release['title']) and 'dracula' in norm(release['title']))))
     if launch: match='GAME_LAUNCH'
     if not match: return None
-    windows=release_windows(page['text'])
+    windows=release_windows(primary_product_text(page))
     result={'url':page['url'],'match_scope':match,'language':language,'region':region,
             'publisher_title':page['title'],'windows':windows,
             'state':'OFFICIAL_MENTION','issues':[]}
