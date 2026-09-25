@@ -52,6 +52,8 @@ class OfficialVerifier:
         self.store=store;self.catalog=store.catalog;self.sessions=store.sessions
         self.version=VERSION;self.http_factory=http_factory;self.ready=False;self.schema_lock=asyncio.Lock()
         self.lock=asyncio.Lock();self.task=None;self.state='NOT_STARTED';self.last_error=None;self.signatures={}
+        from .official_discovery import OfficialDiscovery
+        self.discovery=OfficialDiscovery(self)
     async def ensure(self):
         await self.store.ensure_schema()
         async with self.schema_lock:
@@ -191,13 +193,20 @@ class OfficialVerifier:
                                     if len(known)>=500: raise FetchError('PAGE_CACHE_LIMIT')
                                     saved=OfficialPage(source_id=source_id,url_key=digest(url));s.add(saved);known.add(digest(url))
                                 saved.data_json=json.dumps(doc);saved.checked_at=utcnow();saved.last_error=None
+                                await s.flush()
+                                page_id=saved.id
                             pages_ok+=1
+                            # Persist a new lead before continuing the crawl.
+                            # On failure the saved page is replayed by catch_up.
+                            if source['game']=='One Piece':
+                                await self.discovery.observe(guild,page_id)
+                            new_links=[]
                             for link in discovery_links(source['game'],doc,releases):
                                 if link not in seen and link not in queue:
                                     # New pages first; existing pages rotate after the outstanding queue.
-                                    if digest(link) not in known: queue.insert(0,link)
+                                    if digest(link) not in known: new_links.append(link)
                                     elif new_cycle and url==source['url']: queue.append(link)
-                                    queue=queue[:500]
+                            queue=(new_links+queue)[:500]
                         except FetchError as exc:
                             error=exc.code
                             async with self.sessions() as s,s.begin():
@@ -214,6 +223,10 @@ class OfficialVerifier:
                 # Persist an unprocessed URL popped at the page limit, and the remaining queue.
                 queue=urls+queue
                 delay=60 if error else (15 if queue else 360)
+                if (not error and source['game']=='One Piece'
+                        and source['url'].rstrip('/')==PRESETS['One Piece'][0].rstrip('/')
+                        and (await self.discovery.status(guild))['enabled']):
+                    delay=5
                 last={'at':utcnow().isoformat(),'pages_ok':pages_ok,'error':error,'remaining':len(queue),
                       'retry_at':(utcnow()+timedelta(minutes=60 if error else 5)).isoformat()}
                 async with self.sessions() as s,s.begin():
@@ -228,14 +241,19 @@ class OfficialVerifier:
             await bot.wait_until_ready()
             while not bot.is_closed():
                 try:
-                    await self.ensure();self.state='RUNNING';self.last_error=None
+                    await self.ensure();await self.discovery.ensure();self.state='RUNNING';self.last_error=None
                     async with self.sessions() as s:
                         guilds=list((await s.scalars(select(Release.guild_id).where(Release.status!='ARCHIVED').distinct())).all())
+                        from .official_discovery import DiscoverySettings
+                        guilds=sorted(set(guilds)|set((await s.scalars(select(DiscoverySettings.guild_id)
+                            .where(DiscoverySettings.enabled.is_(True)))).all()))
                     due=[];reconciled=set()
                     for guild in guilds:
+                        await self.discovery.catch_up(guild)
+                        discovery_on=(await self.discovery.status(guild))['enabled']
                         for source in await self.sources(guild):
                             releases=await self.releases(guild,source['game'])
-                            if not releases or not source['enabled']: continue
+                            if (not releases and not (discovery_on and source['game']=='One Piece')) or not source['enabled']: continue
                             key=(guild,source['game'])
                             signature=digest([(r['id'],r['updated_at']) for r in releases])
                             changed=self.signatures.get(key)!=signature
