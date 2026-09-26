@@ -21,7 +21,7 @@ class OfficialCommands(app_commands.Group):
                 await self.verifier.discovery.configure(interaction.guild_id,interaction.user.id,enabled)
             return await self.verifier.discovery.status(interaction.guild_id)
         def render(data):
-            result=embed('Official page discovery 1.6.5',
+            result=embed('Official page discovery 1.6.6',
                 f"Automatic discovery: {'ON' if data['enabled'] else 'OFF'}\n"
                 'New product discovery: One Piece + Pokemon.\n'
                 'One Piece: boosters, decks, DP, tins, collections, illustration boxes and accessories.\n'
@@ -99,16 +99,16 @@ class OfficialCommands(app_commands.Group):
             last=data['last']
             result=embed(f"Official page diagnostics • Source #{source_id}",
                 f"{safe(data['game'],80)} • Last scan result: {safe(last.get('error') or last.get('outcome') or 'Not recorded',100)}\n"
-                'Read-only. Latest five saved page problems; these may predate the latest scan.')
+                'Read-only. Latest access-challenge response plus saved page problems (up to five); older records may predate the latest scan.')
             for page in data['pages']:
                 value=(f"{safe(page['title'],180)}\n{safe(page['url'],350)}\n"
                     f"Reason: {safe(page['reason'],80)}\n"
                     f"Page headings: {safe(' / '.join(page['headings']),220)}\n"
-                    f"Saved page checked UTC: {page['checked_at']}")
-                result.add_field(name='Page needs review',value=value[:1000],inline=False)
+                    f"Observation UTC: {page['checked_at']}")
+                result.add_field(name='Access blocked' if page['reason']=='ACCESS_CHALLENGE' else 'Page needs review',value=value[:1000],inline=False)
             if not data['pages']:
                 result.add_field(name='No saved page details',value='Older versions did not save rejected pages. The next eligible source scan records their URL and reason.',inline=False)
-            result.add_field(name='Scan behavior',value='Unsupported pages do not hold supported listings for approval or put the gallery into a rate-limit cooldown. Actual access and rate-limit errors retain their backoff.',inline=False)
+            result.add_field(name='Scan behavior',value='Unsupported pages do not hold supported listings for approval or put the gallery into a rate-limit cooldown. ACCESS_CHALLENGE means the site returned an interruption page instead of product content. Access failures and rate limits retain their backoff; new products on blocked pages cannot be discovered until readable.',inline=False)
             return result
         await self.root._run(interaction,lambda:self.verifier.diagnostics(interaction.guild_id,source_id),render)
 
