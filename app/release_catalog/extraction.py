@@ -268,6 +268,7 @@ class Candidate:
     issues: list = field(default_factory=list)
     evidence: str = ""
     extractor: str = ""
+    image_urls: list = field(default_factory=list)
 
     def payload(self):
         return asdict(self)
@@ -338,6 +339,17 @@ def candidate(data, url, settings, extractor):
         evidence=body[:3000],
         extractor=extractor,
     )
+    # Keep explicit source-provided image references as supporting material.
+    # Presence of an image does not authenticate a non-authoritative listing.
+    images = data.get('image') or data.get('images') or data.get('image_urls') or []
+    if not isinstance(images, list): images = [images]
+    for image in images[:8]:
+        value = image.get('url') or image.get('contentUrl') if isinstance(image, dict) else image
+        try:
+            value = public_source_url(value, required=True)
+        except (CatalogError, ValueError, TypeError):
+            continue
+        if value not in row.image_urls: row.image_urls.append(value)
 
     if len(title) > 180:
         row.issues.append("TITLE_TRUNCATED")
