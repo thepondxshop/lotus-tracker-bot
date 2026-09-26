@@ -8,7 +8,7 @@ from .extraction import canonical_url, host, norm, code, CODE
 from . import pokemon_products
 from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
 
-VERSION = '1.6.5'
+VERSION = '1.6.6'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'One Piece': ('https://en.onepiece-cardgame.com/products/', 'EN', 'UNKNOWN'),
@@ -82,6 +82,18 @@ def parse_page(url, html):
     text = '\n'.join(' '.join(x.split()) for x in ''.join(doc.parts).splitlines() if x.strip())
     return {'url':url, 'title':' '.join(doc.title)[:500], 'headings':doc.headings[:30],
             'text':text[:100000], 'links':doc.links[:800], 'detail_headings':doc.detail_headings[:30]}
+
+
+def access_challenge(page):
+    """Recognize interruption responses even when the HTML title is empty."""
+    pattern = r'\b(?:pardon our interruption|access denied|just a moment|captcha|verify (?:that )?you are (?:a )?human)\b'
+    labels = [page.get('title', ''), *page.get('headings', [])[:3]]
+    if any(re.search(pattern, ' '.join(label.split()), re.I) for label in labels):
+        return True
+    # Some challenge responses have neither a title nor a heading. Only inspect
+    # the opening message, not incidental mentions in a product description.
+    opening = ' '.join(page.get('text', '').split())[:250]
+    return bool(re.match(r'\s*(?:pardon our interruption|access denied|just a moment)\b', opening, re.I))
 
 
 def discovery_links(game, page, releases):
