@@ -8,6 +8,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from .service import Release, ReleaseSource, CatalogError, digest, snapshot, utcnow
 from .ingestion_store import aware, Watch, Item
 from .public_http import PublicHTTP, FetchError
+from . import publisher_products
 from .official_parser import PRESETS, VERSION, approved_url, parse_page, discovery_links, evaluate, access_challenge
 
 LOG=logging.getLogger(__name__)
@@ -183,6 +184,8 @@ class OfficialVerifier:
                 doc=json.loads(page.data_json)
                 if failed and doc.get('url')==failed.get('url'): continue
                 reason='ACCESS_CHALLENGE' if access_challenge(doc) else page.last_error
+                if source.game in publisher_products.ROOTS and reason=='UNSUPPORTED_PRODUCT_PAGE':
+                    reason='PUBLISHER_IDENTITY_NOT_ESTABLISHED'
                 if source.game=='Pokemon' and reason=='UNSUPPORTED_PRODUCT_PAGE':
                     from .pokemon_products import rejection_reason
                     reason=rejection_reason(doc) or 'SAVED_PAGE_NEEDS_RESCAN'
@@ -246,6 +249,17 @@ class OfficialVerifier:
                                     if skip_reason:
                                         skipped_pages.append({'url':url,'final_url':doc['url'], 'reason':skip_reason,
                                             'title':doc.get('title','')[:500], 'headings':doc.get('headings',[])[:3]})
+                            if source['game'] in publisher_products.ROOTS:
+                                game=source['game']
+                                if publisher_products.index_url(game,doc['url']):
+                                    links=publisher_products.links(game,doc)
+                                    if not links:raise FetchError('NO_PRODUCT_DISCOVERY_LINKS')
+                                    if url==source['url']:root_product_links=sum(bool(publisher_products.product_url(game,x)) for x in links)
+                                    await self.discovery.baseline_index(guild,game,doc)
+                                elif publisher_products.product_url(game,doc['url']) and not publisher_products.identity(game,doc):
+                                    skip_reason='PUBLISHER_IDENTITY_NOT_ESTABLISHED'
+                                    skipped_pages.append({'url':url,'final_url':doc['url'],'reason':skip_reason,
+                                        'title':doc.get('title','')[:500],'headings':doc.get('headings',[])[:3]})
                             if len(doc['text'])<80: raise FetchError('NO_PUBLIC_TEXT')
                             async with self.sessions() as s,s.begin():
                                 saved=await s.scalar(select(OfficialPage).where(OfficialPage.source_id==source_id,OfficialPage.url_key==digest(url)))
@@ -283,7 +297,7 @@ class OfficialVerifier:
                                 if saved: saved.last_error=error
                             if url!=source['url']: queue.append(url)
                             if error in ('RATE_LIMITED','ACCESS_DENIED','ACCESS_CHALLENGE'): break
-                            if url==source['url'] and error in ('NO_PUBLIC_TEXT','NO_PRODUCT_GALLERY_CONTENT'): break
+                            if url==source['url'] and error in ('NO_PUBLIC_TEXT','NO_PRODUCT_GALLERY_CONTENT','NO_PRODUCT_DISCOVERY_LINKS'): break
                         if queue: urls.append(queue.pop(0))
             except asyncio.CancelledError:
                 error='CANCELLED';raise
