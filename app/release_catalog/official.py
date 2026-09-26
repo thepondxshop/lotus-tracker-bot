@@ -68,11 +68,25 @@ class OfficialVerifier:
         await self.ensure()
         async with self.sessions() as s,s.begin():
             await self.store.guild_lock(s,guild)
-            existing={(r.game,r.url_key) for r in (await s.scalars(select(OfficialSource).where(OfficialSource.guild_id==guild))).all()}
+            rows=(await s.scalars(select(OfficialSource).where(OfficialSource.guild_id==guild).with_for_update())).all()
+            for row in rows: self._recover_parser_cooldown(row)
+            existing={(r.game,r.url_key) for r in rows}
             for game,(url,language,region) in PRESETS.items():
                 url=approved_url(game,url)
                 if (game,digest(url)) not in existing:
                     s.add(OfficialSource(guild_id=guild,game=game,url=url,url_key=digest(url),language=language,region=region))
+    @staticmethod
+    def _recover_parser_cooldown(row):
+        last=json.loads(row.last_json or '{}')
+        # v1.6.4 treated a readable but unsupported child as a source failure.
+        # Actual access/rate-limit errors and leases are not cleared here.
+        if (row.game=='Pokemon' and last.get('error')=='UNSUPPORTED_PRODUCT_PAGE'
+                and last.get('root_readable') is True and not last.get('diagnostics_version')):
+            now=utcnow()
+            last.update(error=None, outcome='PARSER_COOLDOWN_CLEARED', retry_at=now.isoformat(),
+                        recovered_parser_error='UNSUPPORTED_PRODUCT_PAGE', diagnostics_version=1)
+            row.last_json=json.dumps(last);row.next_due=now
+
     async def sources(self,guild):
         await self.defaults(guild)
         async with self.sessions() as s:
@@ -155,6 +169,25 @@ class OfficialVerifier:
                         s.add(ReleaseSource(release_id=release['id'],kind='PUBLISHER',label='Official verification evidence',url=e['url'],
                             note=json.dumps(saved,ensure_ascii=False),fingerprint=fp,recorded_by=release['created_by'],recorded_at=utcnow()))
         return len(releases)
+    async def diagnostics(self,guild,source_id):
+        await self.ensure()
+        async with self.sessions() as s:
+            source=await s.scalar(select(OfficialSource).where(OfficialSource.guild_id==guild,OfficialSource.id==source_id))
+            if not source: raise CatalogError('Official source not found in this server.')
+            pages=(await s.scalars(select(OfficialPage).where(OfficialPage.source_id==source_id,
+                OfficialPage.last_error.is_not(None)).order_by(OfficialPage.checked_at.desc(),OfficialPage.id.desc()).limit(5))).all()
+            result=[]
+            for page in pages:
+                doc=json.loads(page.data_json)
+                reason=page.last_error
+                if source.game=='Pokemon' and reason=='UNSUPPORTED_PRODUCT_PAGE':
+                    from .pokemon_products import rejection_reason
+                    reason=rejection_reason(doc) or 'SAVED_PAGE_NEEDS_RESCAN'
+                result.append({'url':doc.get('url',''),'title':doc.get('title',''),
+                    'headings':doc.get('headings',[])[:3], 'reason':reason,
+                    'checked_at':aware(page.checked_at).isoformat()})
+            return {'source_id':source_id,'game':source.game,'last':json.loads(source.last_json or '{}'),'pages':result}
+
     async def result(self,guild,release_id):
         await self.ensure()
         async with self.sessions() as s:
@@ -171,25 +204,29 @@ class OfficialVerifier:
                 row=await s.scalar(select(OfficialSource).where(OfficialSource.id==source_id,OfficialSource.guild_id==guild).with_for_update())
                 if not row or not row.enabled: raise CatalogError('Official source is missing or paused.')
                 if row.lease_until and aware(row.lease_until)>utcnow(): raise CatalogError('Official source is already scanning.')
+                self._recover_parser_cooldown(row)
                 last=json.loads(row.last_json)
                 if last.get('retry_at') and utcnow().isoformat()<last['retry_at']: raise CatalogError('Official source cooldown is active; try after '+last['retry_at'])
                 row.lease_until=utcnow()+timedelta(minutes=4);source=snapshot(row)
             releases=await self.releases(guild,source['game'])
-            queue=json.loads(source['queue_json']);new_cycle=not queue;urls=[source['url']];seen=set();pages_ok=0;error=None;root_readable=False;root_product_links=0
+            queue=json.loads(source['queue_json']);new_cycle=not queue;urls=[source['url']];seen=set();pages_ok=0;error=None;root_readable=False;root_product_links=0;skipped_pages=[]
             async with self.sessions() as s:
                 known=set((await s.scalars(select(OfficialPage.url_key).where(OfficialPage.source_id==source_id))).all())
             try:
                 async with asyncio.timeout(120),self.http_factory() as http:
                     while urls and len(seen)<8:
                         url=urls.pop(0)
-                        if url in seen: break
+                        if url in seen: continue
                         seen.add(url)
                         try:
                             page=await http.get(url,source['url'])
                             approved_url(source['game'],page.url)
                             doc=parse_page(page.url,page.text)
+                            skip_reason=None
+                            if any(x in doc['title'].lower() for x in ('access denied','just a moment','captcha')):
+                                raise FetchError('ACCESS_CHALLENGE')
                             if source['game']=='Pokemon':
-                                from .pokemon_products import product_url as pokemon_url, index_url, product_identity
+                                from .pokemon_products import product_url as pokemon_url, index_url, rejection_reason
                                 if len(doc['text'])<80:
                                     raise FetchError('NO_PUBLIC_TEXT')
                                 if index_url(doc['url']):
@@ -198,20 +235,27 @@ class OfficialVerifier:
                                         raise FetchError('NO_PRODUCT_GALLERY_CONTENT')
                                     if url==source['url']:
                                         root_product_links = sum(bool(pokemon_url(link)) for link in links)
-                                elif pokemon_url(doc['url']) and not product_identity(doc):
-                                    raise FetchError('UNSUPPORTED_PRODUCT_PAGE')
+                                elif pokemon_url(doc['url']):
+                                    skip_reason=rejection_reason(doc)
+                                    if skip_reason:
+                                        skipped_pages.append({'url':url,'final_url':doc['url'], 'reason':skip_reason,
+                                            'title':doc.get('title','')[:500], 'headings':doc.get('headings',[])[:3]})
                             if len(doc['text'])<80: raise FetchError('NO_PUBLIC_TEXT')
-                            if any(x in doc['title'].lower() for x in ('access denied','just a moment','captcha')): raise FetchError('ACCESS_CHALLENGE')
                             async with self.sessions() as s,s.begin():
                                 saved=await s.scalar(select(OfficialPage).where(OfficialPage.source_id==source_id,OfficialPage.url_key==digest(url)))
                                 if not saved:
                                     if len(known)>=500: raise FetchError('PAGE_CACHE_LIMIT')
                                     saved=OfficialPage(source_id=source_id,url_key=digest(url));s.add(saved);known.add(digest(url))
-                                saved.data_json=json.dumps(doc);saved.checked_at=utcnow();saved.last_error=None
+                                saved.data_json=json.dumps(doc);saved.checked_at=utcnow()
+                                saved.last_error='UNSUPPORTED_PRODUCT_PAGE' if skip_reason else None
                                 await s.flush()
                                 page_id=saved.id
-                            pages_ok+=1
                             if url==source['url']: root_readable=True
+                            if skip_reason:
+                                LOG.info('LOTUS OFFICIAL PAGE SKIPPED | Source=%s | URL=%s | Reason=%s',source_id,url,skip_reason)
+                                if queue: urls.append(queue.pop(0))
+                                continue
+                            pages_ok+=1
                             # Persist a new lead before continuing the crawl.
                             # On failure the saved page is replayed by catch_up.
                             if source['game'] in self.discovery_games:
@@ -248,6 +292,8 @@ class OfficialVerifier:
                         and (await self.discovery.status(guild))['enabled']):
                     delay=5
                 last={'at':utcnow().isoformat(),'pages_ok':pages_ok,'error':error,'remaining':len(queue),'root_readable':root_readable,'root_product_links':root_product_links,
+                      'diagnostics_version':1,'pages_skipped':len(skipped_pages),'skipped_pages':skipped_pages[:8],
+                      'outcome':'SOURCE_ERROR' if error else ('COMPLETED_WITH_SKIPS' if skipped_pages else 'COMPLETED'),
                       'retry_at':(utcnow()+timedelta(minutes=60 if error else 5)).isoformat()}
                 async with self.sessions() as s,s.begin():
                     row=await s.get(OfficialSource,source_id)
