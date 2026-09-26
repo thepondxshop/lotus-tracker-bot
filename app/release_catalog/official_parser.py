@@ -5,9 +5,10 @@ from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
 from .extraction import canonical_url, host, norm, code, CODE
+from . import pokemon_products
 from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
 
-VERSION = '1.6.3'
+VERSION = '1.6.4'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'One Piece': ('https://en.onepiece-cardgame.com/products/', 'EN', 'UNKNOWN'),
@@ -84,6 +85,19 @@ def parse_page(url, html):
 
 
 def discovery_links(game, page, releases):
+    if game == 'Pokemon':
+        products, indexes = [], []
+        for href, _ in page.get('links', []):
+            try:
+                url = approved_url(game, urljoin(page['url'], href))
+            except (ValueError, TypeError):
+                continue
+            product = pokemon_products.product_url(url)
+            index = pokemon_products.index_url(url)
+            target, value = (products, product) if product else (indexes, index)
+            if value and value != page['url'] and value not in target:
+                target.append(value)
+        return products + indexes
     if game == 'One Piece':
         products, indexes = [], []
         for href, _ in page['links']:
@@ -161,11 +175,18 @@ def release_windows(text):
 
 def primary_product_text(page):
     """Do not let related One Piece products supply the main product's date."""
+    if pokemon_products.product_url(page.get('url', '')):
+        return pokemon_products.date_text(page)
     return main_text(page)
 
 
 def identity_match(release, page):
     """Match headings, never navigation or an arbitrary mention in article text."""
+    if norm(release.get('game')) == 'pokemon' and pokemon_products.product_url(page.get('url', '')):
+        item = pokemon_products.product_identity(page)
+        if not item or pokemon_products.comparable(release['title']) != pokemon_products.comparable(item['title']):
+            return None
+        return item['publisher_scope']
     if norm(release.get('game')) == 'one piece' and product_path(page.get('url', '')):
         item = product_identity(page)
         if not item:
@@ -204,11 +225,15 @@ def evaluate(release, page, language, region):
               and ('dawn of terror' in norm(release['title'])
                    or ('jaws' in norm(release['title']) and 'dracula' in norm(release['title']))))
     if launch: match='GAME_LAUNCH'
+    if norm(release.get('game')) == 'pokemon' and pokemon_products.product_url(page.get('url', '')):
+        language, region = 'English', 'US'
     if not match: return None
     windows=release_windows(primary_product_text(page))
     result={'url':page['url'],'match_scope':match,'language':language,'region':region,
             'publisher_title':page['title'],'windows':windows,
             'state':'OFFICIAL_MENTION','issues':[]}
+    if match == 'PRODUCT_GROUP':
+        result['issues'].append('Multiple product variants; not one combined bundle.')
     if launch:
         windows=[w for w in windows if 'worldwide launch' in w['excerpt'].lower()]
         result['windows']=windows
