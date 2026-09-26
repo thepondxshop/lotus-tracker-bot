@@ -13,7 +13,7 @@ class OfficialCommands(app_commands.Group):
     async def interaction_check(self,interaction): return await self.root.interaction_check(interaction)
     async def on_error(self,interaction,error): await self.root.on_error(interaction,error)
 
-    @app_commands.command(name='discovery',description='Enable automatic One Piece product-page leads or view discovery status')
+    @app_commands.command(name='discovery',description='Enable One Piece and Pokemon product discovery or inspect source health')
     async def discovery(self,interaction:discord.Interaction,enabled:bool|None=None):
         from .commands import embed
         async def work():
@@ -21,24 +21,35 @@ class OfficialCommands(app_commands.Group):
                 await self.verifier.discovery.configure(interaction.guild_id,interaction.user.id,enabled)
             return await self.verifier.discovery.status(interaction.guild_id)
         def render(data):
-            result=embed('Official page discovery 1.6.3',
+            result=embed('Official page discovery 1.6.4',
                 f"Automatic discovery: {'ON' if data['enabled'] else 'OFF'}\n"
-                'Supported: English One Piece OP / EB / PRB / PEB boosters; starter/deck sets; DP; tins; Devil Fruit collections; illustration boxes; sleeves, playmats and other individual product pages.\n'
-                'The product index is checked on a five-minute target while enabled; source cooldowns still apply.\n'
-                'New leads use your existing Release Radar publishing channel and post before admin review.\n'
-                'Known pages/links are baselined at first setup.\n'
-                f"Saved page states: {data['counts']}")
-            result.add_field(name='Existing page',value='Add/scan its specific official source, then use /release official importpage source_id:<ID>.',inline=False)
-            result.add_field(name='Delivery',value='Check /release radar publishing. Discovery does not enable publishing or confirm retailer availability.',inline=False)
+                'New product discovery: One Piece + Pokemon.\n'
+                'One Piece: boosters, decks, DP, tins, collections, illustration boxes and accessories.\n'
+                'Pokemon: US English product-gallery pages for ETBs, boosters, Build & Battle, decks, tins, collections and listed accessories.\n'
+                'Five-minute index target while enabled; source cooldowns and scan capacity still apply.\n'
+                'New leads publish before admin review using your existing Release Radar channel.\n'
+                'Other games retain their existing source ingestion/verification; automatic official product creation is not enabled for them yet.')
+            for game, state in data.get('games', {}).items():
+                last = state['last']
+                readable = {True:'Yes',False:'No'}.get(last.get('root_readable'),'Not recorded yet')
+                text = (f"Source #{state['source_id'] or '?'} • {'Enabled' if state['enabled'] else 'Paused/missing'}\n"
+                    f"Last attempt UTC: {last.get('at') or 'Not yet'}\n"
+                    f"Root readable on last attempt: {readable}\n"
+                    f"Last result: {last.get('error') or ('Completed' if last else 'Pending')}\n"
+                    f"Saved page states: {state['counts']}\n"
+                    f"Next scheduled check UTC: {state['next_due'] or 'Not scheduled'}")
+                result.add_field(name=game,value=text[:1000],inline=False)
+            result.add_field(name='Existing page',value='Known pages are baselined. Add/scan a specific official source, then /release official importpage source_id:<ID>.',inline=False)
+            result.add_field(name='Delivery',value='Check /release radar publishing. Source discovery is separate from retailer stock. Unreadable sources need a successful check before they can discover products.',inline=False)
             return result
         await self.root._run(interaction,work,render)
 
-    @app_commands.command(name='importpage',description='Import one saved official One Piece product page into Release Radar')
+    @app_commands.command(name='importpage',description='Import one saved One Piece or US Pokemon product page into Release Radar')
     async def importpage(self,interaction:discord.Interaction,source_id:int):
         from .commands import embed
         async def work():
             result=await self.verifier.discovery.import_source(interaction.guild_id,interaction.user.id,source_id)
-            await self.verifier.reconcile(interaction.guild_id,'One Piece')
+            await self.verifier.reconcile(interaction.guild_id,result['game'])
             return result
         await self.root._run(interaction,work,lambda data:embed('Official page discovery',
             f"Result: {data['state']} • Release #{data['release_id']}\n"
