@@ -29,7 +29,7 @@ GAMES = (
 )
 
 CODE = re.compile(
-    r"(?<![A-Z0-9])(?:PEB|PRB|OP|EB|ST|GD|FB|FS|EX)[ -]?\d{1,3}(?![A-Z0-9])",
+    r"(?<![A-Z0-9])(?:PEB|PRB|OP|EB|ST|SD|DP|DF|TS|IB|GD|FB|FS|EX)[ -]?\d{1,3}(?![A-Z0-9])",
     re.I,
 )
 
@@ -129,6 +129,13 @@ def is_product(value):
 
 def product_format(title, body=""):
     title = norm(title).replace("_", " ")
+    # Multi-item retail sets are distinct from their contained booster packs.
+    if re.search(r"double\s+pack|devil\s+fruits?\s+collection|mini\s+case\s+set|playmat\s*(?:&|and)\s*card|premium\s+card\s+collection", title):
+        if re.search(r"\b(?:case of|carton|case pack)\b|\bcases?\s*\(\d+ct\)|\bcase$", title):
+            return "CASE"
+        if re.search(r"\bdisplay\b", title) or re.search(r"sold as (?:a )?display", body, re.I):
+            return "BOX"
+        return "SET"
     # A deck case is an accessory, not a wholesale shipping case.
     # Explicit outer packaging wins for accessory cartons/cases.
     if (re.search(r"\b(?:deck case|deck box|binder|sleeves|playmat)\b", title)
