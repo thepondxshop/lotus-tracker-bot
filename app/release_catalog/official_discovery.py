@@ -1,4 +1,4 @@
-"""One Piece publisher-page leads. No stock, price, or confirmation writes."""
+"""Supported publisher-page leads. No stock, price, or confirmation writes."""
 import asyncio
 import json
 import re
@@ -13,11 +13,19 @@ from .ingestion_store import aware
 from .official import OfficialSource, OfficialPage, OfficialCheck
 from .official_parser import approved_url, evaluate, primary_product_text, release_windows
 
-VERSION = '1.6.3'
+VERSION = '1.6.4'
+SUPPORTED_GAMES = ('One Piece', 'Pokemon')
 from .one_piece_products import product_path, product_identity
+from . import pokemon_products
 
 
-def product_url(url):
+def product_url(url, game=None):
+    if game in (None, 'Pokemon'):
+        result = pokemon_products.product_url(url)
+        if result or game == 'Pokemon':
+            return result
+    if game not in (None, 'One Piece'):
+        return None
     try:
         url = approved_url('One Piece', url)
         p = urlsplit(url)
@@ -28,8 +36,15 @@ def product_url(url):
         return None
 
 
-def candidate(doc):
-    url = product_url(doc.get('url', ''))
+def candidate(doc, game='One Piece'):
+    if game == 'Pokemon':
+        details = pokemon_products.product_identity(doc)
+        if not details:
+            return None
+        return dict(**details, windows=release_windows(pokemon_products.date_text(doc)))
+    if game != 'One Piece':
+        return None
+    url = product_url(doc.get('url', ''), game)
     details = product_identity(doc)
     if not url or not details:
         return None
@@ -87,32 +102,42 @@ class OfficialDiscovery:
         await self.ensure()
         if guild in self.prepared_guilds:
             return
-        marker = 'https://en.onepiece-cardgame.com/products/#coverage-1.6.3'
         async with self.sessions() as s, s.begin():
             await self.store.guild_lock(s, guild)
             cfg = await s.get(DiscoverySettings, guild)
             if not cfg:
                 return
-            done = await s.scalar(select(DiscoveryPage.id).where(
-                DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(marker)))
-            if not done:
+            for game, marker in (
+                ('One Piece', 'https://en.onepiece-cardgame.com/products/#coverage-1.6.3'),
+                ('Pokemon', pokemon_products.INDEX + '#coverage-1.6.4'),
+            ):
+                done = await s.scalar(select(DiscoveryPage.id).where(
+                    DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(marker)))
+                if done:
+                    continue
                 known = set((await s.scalars(select(DiscoveryPage.url_key).where(DiscoveryPage.guild_id == guild))).all())
                 pages = (await s.scalars(select(OfficialPage).join(OfficialSource,
                     OfficialSource.id == OfficialPage.source_id).where(OfficialSource.guild_id == guild,
-                    OfficialSource.game == 'One Piece', OfficialPage.checked_at < self.started_at))).all()
+                    OfficialSource.game == game, OfficialPage.checked_at < self.started_at))).all()
                 urls = set()
                 for page in pages:
                     doc = json.loads(page.data_json)
-                    urls.add(product_url(doc.get('url', '')))
+                    urls.add(product_url(doc.get('url', ''), game))
                     for href, _ in doc.get('links', []):
-                        urls.add(product_url(urljoin(doc.get('url', ''), href)))
+                        urls.add(product_url(urljoin(doc.get('url', ''), href), game))
                 for url in urls - {None}:
-                    if digest(url) in known or re.fullmatch(r'/products/(?:op|eb|prb)\d+\.html', urlsplit(url).path):
+                    if digest(url) in known or (game == 'One Piece' and re.fullmatch(r'/products/(?:op|eb|prb)\d+\.html', urlsplit(url).path)):
                         continue
                     s.add(DiscoveryPage(guild_id=guild, url_key=digest(url), url=url,
                         state='BASELINED', checked_at=self.started_at))
                 s.add(DiscoveryPage(guild_id=guild, url_key=digest(marker), url=marker,
                     state='COVERAGE_BASELINE', checked_at=self.started_at))
+                if game == 'Pokemon' and cfg.enabled:
+                    index = await s.scalar(select(OfficialSource).where(
+                        OfficialSource.guild_id == guild, OfficialSource.url == pokemon_products.INDEX))
+                    if index:
+                        index.next_due = utcnow()
+
         self.prepared_guilds.add(guild)
 
     async def configure(self, guild, actor, enabled):
@@ -128,7 +153,7 @@ class OfficialDiscovery:
                 # Known pages AND known product links are old discoveries.
                 pages = (await s.scalars(select(OfficialPage).join(OfficialSource,
                     OfficialSource.id == OfficialPage.source_id).where(
-                    OfficialSource.guild_id == guild, OfficialSource.game == 'One Piece'))).all()
+                    OfficialSource.guild_id == guild, OfficialSource.game.in_(SUPPORTED_GAMES)))).all()
                 urls = set()
                 for page in pages:
                     doc = json.loads(page.data_json)
@@ -140,9 +165,9 @@ class OfficialDiscovery:
                         state='BASELINED', checked_at=utcnow()))
             cfg.enabled, cfg.actor_id = enabled, actor
             if enabled:
-                index = await s.scalar(select(OfficialSource).where(OfficialSource.guild_id == guild,
-                    OfficialSource.url == 'https://en.onepiece-cardgame.com/products/'))
-                if index:
+                indexes = (await s.scalars(select(OfficialSource).where(OfficialSource.guild_id == guild,
+                    OfficialSource.url.in_(('https://en.onepiece-cardgame.com/products/', pokemon_products.INDEX))))).all()
+                for index in indexes:
                     index.next_due = utcnow()
             return {'enabled': enabled, 'first_setup': first}
 
@@ -152,7 +177,21 @@ class OfficialDiscovery:
             cfg = await s.get(DiscoverySettings, guild)
             counts = dict((await s.execute(select(DiscoveryPage.state, func.count()).where(
                 DiscoveryPage.guild_id == guild, DiscoveryPage.state != 'COVERAGE_BASELINE').group_by(DiscoveryPage.state))).all())
-            return {'enabled': bool(cfg and cfg.enabled), 'counts': counts}
+            pages = (await s.scalars(select(DiscoveryPage).where(DiscoveryPage.guild_id == guild,
+                DiscoveryPage.state != 'COVERAGE_BASELINE'))).all()
+            games = {}
+            for game, root in (('One Piece', 'https://en.onepiece-cardgame.com/products/'), ('Pokemon', pokemon_products.INDEX)):
+                source = await s.scalar(select(OfficialSource).where(OfficialSource.guild_id == guild, OfficialSource.url == root))
+                states = {}
+                for page in pages:
+                    if product_url(page.url, game):
+                        states[page.state] = states.get(page.state, 0) + 1
+                last = json.loads(source.last_json or '{}') if source else {}
+                games[game] = {'counts': states, 'source_id': source.id if source else None,
+                    'enabled': bool(source and source.enabled), 'last': last,
+                    'next_due': aware(source.next_due).isoformat() if source and source.next_due else None}
+            return {'enabled': bool(cfg and cfg.enabled), 'counts': counts, 'games': games}
+
 
     async def observe(self, guild, page_id, *, explicit=False, actor=None):
         await self.prepare(guild)
@@ -174,10 +213,10 @@ class OfficialDiscovery:
                     raise CatalogError('Scan this official source successfully before importing its page.')
                 return {'state': 'STALE'}
             doc = json.loads(page.data_json)
-            item = candidate(doc) if source.game == 'One Piece' else None
+            item = candidate(doc, source.game)
             if not item:
                 if explicit:
-                    raise CatalogError('This page is not a supported individual One Piece product.')
+                    raise CatalogError('This page is not a supported One Piece or US Pokemon product-gallery page.')
                 return {'state': 'UNSUPPORTED'}
             saved = await s.scalar(select(DiscoveryPage).where(
                 DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(item['url'])))
@@ -214,7 +253,7 @@ class OfficialDiscovery:
             fp = digest(item)
             if saved.fingerprint != fp:
                 note = json.dumps({'origin': 'OFFICIAL_PAGE_DISCOVERY', **item}, ensure_ascii=False)
-                evidence = self.store.catalog._source(row, actor_id, 'PUBLISHER', 'Official One Piece product page', item['url'], note)
+                evidence = self.store.catalog._source(row, actor_id, 'PUBLISHER', 'Official ' + item['game'] + ' product page', item['url'], note)
                 exists = await s.scalar(select(ReleaseSource.id).where(ReleaseSource.release_id == row.id,
                     ReleaseSource.fingerprint == evidence.fingerprint))
                 if not exists:
@@ -225,7 +264,7 @@ class OfficialDiscovery:
                 row.updated_at = utcnow()
             # Save windows in the same transaction so the first public notice
             # already includes publisher evidence, not just a pending check.
-            checked = evaluate(snapshot(row), doc, 'English', 'UNKNOWN')
+            checked = evaluate(snapshot(row), doc, item['language'], item['region'])
             if checked:
                 checked.update(fetched_at=aware(page.checked_at).isoformat(), stale=False,
                                source_id=source.id, last_fetch_error=None)
@@ -247,14 +286,15 @@ class OfficialDiscovery:
         async with self.sessions() as s:
             source = await s.scalar(select(OfficialSource).where(OfficialSource.id == source_id,
                 OfficialSource.guild_id == guild, OfficialSource.enabled.is_(True)))
-            if not source or not product_url(source.url):
-                raise CatalogError('Use the source ID for a specific One Piece product page, not the product index.')
+            if not source or source.game not in SUPPORTED_GAMES or not product_url(source.url, source.game):
+                raise CatalogError('Use the source ID for a specific One Piece or US Pokemon product page, not the index.')
             page = await s.scalar(select(OfficialPage).where(OfficialPage.source_id == source.id,
                 OfficialPage.url_key == digest(source.url)))
             if not page:
                 raise CatalogError('Run /release official scan for this source first.')
             pid = page.id
-        return await self.observe(guild, pid, explicit=True, actor=actor)
+        result = await self.observe(guild, pid, explicit=True, actor=actor)
+        return dict(result, game=source.game)
 
     async def catch_up(self, guild):
         """Replay saved pages after a pause/restart without another HTTP request."""
@@ -265,7 +305,7 @@ class OfficialDiscovery:
                 return
             pages = (await s.execute(select(OfficialPage, OfficialSource).join(OfficialSource,
                 OfficialPage.source_id == OfficialSource.id).where(OfficialSource.guild_id == guild,
-                OfficialSource.game == 'One Piece', OfficialSource.enabled.is_(True),
+                OfficialSource.game.in_(SUPPORTED_GAMES), OfficialSource.enabled.is_(True),
                 OfficialPage.last_error.is_(None), OfficialPage.checked_at >= utcnow()-timedelta(days=1))
                 .order_by(OfficialPage.checked_at, OfficialPage.id))).all()
             seen = {p.url_key: aware(p.checked_at) for p in (await s.scalars(select(DiscoveryPage)
@@ -273,7 +313,7 @@ class OfficialDiscovery:
             pending = []
             for page, source in pages:
                 doc = json.loads(page.data_json)
-                item = candidate(doc)
+                item = candidate(doc, source.game)
                 if item and (digest(item['url']) not in seen or seen[digest(item['url'])] < aware(page.checked_at)):
                     pending.append(page.id)
         for pid in pending[:20]:
