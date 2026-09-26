@@ -104,22 +104,34 @@ def date_text(page):
     return '\n'.join(dates)
 
 
-def product_identity(page):
+def rejection_reason(page):
+    """Explain a rejected page without weakening product identity checks."""
     url = product_url(page.get('url', ''))
     name = title(page.get('title', ''))
-    if not url or not 5 <= len(name) <= 180:
-        return None
+    if not url:
+        return 'UNSUPPORTED_PRODUCT_URL'
+    if not 5 <= len(name) <= 180:
+        return 'TITLE_LENGTH_OUT_OF_RANGE'
     normalized = norm(name)
     has_brand = re.search(r'\bpokemon\s+(?:tcg|trading card game)\b', normalized)
     if not has_brand and (packaging(name) == 'UNKNOWN' or not re.search(r'pokemon\s+(?:tcg|trading card game)', norm(main_text(page)))):
-        return None
+        return 'TCG_IDENTITY_MISSING'
     if re.search(r'access denied|captcha|page not found|404|tcg (?:live|pocket)|registration|event ticket', normalized):
-        return None
+        return 'NOT_A_PHYSICAL_PRODUCT_OR_ERROR_PAGE'
     if not any(comparable(h) == comparable(name) for h in page.get('headings', [])[:3]):
-        return None
+        return 'TITLE_HEADING_MISMATCH'
     body = main_text(page)
     if not re.search(r'\bLaunch\s*:|\bincludes?\b|\bcontains?\b|\bMSRP\b', body, re.I):
+        return 'PRODUCT_DETAILS_MISSING'
+    return None
+
+
+def product_identity(page):
+    if rejection_reason(page):
         return None
+    url = product_url(page.get('url', ''))
+    name = title(page.get('title', ''))
+    normalized = norm(name)
     # Keep a publisher's combined page intact; do not invent individual SKUs
     # or imply that alternative products are sold as a single bundle.
     group = (len(re.findall(r'pokemon\s+(?:tcg|trading card game)', normalized)) > 1
