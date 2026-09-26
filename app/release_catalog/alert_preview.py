@@ -5,6 +5,7 @@ from .service import CatalogError, ReleaseSource, snapshot
 from .ingestion_store import RetailerLink
 from .radar_diagnostics import evaluate_offer
 from .extraction import scope
+from .source_confidence import confidence
 
 
 def observation_age(value, now=None):
@@ -31,8 +32,8 @@ async def build_preview(radar, store, guild, release_id, kind='RELEASE', store_p
     if row['status'] == 'ARCHIVED':
         raise CatalogError('Archived releases cannot be previewed.')
     notes = []
-    if row['status'] != 'CONFIRMED':
-        notes.append('Catalog release is unconfirmed; the draft labels it as a lead.')
+    if confidence(row)['state'] != 'CONFIRMED':
+        notes.append(confidence(row)['reason'])
     missing = [k for k in ('region', 'language', 'product_format') if scope(row[k]) == 'unknown']
     if missing:
         notes.append('Missing catalog evidence: ' + ', '.join(missing) + '.')
@@ -89,9 +90,10 @@ def preview_embeds(data):
     from .commands import safe
     row = data['release']; preorder = data['kind'] == 'PREORDER'
     selected = data['selected_retailer']
-    heading = 'Preorder listing • saved observation' if preorder else ('Release update' if row['status'] == 'CONFIRMED' else 'Release lead • unconfirmed')
+    heading = 'Preorder listing • saved observation' if preorder else confidence(row)['label']
     draft = card('PRIVATE DRAFT • ' + heading, safe(row['title'], 220))
     draft.add_field(name='Product', value=safe(f"{row['game']} • {row['product_format']}\n{row['region']} / {row['language']}", 240), inline=False)
+    draft.add_field(name='Listing confidence', value=safe(confidence(row)['reason'], 300), inline=False)
     exact = row.get('release_date') if row['status'] == 'CONFIRMED' else None
     draft.add_field(name='Catalog release date', value=(safe(exact, 40) + ' • exact date recorded in catalog' if exact else 'Exact product release date not confirmed.'), inline=False)
     windows = []
