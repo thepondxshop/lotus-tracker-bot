@@ -13,7 +13,7 @@ class OfficialCommands(app_commands.Group):
     async def interaction_check(self,interaction): return await self.root.interaction_check(interaction)
     async def on_error(self,interaction,error): await self.root.on_error(interaction,error)
 
-    @app_commands.command(name='discovery',description='Enable automatic One Piece booster-page leads or view discovery status')
+    @app_commands.command(name='discovery',description='Enable automatic One Piece product-page leads or view discovery status')
     async def discovery(self,interaction:discord.Interaction,enabled:bool|None=None):
         from .commands import embed
         async def work():
@@ -21,9 +21,9 @@ class OfficialCommands(app_commands.Group):
                 await self.verifier.discovery.configure(interaction.guild_id,interaction.user.id,enabled)
             return await self.verifier.discovery.status(interaction.guild_id)
         def render(data):
-            result=embed('Official page discovery 1.6.1',
+            result=embed('Official page discovery 1.6.3',
                 f"Automatic discovery: {'ON' if data['enabled'] else 'OFF'}\n"
-                'Supported: English One Piece OP / EB / PRB booster product pages.\n'
+                'Supported: English One Piece OP / EB / PRB / PEB boosters; starter/deck sets; DP; tins; Devil Fruit collections; illustration boxes; sleeves, playmats and other individual product pages.\n'
                 'The product index is checked on a five-minute target while enabled; source cooldowns still apply.\n'
                 'New leads use your existing Release Radar publishing channel and post before admin review.\n'
                 'Known pages/links are baselined at first setup.\n'
@@ -33,7 +33,7 @@ class OfficialCommands(app_commands.Group):
             return result
         await self.root._run(interaction,work,render)
 
-    @app_commands.command(name='importpage',description='Import one saved official One Piece booster page into Release Radar')
+    @app_commands.command(name='importpage',description='Import one saved official One Piece product page into Release Radar')
     async def importpage(self,interaction:discord.Interaction,source_id:int):
         from .commands import embed
         async def work():
