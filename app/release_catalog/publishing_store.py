@@ -17,8 +17,9 @@ from .ingestion_store import Item, Watch, aware
 from .official import OfficialCheck
 from .radar import evidence_summary
 from .extraction import GAMES
+from .source_confidence import attach, classify
 
-VERSION = '1.6.0'
+VERSION = '1.6.2'
 FIELDS = {'title': 180, 'game': 80, 'set_code': 40, 'region': 40,
           'language': 40, 'product_format': 20, 'reported_date': 10}
 
@@ -222,6 +223,7 @@ class PublishingStore:
             n.release_id = item.release_id
         if n.release_id:
             row = await self.catalog._release(s, n.guild_id, n.release_id)
+            listing = (await attach(s, [row]))[0]['listing_confidence']
             facts = {k: getattr(row, k) for k in FIELDS if k != 'reported_date'}
             facts.update(reported_date=row.release_date.isoformat() if row.release_date else None,
                          status=row.status, date_origin='CATALOG' if row.release_date else None)
@@ -250,6 +252,8 @@ class PublishingStore:
             if not watch or watch.guild_id != n.guild_id:
                 raise CatalogError('Source does not belong to this server.')
             raw = json.loads(item.payload_json or '{}')
+            listing = classify({'status': 'RUMORED', 'reported_details': json.dumps(raw)},
+                [{'kind': watch.kind, 'url': item.url, 'note': json.dumps(raw)}])
             facts = {k: raw.get(k) or 'UNKNOWN' for k in FIELDS if k != 'reported_date'}
             facts.update(reported_date=raw.get('release_date'), status='RUMORED', date_origin='SOURCE_REPORT')
             src = [{'kind': watch.kind, 'label': watch.label, 'url': item.url}]
@@ -269,10 +273,10 @@ class PublishingStore:
         for field in ('region', 'language', 'product_format'):
             if str(facts.get(field) or '').upper() in ('', 'UNKNOWN'):
                 flags.append(field.replace('_', ' ').title() + ' not verified.')
-        if facts['status'] != 'CONFIRMED':
-            flags.insert(0, 'Release is not confirmed in the catalog.')
+        if listing['state'] != 'CONFIRMED':
+            flags.insert(0, listing['reason'])
         return {'facts': facts, 'sources': src, 'windows': windows, 'flags': sorted(set(flags)),
-                'admin_fields': sorted(applied)}
+                'admin_fields': sorted(applied), 'listing_confidence': listing}
 
     async def _refresh(self, s, n):
         payload = await self._payload(s, n)
