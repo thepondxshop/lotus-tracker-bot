@@ -9,6 +9,7 @@ from discord import app_commands
 
 from . import VERSION
 from .service import CatalogError, FORMATS, SOURCE_KINDS, STATUSES, ReleaseCatalog
+from .source_confidence import confidence
 
 LOG = logging.getLogger(__name__)
 SAFETY = "Admin tools • Source evidence retained • Publishing: /release radar publishing"
@@ -28,7 +29,7 @@ def embed(title: str, description: str = "") -> discord.Embed:
 def release_embed(row: dict, heading: str = "Release record") -> discord.Embed:
     result = embed(f"{heading} • #{row['id']}", safe(row["title"], 250))
     for name, value in (
-        ("State", row["status"]), ("Game", row["game"]), ("Format", row["product_format"]),
+        ("Listing confidence", confidence(row)['label']), ("Game", row["game"]), ("Format", row["product_format"]),
         ("Region", row["region"]), ("Language", row["language"]),
         ("Confirmed release date", row["release_date"] or "Unknown / not confirmed"),
     ):
@@ -61,7 +62,7 @@ def page_embed(data: dict, title: str) -> discord.Embed:
     for row in data["items"]:
         lines.append(
             f"**#{row['id']} • {safe(row['title'], 170)}**\n"
-            f"{safe(row['game'], 60)} • {row['status']} • {row['release_date'] or 'Date unknown'}\n"
+            f"{safe(row['game'], 60)} • {confidence(row)['label']} • {row['release_date'] or 'Date unknown'}\n"
             f"{safe(row['region'], 40)} / {safe(row['language'], 40)} • {row['product_format']}"
         )
     body = "\n\n".join(lines) or "No matching releases. Rumors and undated releases are not on the confirmed calendar."
@@ -154,29 +155,43 @@ class ReleaseCommands(app_commands.Group):
         all_foil: bool | None = None,
     ):
         def render(data):
-            result = release_embed(data["release"], "Unverified lead saved" if data["created"] else "Existing record — unchanged")
+            result = release_embed(data["release"], "Release lead saved" if data["created"] else "Existing record — unchanged")
             if not data["created"]:
                 result.add_field(name="Duplicate protection", value="Nothing was overwritten. Use /release source to attach new information.", inline=False)
             return result
-        await self._run(interaction, lambda: self.catalog.add(
-            interaction.guild_id, interaction.user.id, game=game, title=title, details=details,
-            source_label=source_label, source_url=source_url, set_code=set_code, region=region,
-            language=language, product_format=product_format, cards_per_pack=cards_per_pack,
-            packs_per_box=packs_per_box, boxes_per_case=boxes_per_case, all_foil=all_foil,
-        ), render)
+        async def work():
+            data = await self.catalog.add(
+                interaction.guild_id, interaction.user.id, game=game, title=title, details=details,
+                source_label=source_label, source_url=source_url, set_code=set_code, region=region,
+                language=language, product_format=product_format, cards_per_pack=cards_per_pack,
+                packs_per_box=packs_per_box, boxes_per_case=boxes_per_case, all_foil=all_foil,
+            )
+            data['release'] = (await self.catalog.get(interaction.guild_id, data['release']['id']))['release']
+            return data
+        await self._run(interaction, work, render)
 
-    @app_commands.command(name="source", description="Attach evidence; adding a link does not confirm a release")
+    @app_commands.command(name="source", description="Attach source evidence and update listing confidence")
     @app_commands.choices(kind=[app_commands.Choice(name=x.title(), value=x) for x in SOURCE_KINDS])
     @app_commands.describe(note="What the source actually supports; distinguish retailer claims from publisher facts")
-    async def source(self, interaction: discord.Interaction, release_id: int, kind: str, label: str, note: str, url: str | None = None):
+    async def source(self, interaction: discord.Interaction, release_id: int, kind: str, label: str, note: str, url: str | None = None, supporting_url: str | None = None):
         def render(data):
             row = data["source"]
-            result = embed("Evidence saved" if data["created"] else "Existing evidence — unchanged", f"Release #{row['release_id']} • Source #{row['id']}\nType: {row['kind']}\n\nAdding this evidence did not change release status or create a preorder alert.")
+            result = embed("Evidence saved" if data["created"] else "Existing evidence — unchanged", f"Release #{row['release_id']} • Source #{row['id']}\nType: {row['kind']}\n"
+                f"{data['listing_confidence']['label']}\nExact date and stock status were not changed.")
             result.add_field(name="Label", value=safe(row["label"], 180), inline=False)
             result.add_field(name="URL", value=safe(row["url"] or "Not provided", 1000), inline=False)
             result.add_field(name="Evidence note (excerpt)", value=safe(row["note"], 1000), inline=False)
             return result
-        await self._run(interaction, lambda: self.catalog.add_source(interaction.guild_id, interaction.user.id, release_id, kind=kind, label=label, note=note, url=url), render)
+        async def work():
+            from .service import public_source_url
+            recorded_note = note
+            if supporting_url:
+                recorded_note = json.dumps({'note': note, 'supporting_urls': [public_source_url(supporting_url, required=True)]})
+            data = await self.catalog.add_source(interaction.guild_id, interaction.user.id, release_id,
+                kind=kind, label=label, note=recorded_note, url=url)
+            data['listing_confidence'] = (await self.catalog.get(interaction.guild_id, release_id))['release']['listing_confidence']
+            return data
+        await self._run(interaction, work, render)
 
     @app_commands.command(name="show", description="Inspect a release, reported details and recent provenance")
     async def show(self, interaction: discord.Interaction, release_id: int):
@@ -231,7 +246,7 @@ class ReleaseCommands(app_commands.Group):
         await self._run(interaction, lambda: self.catalog.history(interaction.guild_id, release_id, page), render)
 
     @app_commands.command(name="list", description="List releases, including rumors and undated records")
-    @app_commands.choices(status=[app_commands.Choice(name=x.title(), value=x) for x in ("ALL",) + STATUSES])
+    @app_commands.choices(status=[app_commands.Choice(name=x.title(), value=x) for x in ("ALL", "CONFIRMED", "LEAKED", "RUMORED", "ARCHIVED")])
     async def list_command(self, interaction: discord.Interaction, status: str = "ALL", game: str | None = None, page: app_commands.Range[int, 1, 10000] = 1):
         await self._run(interaction, lambda: self.catalog.list_releases(interaction.guild_id, status=status, game=game, page=page), lambda data: page_embed(data, "Release catalog"))
 
