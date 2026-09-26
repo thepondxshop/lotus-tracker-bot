@@ -21,7 +21,7 @@ class OfficialCommands(app_commands.Group):
                 await self.verifier.discovery.configure(interaction.guild_id,interaction.user.id,enabled)
             return await self.verifier.discovery.status(interaction.guild_id)
         def render(data):
-            result=embed('Official page discovery 1.6.4',
+            result=embed('Official page discovery 1.6.5',
                 f"Automatic discovery: {'ON' if data['enabled'] else 'OFF'}\n"
                 'New product discovery: One Piece + Pokemon.\n'
                 'One Piece: boosters, decks, DP, tins, collections, illustration boxes and accessories.\n'
@@ -35,10 +35,12 @@ class OfficialCommands(app_commands.Group):
                 text = (f"Source #{state['source_id'] or '?'} • {'Enabled' if state['enabled'] else 'Paused/missing'}\n"
                     f"Last attempt UTC: {last.get('at') or 'Not yet'}\n"
                     f"Root readable on last attempt: {readable}\n"
-                    f"Last result: {last.get('error') or ('Completed' if last else 'Pending')}\n"
+                    f"Last result: {last.get('error') or last.get('outcome') or ('Completed' if last else 'Pending')}\n"
+                    f"Pages skipped on last attempt: {last.get('pages_skipped',0)}\n"
                     f"Saved page states: {state['counts']}\n"
                     f"Next scheduled check UTC: {state['next_due'] or 'Not scheduled'}")
                 result.add_field(name=game,value=text[:1000],inline=False)
+            result.add_field(name='Page diagnostics',value='COMPLETED_WITH_SKIPS means the source was checked but some pages need parser review. Inspect /release official diagnostics source_id:<ID>. Supported pages keep flowing.',inline=False)
             result.add_field(name='Existing page',value='Known pages are baselined. Add/scan a specific official source, then /release official importpage source_id:<ID>.',inline=False)
             result.add_field(name='Delivery',value='Check /release radar publishing. Source discovery is separate from retailer stock. Unreadable sources need a successful check before they can discover products.',inline=False)
             return result
@@ -65,7 +67,7 @@ class OfficialCommands(app_commands.Group):
             lines=[]
             for r in rows:
                 last=json.loads(r['last_json'])
-                lines.append(f"**#{r['id']} {safe(r['game'],80)}** • {'ON' if r['enabled'] else 'OFF'}\n{safe(r['url'],180)}\n{last.get('error') or ('Checked' if last else 'Pending')} • {last.get('pages_ok',0)} pages")
+                lines.append(f"**#{r['id']} {safe(r['game'],80)}** • {'ON' if r['enabled'] else 'OFF'}\n{safe(r['url'],180)}\n{last.get('error') or last.get('outcome') or ('Checked' if last else 'Pending')} • {last.get('pages_ok',0)} pages")
             result=embed('Official publisher sources '+VERSION,'\n\n'.join(lines)[:3800])
             result.add_field(name='Coverage',value='Sources are configured automatically. Public text and supported matching are required; a configured source does not guarantee complete catalog coverage.',inline=False)
             return result
@@ -88,7 +90,27 @@ class OfficialCommands(app_commands.Group):
     async def scan(self,interaction:discord.Interaction,source_id:int):
         from .commands import embed
         await self.root._run(interaction,lambda:self.verifier.scan(interaction.guild_id,source_id),
-            lambda r:embed('Official verification scan',f"Pages checked: {r['pages_ok']}\nRemaining pages: {r['remaining']}\nResult: {r['error'] or 'Completed'}\nUse /release official check with a release ID to see matched evidence."))
+            lambda r:embed('Official verification scan',f"Pages checked: {r['pages_ok']}\nRemaining pages: {r['remaining']}\nSkipped pages: {r.get('pages_skipped',0)}\nResult: {r['error'] or r.get('outcome') or 'Completed'}\nInspect /release official diagnostics for page URLs and reasons."))
+
+    @app_commands.command(name='diagnostics',description='Inspect saved unsupported official pages and their parsing reasons')
+    async def diagnostics(self,interaction:discord.Interaction,source_id:int):
+        from .commands import embed,safe
+        def render(data):
+            last=data['last']
+            result=embed(f"Official page diagnostics • Source #{source_id}",
+                f"{safe(data['game'],80)} • Last scan result: {safe(last.get('error') or last.get('outcome') or 'Not recorded',100)}\n"
+                'Read-only. Latest five saved page problems; these may predate the latest scan.')
+            for page in data['pages']:
+                value=(f"{safe(page['title'],180)}\n{safe(page['url'],350)}\n"
+                    f"Reason: {safe(page['reason'],80)}\n"
+                    f"Page headings: {safe(' / '.join(page['headings']),220)}\n"
+                    f"Saved page checked UTC: {page['checked_at']}")
+                result.add_field(name='Page needs review',value=value[:1000],inline=False)
+            if not data['pages']:
+                result.add_field(name='No saved page details',value='Older versions did not save rejected pages. The next eligible source scan records their URL and reason.',inline=False)
+            result.add_field(name='Scan behavior',value='Unsupported pages do not hold supported listings for approval or put the gallery into a rate-limit cooldown. Actual access and rate-limit errors retain their backoff.',inline=False)
+            return result
+        await self.root._run(interaction,lambda:self.verifier.diagnostics(interaction.guild_id,source_id),render)
 
     @staticmethod
     def render_result(data):
