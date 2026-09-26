@@ -8,7 +8,7 @@ from .extraction import canonical_url, host, norm, code, CODE
 from . import pokemon_products
 from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
 
-VERSION = '1.6.4'
+VERSION = '1.6.5'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'One Piece': ('https://en.onepiece-cardgame.com/products/', 'EN', 'UNKNOWN'),
