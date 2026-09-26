@@ -5,12 +5,13 @@ from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
 from .extraction import canonical_url, host, norm, code, CODE
-from . import pokemon_products
+from . import pokemon_products, publisher_products
 from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
 
-VERSION = '1.6.6'
+VERSION = '1.6.7'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
+    'MTG': ('https://magic.wizards.com/en', 'UNKNOWN', 'UNKNOWN'),
     'One Piece': ('https://en.onepiece-cardgame.com/products/', 'EN', 'UNKNOWN'),
     'Pokemon': ('https://www.pokemon.com/us/pokemon-tcg/product-gallery', 'EN', 'US'),
     'Gundam': ('https://www.gundam-gcg.com/en/products/', 'EN', 'US'),
@@ -44,13 +45,17 @@ class Document(HTMLParser):
         self.links = []
         self.heading = None
         self.in_title = False
+        self.title_done = False
         self.anchor = None
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag in ('script','style','noscript','nav','footer','header'):
             self.skip.append(tag)
         if self.skip: return
-        if tag == 'title': self.in_title = True
+        if tag == 'title':
+            if self.title_done:
+                self.skip.append(tag); return
+            self.in_title = True
         if tag in ('h1','h2','h3','h4'):
             self.heading = []; self.heading_tag = tag
         if tag == 'a' and a.get('href'): self.anchor = [a['href'], []]
@@ -60,7 +65,7 @@ class Document(HTMLParser):
         if self.skip:
             if tag == self.skip[-1]: self.skip.pop()
             return
-        if tag == 'title': self.in_title = False
+        if tag == 'title': self.in_title = False; self.title_done = True
         if tag == self.heading_tag and self.heading is not None:
             target = self.headings if tag in ('h1','h2') else self.detail_headings
             target.append(' '.join(self.heading)); self.heading = None; self.heading_tag = None
@@ -97,6 +102,8 @@ def access_challenge(page):
 
 
 def discovery_links(game, page, releases):
+    if game in publisher_products.ROOTS:
+        return publisher_products.links(game,page)
     if game == 'Pokemon':
         products, indexes = [], []
         for href, _ in page.get('links', []):
@@ -214,6 +221,17 @@ def identity_match(release, page):
             if item['product_format'] in ('PACK', 'BOX') and release.get('product_format') in ('PACK', 'BOX', 'CASE', 'UNKNOWN', None):
                 return 'SET'
         return None
+    game=release.get('game')
+    if game in publisher_products.ROOTS and publisher_products.product_url(game,page.get('url','')):
+        item=publisher_products.identity(game,page)
+        if not item:return None
+        if norm(release['title'])==norm(item['title']):return item['publisher_scope']
+        wanted=code(release.get('set_code'))
+        if wanted and wanted==code(item.get('set_code')):
+            if item['product_format']=='PACK' and release.get('product_format') in ('PACK','BOX','CASE','UNKNOWN',None):
+                return 'SET'
+            if item['publisher_scope']=='SET':return 'SET'
+        return None
     titles = page['headings'][:3] + [page['title'].split('|')[0].split('｜')[0]]
     wanted = code(release.get('set_code'))
     if not wanted:
@@ -240,10 +258,18 @@ def evaluate(release, page, language, region):
     if norm(release.get('game')) == 'pokemon' and pokemon_products.product_url(page.get('url', '')):
         language, region = 'English', 'US'
     if not match: return None
-    windows=release_windows(primary_product_text(page))
+    game=release.get('game')
+    text=publisher_products.date_text(game,page) if game in publisher_products.ROOTS and publisher_products.product_url(game,page['url']) else primary_product_text(page)
+    windows=release_windows(text)
     result={'url':page['url'],'match_scope':match,'language':language,'region':region,
             'publisher_title':page['title'],'windows':windows,
             'state':'OFFICIAL_MENTION','issues':[]}
+    if game in publisher_products.ROOTS:
+        item=publisher_products.identity(game,page)
+        if item:
+            language,region=item['language'],item['region']
+            result.update(language=language,region=region)
+            if item['publisher_scope']=='SET':result['issues'].append('Publisher set announcement; individual packaging is not established.')
     if match == 'PRODUCT_GROUP':
         result['issues'].append('Multiple product variants; not one combined bundle.')
     if launch:
