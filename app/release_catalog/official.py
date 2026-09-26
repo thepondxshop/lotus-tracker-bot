@@ -8,7 +8,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from .service import Release, ReleaseSource, CatalogError, digest, snapshot, utcnow
 from .ingestion_store import aware, Watch, Item
 from .public_http import PublicHTTP, FetchError
-from .official_parser import PRESETS, VERSION, approved_url, parse_page, discovery_links, evaluate
+from .official_parser import PRESETS, VERSION, approved_url, parse_page, discovery_links, evaluate, access_challenge
 
 LOG=logging.getLogger(__name__)
 
@@ -176,17 +176,20 @@ class OfficialVerifier:
             if not source: raise CatalogError('Official source not found in this server.')
             pages=(await s.scalars(select(OfficialPage).where(OfficialPage.source_id==source_id,
                 OfficialPage.last_error.is_not(None)).order_by(OfficialPage.checked_at.desc(),OfficialPage.id.desc()).limit(5))).all()
-            result=[]
+            last=json.loads(source.last_json or '{}')
+            failed=last.get('failed_page')
+            result=[failed] if failed else []
             for page in pages:
                 doc=json.loads(page.data_json)
-                reason=page.last_error
+                if failed and doc.get('url')==failed.get('url'): continue
+                reason='ACCESS_CHALLENGE' if access_challenge(doc) else page.last_error
                 if source.game=='Pokemon' and reason=='UNSUPPORTED_PRODUCT_PAGE':
                     from .pokemon_products import rejection_reason
                     reason=rejection_reason(doc) or 'SAVED_PAGE_NEEDS_RESCAN'
                 result.append({'url':doc.get('url',''),'title':doc.get('title',''),
                     'headings':doc.get('headings',[])[:3], 'reason':reason,
                     'checked_at':aware(page.checked_at).isoformat()})
-            return {'source_id':source_id,'game':source.game,'last':json.loads(source.last_json or '{}'),'pages':result}
+            return {'source_id':source_id,'game':source.game,'last':last,'pages':result[:5]}
 
     async def result(self,guild,release_id):
         await self.ensure()
@@ -209,7 +212,7 @@ class OfficialVerifier:
                 if last.get('retry_at') and utcnow().isoformat()<last['retry_at']: raise CatalogError('Official source cooldown is active; try after '+last['retry_at'])
                 row.lease_until=utcnow()+timedelta(minutes=4);source=snapshot(row)
             releases=await self.releases(guild,source['game'])
-            queue=json.loads(source['queue_json']);new_cycle=not queue;urls=[source['url']];seen=set();pages_ok=0;error=None;root_readable=False;root_product_links=0;skipped_pages=[]
+            queue=json.loads(source['queue_json']);new_cycle=not queue;urls=[source['url']];seen=set();pages_ok=0;error=None;root_readable=False;root_product_links=0;skipped_pages=[];failed_page=None
             async with self.sessions() as s:
                 known=set((await s.scalars(select(OfficialPage.url_key).where(OfficialPage.source_id==source_id))).all())
             try:
@@ -223,7 +226,10 @@ class OfficialVerifier:
                             approved_url(source['game'],page.url)
                             doc=parse_page(page.url,page.text)
                             skip_reason=None
-                            if any(x in doc['title'].lower() for x in ('access denied','just a moment','captcha')):
+                            if access_challenge(doc):
+                                failed_page={'url':doc['url'],'title':doc.get('title','')[:500],
+                                    'headings':doc.get('headings',[])[:3], 'reason':'ACCESS_CHALLENGE',
+                                    'checked_at':utcnow().isoformat()}
                                 raise FetchError('ACCESS_CHALLENGE')
                             if source['game']=='Pokemon':
                                 from .pokemon_products import product_url as pokemon_url, index_url, rejection_reason
@@ -292,7 +298,7 @@ class OfficialVerifier:
                         and (await self.discovery.status(guild))['enabled']):
                     delay=5
                 last={'at':utcnow().isoformat(),'pages_ok':pages_ok,'error':error,'remaining':len(queue),'root_readable':root_readable,'root_product_links':root_product_links,
-                      'diagnostics_version':1,'pages_skipped':len(skipped_pages),'skipped_pages':skipped_pages[:8],
+                      'failed_page':failed_page,'diagnostics_version':2,'pages_skipped':len(skipped_pages),'skipped_pages':skipped_pages[:8],
                       'outcome':'SOURCE_ERROR' if error else ('COMPLETED_WITH_SKIPS' if skipped_pages else 'COMPLETED'),
                       'retry_at':(utcnow()+timedelta(minutes=60 if error else 5)).isoformat()}
                 async with self.sessions() as s,s.begin():
