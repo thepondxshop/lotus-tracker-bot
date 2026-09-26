@@ -3,10 +3,11 @@ import calendar
 import re
 from datetime import date
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
 from .extraction import canonical_url, host, norm, code, CODE
+from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
 
-VERSION = '1.6.1'
+VERSION = '1.6.3'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'One Piece': ('https://en.onepiece-cardgame.com/products/', 'EN', 'UNKNOWN'),
@@ -36,6 +37,8 @@ class Document(HTMLParser):
         self.skip = []
         self.title = []
         self.headings = []
+        self.detail_headings = []
+        self.heading_tag = None
         self.parts = []
         self.links = []
         self.heading = None
@@ -47,7 +50,8 @@ class Document(HTMLParser):
             self.skip.append(tag)
         if self.skip: return
         if tag == 'title': self.in_title = True
-        if tag in ('h1','h2'): self.heading = []
+        if tag in ('h1','h2','h3','h4'):
+            self.heading = []; self.heading_tag = tag
         if tag == 'a' and a.get('href'): self.anchor = [a['href'], []]
         if tag == 'img' and self.heading is not None: self.heading.append(a.get('alt',''))
         if tag in ('p','div','section','article','h1','h2','h3','li','dt','dd','tr','br'): self.parts.append('\n')
@@ -56,8 +60,9 @@ class Document(HTMLParser):
             if tag == self.skip[-1]: self.skip.pop()
             return
         if tag == 'title': self.in_title = False
-        if tag in ('h1','h2') and self.heading is not None:
-            self.headings.append(' '.join(self.heading)); self.heading = None
+        if tag == self.heading_tag and self.heading is not None:
+            target = self.headings if tag in ('h1','h2') else self.detail_headings
+            target.append(' '.join(self.heading)); self.heading = None; self.heading_tag = None
         if tag == 'a' and self.anchor:
             self.links.append((self.anchor[0], ' '.join(self.anchor[1]))); self.anchor = None
         if tag in ('p','div','section','article','h1','h2','h3','li','dt','dd','tr'): self.parts.append('\n')
@@ -75,10 +80,33 @@ def parse_page(url, html):
     doc = Document(); doc.feed(html)
     text = '\n'.join(' '.join(x.split()) for x in ''.join(doc.parts).splitlines() if x.strip())
     return {'url':url, 'title':' '.join(doc.title)[:500], 'headings':doc.headings[:30],
-            'text':text[:100000], 'links':doc.links[:800]}
+            'text':text[:100000], 'links':doc.links[:800], 'detail_headings':doc.detail_headings[:30]}
 
 
 def discovery_links(game, page, releases):
+    if game == 'One Piece':
+        products, indexes = [], []
+        for href, _ in page['links']:
+            try:
+                url = approved_url(game, urljoin(page['url'], href))
+            except (ValueError, TypeError):
+                continue
+            parsed = urlsplit(url)
+            if product_path(url):
+                url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, '', ''))
+                target = products
+            elif parsed.path.rstrip('/') == '/products':
+                params = parse_qs(parsed.query)
+                number = params.get('page', ['1'])[0]
+                if not number.isdigit() or not 1 <= int(number) <= 100:
+                    continue
+                url = 'https://en.onepiece-cardgame.com/products/' + ('?page='+str(int(number)) if int(number)>1 else '')
+                target = indexes
+            else:
+                continue
+            if url != page['url'] and url not in target:
+                target.append(url)
+        return products + indexes
     links = []
     for href, label in page['links']:
         try: url = approved_url(game, urljoin(page['url'], href))
@@ -133,19 +161,26 @@ def release_windows(text):
 
 def primary_product_text(page):
     """Do not let related One Piece products supply the main product's date."""
-    if (urlsplit(page['url']).hostname != 'en.onepiece-cardgame.com'
-            or not re.fullmatch(r'/products/(?:op|eb|prb)\d+\.html', urlsplit(page['url']).path, re.I)):
-        return page['text']
-    text = page['text']
-    start = re.search(r'\bPRODUCT DETAILS\b', text, re.I)
-    if start:
-        text = text[start.end():]
-    end = re.search(r'\bRELATED\b|What is\s+(?:a |an )?(?:Starter Deck|Booster Pack)', text, re.I)
-    return text[:end.start()] if end else text
+    return main_text(page)
 
 
 def identity_match(release, page):
     """Match headings, never navigation or an arbitrary mention in article text."""
+    if norm(release.get('game')) == 'one piece' and product_path(page.get('url', '')):
+        item = product_identity(page)
+        if not item:
+            return None
+        clean = lambda x: ' '.join(re.findall(r'[a-z0-9]+', norm(main_title(x))))
+        if clean(release['title']) == clean(item['title']):
+            return 'SET' if str(item.get('set_code') or '').split('-')[0] in BOOSTERS else 'PRODUCT'
+        wanted = code(release.get('set_code'))
+        if wanted and wanted == code(item.get('set_code')):
+            # A shared contained-booster code cannot confirm a collection.
+            if str(item.get('set_code') or '').split('-')[0] not in BOOSTERS:
+                return 'PRODUCT' if release.get('product_format') == item['product_format'] else None
+            if item['product_format'] in ('PACK', 'BOX') and release.get('product_format') in ('PACK', 'BOX', 'CASE', 'UNKNOWN', None):
+                return 'SET'
+        return None
     titles = page['headings'][:3] + [page['title'].split('|')[0].split('｜')[0]]
     wanted = code(release.get('set_code'))
     if not wanted:
