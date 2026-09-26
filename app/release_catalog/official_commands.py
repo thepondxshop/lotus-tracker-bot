@@ -13,7 +13,7 @@ class OfficialCommands(app_commands.Group):
     async def interaction_check(self,interaction): return await self.root.interaction_check(interaction)
     async def on_error(self,interaction,error): await self.root.on_error(interaction,error)
 
-    @app_commands.command(name='discovery',description='Enable One Piece and Pokemon product discovery or inspect source health')
+    @app_commands.command(name='discovery',description='Enable supported publisher discovery or inspect each game source')
     async def discovery(self,interaction:discord.Interaction,enabled:bool|None=None):
         from .commands import embed
         async def work():
@@ -21,14 +21,11 @@ class OfficialCommands(app_commands.Group):
                 await self.verifier.discovery.configure(interaction.guild_id,interaction.user.id,enabled)
             return await self.verifier.discovery.status(interaction.guild_id)
         def render(data):
-            result=embed('Official page discovery 1.6.6',
+            result=embed('Official page discovery 1.6.7',
                 f"Automatic discovery: {'ON' if data['enabled'] else 'OFF'}\n"
-                'New product discovery: One Piece + Pokemon.\n'
-                'One Piece: boosters, decks, DP, tins, collections, illustration boxes and accessories.\n'
-                'Pokemon: US English product-gallery pages for ETBs, boosters, Build & Battle, decks, tins, collections and listed accessories.\n'
-                'Five-minute index target while enabled; source cooldowns and scan capacity still apply.\n'
-                'New leads publish before admin review using your existing Release Radar channel.\n'
-                'Other games retain their existing source ingestion/verification; automatic official product creation is not enabled for them yet.')
+                'New leads publish before admin review. Five-minute feed target; cooldowns and scan capacity apply.\n'
+                'New game feeds baseline their first readable index; later new links can publish.\n'
+                'Use /release official coverage for supported formats and remaining gaps.')
             for game, state in data.get('games', {}).items():
                 last = state['last']
                 readable = {True:'Yes',False:'No'}.get(last.get('root_readable'),'Not recorded yet')
@@ -37,16 +34,16 @@ class OfficialCommands(app_commands.Group):
                     f"Root readable on last attempt: {readable}\n"
                     f"Last result: {last.get('error') or last.get('outcome') or ('Completed' if last else 'Pending')}\n"
                     f"Pages skipped on last attempt: {last.get('pages_skipped',0)}\n"
-                    f"Saved page states: {state['counts']}\n"
+                    f"Saved page states: {str(state['counts'])[:180]}\n"
                     f"Next scheduled check UTC: {state['next_due'] or 'Not scheduled'}")
-                result.add_field(name=game,value=text[:1000],inline=False)
-            result.add_field(name='Page diagnostics',value='COMPLETED_WITH_SKIPS means the source was checked but some pages need parser review. Inspect /release official diagnostics source_id:<ID>. Supported pages keep flowing.',inline=False)
+                result.add_field(name=game,value=text[:470],inline=False)
+            result.add_field(name='Page diagnostics',value='Inspect /release official diagnostics source_id:<ID> for skipped pages and access failures.',inline=False)
             result.add_field(name='Existing page',value='Known pages are baselined. Add/scan a specific official source, then /release official importpage source_id:<ID>.',inline=False)
             result.add_field(name='Delivery',value='Check /release radar publishing. Source discovery is separate from retailer stock. Unreadable sources need a successful check before they can discover products.',inline=False)
             return result
         await self.root._run(interaction,work,render)
 
-    @app_commands.command(name='importpage',description='Import one saved One Piece or US Pokemon product page into Release Radar')
+    @app_commands.command(name='importpage',description='Import one saved supported publisher product or overview page')
     async def importpage(self,interaction:discord.Interaction,source_id:int):
         from .commands import embed
         async def work():
@@ -59,6 +56,22 @@ class OfficialCommands(app_commands.Group):
             'Existing records reuse their catalog entry. To announce an existing entry: '
             f"/release radar announce release_id:{data['release_id']}\n"
             'No retailer stock or preorder availability was asserted.'))
+
+    @app_commands.command(name='coverage',description='Show publisher discovery coverage and remaining gaps for every game')
+    async def coverage(self,interaction:discord.Interaction):
+        from .commands import embed
+        from .publisher_products import COVERAGE
+        async def work():return None
+        def render(_):
+            result=embed('Official discovery coverage 1.6.7',
+                'Supported routes require readable publisher content. Listing confirmation is separate from stock, exact SKU dates and admin review.')
+            for game,label in {'One Piece':'Product pages: boosters, decks, collections and accessories',
+                'Pokemon':'US product gallery; access challenges can block discovery',**COVERAGE}.items():
+                result.add_field(name=game,value=label,inline=False)
+            result.add_field(name='Cyberpunk TCG / Hellbreak TCG',value='Existing distributor ingestion and official evidence checks continue. Automatic official product creation is not enabled: suitable product feeds have not been verified.',inline=False)
+            result.add_field(name='Product groups and editions',value='Set/overview pages stay broad; no individual SKU or product language is inferred. Tournament registrations are excluded. Physical event-themed products can qualify.',inline=False)
+            return result
+        await self.root._run(interaction,work,render)
 
     @app_commands.command(name='sources',description='Show official publisher sources for all ten games')
     async def sources(self,interaction:discord.Interaction):
