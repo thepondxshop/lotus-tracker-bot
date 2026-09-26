@@ -10,8 +10,9 @@ from .commands import safe
 from .extraction import GAMES
 from .radar import ReleaseRadar
 from .radar_diagnostics import RadarDiagnostics
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 from .service import CatalogError
+from .source_confidence import confidence
 
 LOG = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def windows(check, limit=2):
 
 
 def catalog_label(row):
-    return 'Confirmed catalog record' if row['status']=='CONFIRMED' else ('Archived catalog record' if row['status']=='ARCHIVED' else 'Unconfirmed catalog record')
+    return confidence(row)['label']
 
 
 def diagnostic_embed(data):
