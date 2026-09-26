@@ -7,6 +7,7 @@ from sqlalchemy import select, func, case
 from .service import Release, ReleaseSource, CatalogError, snapshot, positive_id
 from .official import OfficialCheck
 from .ingestion_store import RetailerLink
+from .source_confidence import attach
 
 VERSION = '1.5.0-preview'
 PAGE_SIZE = 5
@@ -79,9 +80,10 @@ class ReleaseRadar:
                     RetailerLink.guild_id == guild, RetailerLink.release_id.in_(ids), RetailerLink.state == 'MATCHED'
                 ).group_by(RetailerLink.release_id))).all())
             items = []
+            classified = {r['id']: r for r in await attach(session, rows)}
             for row in rows:
                 check = checks.get(row.id)
-                items.append({'release': snapshot(row), 'kinds': sorted(kinds.get(row.id, [])),
+                items.append({'release': classified[row.id], 'kinds': sorted(kinds.get(row.id, [])),
                               'check': evidence_summary(json.loads(check.result_json) if check else None),
                               'checked_at': snapshot(check)['checked_at'] if check else None,
                               'retailer_count': counts.get(row.id, 0)})
@@ -111,7 +113,7 @@ class ReleaseRadar:
             for link, product, store in (await session.execute(query.order_by(Store.name, StoreProduct.id).offset(
                 (page - 1) * RETAILER_PAGE_SIZE).limit(RETAILER_PAGE_SIZE))).all():
                 retailers.append({'link': snapshot(link), 'product': snapshot(product), 'store': snapshot(store)})
-            return {'release': snapshot(row), 'kinds': kinds,
+            return {'release': (await attach(session, [row]))[0], 'kinds': kinds,
                     'check': evidence_summary(json.loads(check.result_json) if check else None),
                     'checked_at': snapshot(check)['checked_at'] if check else None,
                     'retailers': retailers, 'total': total, 'page': page, 'pages': pages, 'has_more': page < pages}
