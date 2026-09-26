@@ -17,18 +17,22 @@ def source_link(value):
 
 def notice_embed(n):
     p = n['payload']; facts = p['facts']; review = n['review_state']
+    listing = p.get('listing_confidence') or {'state': 'RUMORED', 'label': '⚠️ Rumored listing', 'reason': 'Source confidence has not been evaluated.'}
     if facts['status'] == 'ARCHIVED':
         heading, colour = '⚫ Release lead archived', 0x747F8D
     elif review == 'INCORRECT':
         heading, colour = '❌ Release alert disputed by admin', 0xE74C3C
     elif review == 'CORRECTED':
         heading, colour = '✏️ Release information corrected', 0x3498DB
-    elif facts['status'] == 'CONFIRMED' and not p['flags']:
-        heading, colour = '📅 Confirmed catalog release', 0x2ECC71
+    elif listing['state'] == 'CONFIRMED':
+        heading, colour = '✅ Confirmed listing', 0x2ECC71
+    elif listing['state'] == 'LEAKED':
+        heading, colour = '🟠 Leak • unverified', 0xE67E22
     else:
-        heading, colour = '⚠️ Release lead • details unverified', 0xF1C40F
+        heading, colour = '⚠️ Rumored listing • details unverified', 0xF1C40F
     e = discord.Embed(title=heading, description='**' + safe(facts['title'], 220) + '**', colour=colour)
     e.add_field(name='Product', value=safe(f"{facts['game']} • {facts['product_format']}\n{facts['region']} / {facts['language']}", 230), inline=False)
+    e.add_field(name='Listing confidence', value=safe(listing['label']+'\n'+listing['reason'], 300), inline=False)
     when = facts.get('reported_date')
     if when and str(when).upper() != 'UNKNOWN':
         label = {'ADMIN_REPORT': 'Admin-reported date • not publisher verification',
@@ -58,7 +62,7 @@ def notice_embed(n):
     e.add_field(name='Admin review', value=text[:1000], inline=False)
     e.add_field(name='Availability', value='Release/source discovery only. This is not a stock or purchasable-preorder confirmation.', inline=False)
     ref = f"Release #{n['release_id']}" if n.get('release_id') else 'Unmatched source lead'
-    e.set_footer(text=f"Lotus Release Radar 1.6.1 • Alert #{n['id']} • {ref}")
+    e.set_footer(text=f"Lotus Release Radar 1.6.2 • Alert #{n['id']} • {ref}")
     return e
 
 
