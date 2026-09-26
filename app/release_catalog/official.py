@@ -54,6 +54,8 @@ class OfficialVerifier:
         self.lock=asyncio.Lock();self.task=None;self.state='NOT_STARTED';self.last_error=None;self.signatures={}
         from .official_discovery import OfficialDiscovery
         self.discovery=OfficialDiscovery(self)
+        from .official_discovery import SUPPORTED_GAMES
+        self.discovery_games = SUPPORTED_GAMES
     async def ensure(self):
         await self.store.ensure_schema()
         async with self.schema_lock:
@@ -173,7 +175,7 @@ class OfficialVerifier:
                 if last.get('retry_at') and utcnow().isoformat()<last['retry_at']: raise CatalogError('Official source cooldown is active; try after '+last['retry_at'])
                 row.lease_until=utcnow()+timedelta(minutes=4);source=snapshot(row)
             releases=await self.releases(guild,source['game'])
-            queue=json.loads(source['queue_json']);new_cycle=not queue;urls=[source['url']];seen=set();pages_ok=0;error=None
+            queue=json.loads(source['queue_json']);new_cycle=not queue;urls=[source['url']];seen=set();pages_ok=0;error=None;root_readable=False;root_product_links=0
             async with self.sessions() as s:
                 known=set((await s.scalars(select(OfficialPage.url_key).where(OfficialPage.source_id==source_id))).all())
             try:
@@ -186,6 +188,18 @@ class OfficialVerifier:
                             page=await http.get(url,source['url'])
                             approved_url(source['game'],page.url)
                             doc=parse_page(page.url,page.text)
+                            if source['game']=='Pokemon':
+                                from .pokemon_products import product_url as pokemon_url, index_url, product_identity
+                                if len(doc['text'])<80:
+                                    raise FetchError('NO_PUBLIC_TEXT')
+                                if index_url(doc['url']):
+                                    links = discovery_links('Pokemon', doc, [])
+                                    if not any(pokemon_url(link) for link in links):
+                                        raise FetchError('NO_PRODUCT_GALLERY_CONTENT')
+                                    if url==source['url']:
+                                        root_product_links = sum(bool(pokemon_url(link)) for link in links)
+                                elif pokemon_url(doc['url']) and not product_identity(doc):
+                                    raise FetchError('UNSUPPORTED_PRODUCT_PAGE')
                             if len(doc['text'])<80: raise FetchError('NO_PUBLIC_TEXT')
                             if any(x in doc['title'].lower() for x in ('access denied','just a moment','captcha')): raise FetchError('ACCESS_CHALLENGE')
                             async with self.sessions() as s,s.begin():
@@ -197,9 +211,10 @@ class OfficialVerifier:
                                 await s.flush()
                                 page_id=saved.id
                             pages_ok+=1
+                            if url==source['url']: root_readable=True
                             # Persist a new lead before continuing the crawl.
                             # On failure the saved page is replayed by catch_up.
-                            if source['game']=='One Piece':
+                            if source['game'] in self.discovery_games:
                                 await self.discovery.observe(guild,page_id)
                             new_links=[]
                             for link in discovery_links(source['game'],doc,releases):
@@ -207,7 +222,7 @@ class OfficialVerifier:
                                     # New pages first; existing pages rotate after the outstanding queue.
                                     if digest(link) not in known: new_links.append(link)
                                     elif new_cycle and url==source['url']: queue.append(link)
-                            if source['game']=='One Piece' and url!=source['url']:
+                            if source['game'] in self.discovery_games and url!=source['url']:
                                 queue=(queue+new_links)[:500]
                             else:
                                 queue=(new_links+queue)[:500]
@@ -218,6 +233,7 @@ class OfficialVerifier:
                                 if saved: saved.last_error=error
                             if url!=source['url']: queue.append(url)
                             if error in ('RATE_LIMITED','ACCESS_DENIED','ACCESS_CHALLENGE'): break
+                            if url==source['url'] and error in ('NO_PUBLIC_TEXT','NO_PRODUCT_GALLERY_CONTENT'): break
                         if queue: urls.append(queue.pop(0))
             except asyncio.CancelledError:
                 error='CANCELLED';raise
@@ -227,11 +243,11 @@ class OfficialVerifier:
                 # Persist an unprocessed URL popped at the page limit, and the remaining queue.
                 queue=urls+queue
                 delay=60 if error else (15 if queue else 360)
-                if (not error and source['game']=='One Piece'
-                        and source['url'].rstrip('/')==PRESETS['One Piece'][0].rstrip('/')
+                if (not error and source['game'] in self.discovery_games
+                        and source['url'].rstrip('/')==PRESETS[source['game']][0].rstrip('/')
                         and (await self.discovery.status(guild))['enabled']):
                     delay=5
-                last={'at':utcnow().isoformat(),'pages_ok':pages_ok,'error':error,'remaining':len(queue),
+                last={'at':utcnow().isoformat(),'pages_ok':pages_ok,'error':error,'remaining':len(queue),'root_readable':root_readable,'root_product_links':root_product_links,
                       'retry_at':(utcnow()+timedelta(minutes=60 if error else 5)).isoformat()}
                 async with self.sessions() as s,s.begin():
                     row=await s.get(OfficialSource,source_id)
@@ -257,7 +273,7 @@ class OfficialVerifier:
                         discovery_on=(await self.discovery.status(guild))['enabled']
                         for source in await self.sources(guild):
                             releases=await self.releases(guild,source['game'])
-                            if (not releases and not (discovery_on and source['game']=='One Piece')) or not source['enabled']: continue
+                            if (not releases and not (discovery_on and source['game'] in self.discovery_games)) or not source['enabled']: continue
                             key=(guild,source['game'])
                             signature=digest([(r['id'],r['updated_at']) for r in releases])
                             changed=self.signatures.get(key)!=signature
