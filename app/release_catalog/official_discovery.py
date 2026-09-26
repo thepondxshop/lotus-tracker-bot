@@ -13,16 +13,15 @@ from .ingestion_store import aware
 from .official import OfficialSource, OfficialPage, OfficialCheck
 from .official_parser import approved_url, evaluate, primary_product_text, release_windows
 
-VERSION = '1.6.1'
-PATH = re.compile(r'^/products/(op|eb|prb)(\d{1,3})\.html$', re.I)
-TITLE_CODE = re.compile(r'\[(OP|EB|PRB)[ -]?(\d{1,3})\]', re.I)
+VERSION = '1.6.3'
+from .one_piece_products import product_path, product_identity
 
 
 def product_url(url):
     try:
         url = approved_url('One Piece', url)
         p = urlsplit(url)
-        if p.scheme != 'https' or not PATH.fullmatch(p.path):
+        if not product_path(url):
             return None
         return 'https://en.onepiece-cardgame.com' + p.path.lower()
     except (ValueError, TypeError):
@@ -31,19 +30,10 @@ def product_url(url):
 
 def candidate(doc):
     url = product_url(doc.get('url', ''))
-    if not url:
+    details = product_identity(doc)
+    if not url or not details:
         return None
-    path = PATH.fullmatch(urlsplit(url).path)
-    wanted = (path[1].upper(), int(path[2]))
-    title = ' '.join(str(doc.get('title', '')).split('|')[0].split('｜')[0].split())
-    codes = {(m[1].upper(), int(m[2])) for m in TITLE_CODE.finditer(title)}
-    # Main document title and URL must identify the same booster product.
-    # A related-card mention or OP-18 in a page body is insufficient.
-    if codes != {wanted} or len(title) > 180 or not re.match(
-            r'^(?:BOOSTER PACK|EXTRA BOOSTER|PREMIUM BOOSTER)\b', title, re.I):
-        return None
-    return dict(url=url, title=title, game='One Piece', language='English', region='UNKNOWN',
-                product_format='PACK', set_code=f'{wanted[0]}-{wanted[1]:02d}',
+    return dict(url=url, **details, game='One Piece', language='English', region='UNKNOWN',
                 windows=release_windows(primary_product_text(doc)))
 
 
@@ -79,6 +69,8 @@ class OfficialDiscovery:
         self.sessions = verifier.sessions
         self.ready = False
         self.schema_lock = asyncio.Lock()
+        self.started_at = utcnow()
+        self.prepared_guilds = set()
 
     async def ensure(self):
         await self.verifier.ensure()
@@ -89,6 +81,39 @@ class OfficialDiscovery:
                         await conn.execute(text('SELECT pg_advisory_xact_lock(1280460107)'))
                     await conn.run_sync(Base.metadata.create_all)
                 self.ready = True
+
+    async def prepare(self, guild):
+        """Baseline cached newly supported pages once, before a scan overwrites them."""
+        await self.ensure()
+        if guild in self.prepared_guilds:
+            return
+        marker = 'https://en.onepiece-cardgame.com/products/#coverage-1.6.3'
+        async with self.sessions() as s, s.begin():
+            await self.store.guild_lock(s, guild)
+            cfg = await s.get(DiscoverySettings, guild)
+            if not cfg:
+                return
+            done = await s.scalar(select(DiscoveryPage.id).where(
+                DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(marker)))
+            if not done:
+                known = set((await s.scalars(select(DiscoveryPage.url_key).where(DiscoveryPage.guild_id == guild))).all())
+                pages = (await s.scalars(select(OfficialPage).join(OfficialSource,
+                    OfficialSource.id == OfficialPage.source_id).where(OfficialSource.guild_id == guild,
+                    OfficialSource.game == 'One Piece', OfficialPage.checked_at < self.started_at))).all()
+                urls = set()
+                for page in pages:
+                    doc = json.loads(page.data_json)
+                    urls.add(product_url(doc.get('url', '')))
+                    for href, _ in doc.get('links', []):
+                        urls.add(product_url(urljoin(doc.get('url', ''), href)))
+                for url in urls - {None}:
+                    if digest(url) in known or re.fullmatch(r'/products/(?:op|eb|prb)\d+\.html', urlsplit(url).path):
+                        continue
+                    s.add(DiscoveryPage(guild_id=guild, url_key=digest(url), url=url,
+                        state='BASELINED', checked_at=self.started_at))
+                s.add(DiscoveryPage(guild_id=guild, url_key=digest(marker), url=marker,
+                    state='COVERAGE_BASELINE', checked_at=self.started_at))
+        self.prepared_guilds.add(guild)
 
     async def configure(self, guild, actor, enabled):
         await self.ensure()
@@ -126,11 +151,11 @@ class OfficialDiscovery:
         async with self.sessions() as s:
             cfg = await s.get(DiscoverySettings, guild)
             counts = dict((await s.execute(select(DiscoveryPage.state, func.count()).where(
-                DiscoveryPage.guild_id == guild).group_by(DiscoveryPage.state))).all())
+                DiscoveryPage.guild_id == guild, DiscoveryPage.state != 'COVERAGE_BASELINE').group_by(DiscoveryPage.state))).all())
             return {'enabled': bool(cfg and cfg.enabled), 'counts': counts}
 
     async def observe(self, guild, page_id, *, explicit=False, actor=None):
-        await self.ensure()
+        await self.prepare(guild)
         async with self.sessions() as s, s.begin():
             await self.store.guild_lock(s, guild)
             cfg = await s.get(DiscoverySettings, guild)
@@ -152,7 +177,7 @@ class OfficialDiscovery:
             item = candidate(doc) if source.game == 'One Piece' else None
             if not item:
                 if explicit:
-                    raise CatalogError('This page is not a supported One Piece OP/EB/PRB booster product.')
+                    raise CatalogError('This page is not a supported individual One Piece product.')
                 return {'state': 'UNSUPPORTED'}
             saved = await s.scalar(select(DiscoveryPage).where(
                 DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(item['url'])))
@@ -177,7 +202,7 @@ class OfficialDiscovery:
             if row is None:
                 row = Release(guild_id=guild, identity_key=key, game=item['game'], title=item['title'],
                     set_code=item['set_code'], region=item['region'], language=item['language'],
-                    product_format='PACK', status='RUMORED', reported_details=json.dumps(item),
+                    product_format=item['product_format'], status='RUMORED', reported_details=json.dumps(item),
                     created_by=actor_id, created_at=utcnow(), updated_at=utcnow())
                 s.add(row)
                 await s.flush()
@@ -189,7 +214,7 @@ class OfficialDiscovery:
             fp = digest(item)
             if saved.fingerprint != fp:
                 note = json.dumps({'origin': 'OFFICIAL_PAGE_DISCOVERY', **item}, ensure_ascii=False)
-                evidence = self.store.catalog._source(row, actor_id, 'PUBLISHER', 'Official One Piece booster page', item['url'], note)
+                evidence = self.store.catalog._source(row, actor_id, 'PUBLISHER', 'Official One Piece product page', item['url'], note)
                 exists = await s.scalar(select(ReleaseSource.id).where(ReleaseSource.release_id == row.id,
                     ReleaseSource.fingerprint == evidence.fingerprint))
                 if not exists:
@@ -223,7 +248,7 @@ class OfficialDiscovery:
             source = await s.scalar(select(OfficialSource).where(OfficialSource.id == source_id,
                 OfficialSource.guild_id == guild, OfficialSource.enabled.is_(True)))
             if not source or not product_url(source.url):
-                raise CatalogError('Use the source ID for a specific One Piece booster page, not the product index.')
+                raise CatalogError('Use the source ID for a specific One Piece product page, not the product index.')
             page = await s.scalar(select(OfficialPage).where(OfficialPage.source_id == source.id,
                 OfficialPage.url_key == digest(source.url)))
             if not page:
