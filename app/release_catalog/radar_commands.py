@@ -10,7 +10,7 @@ from .commands import safe
 from .extraction import GAMES
 from .radar import ReleaseRadar
 from .radar_diagnostics import RadarDiagnostics
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 from .service import CatalogError
 from .source_confidence import confidence
 
