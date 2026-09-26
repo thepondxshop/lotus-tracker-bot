@@ -162,6 +162,7 @@ class OfficialVerifier:
             return {'release':snapshot(release),'check':json.loads(row.result_json) if row else {'state':'PENDING','evidence':[]},'checked_at':aware(row.checked_at).isoformat() if row else None}
     async def scan(self,guild,source_id):
         await self.ensure()
+        await self.discovery.prepare(guild)
         if self.lock.locked(): raise CatalogError('An official scan is running; scheduled checks will continue automatically.')
         async with self.lock:
             async with self.sessions() as s,s.begin():
@@ -206,7 +207,10 @@ class OfficialVerifier:
                                     # New pages first; existing pages rotate after the outstanding queue.
                                     if digest(link) not in known: new_links.append(link)
                                     elif new_cycle and url==source['url']: queue.append(link)
-                            queue=(new_links+queue)[:500]
+                            if source['game']=='One Piece' and url!=source['url']:
+                                queue=(queue+new_links)[:500]
+                            else:
+                                queue=(new_links+queue)[:500]
                         except FetchError as exc:
                             error=exc.code
                             async with self.sessions() as s,s.begin():
