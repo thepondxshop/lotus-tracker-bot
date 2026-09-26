@@ -16,6 +16,7 @@ from .distributors import product_url, public_data, phd_sku_fragment
 
 
 GAMES = (
+    ("MTG", r"\bmagic:?\s+the gathering\b|\bmtg\b"),
     ("One Piece", r"\bone\s*piece\b|\b(?:PEB|PRB|OP)[ -]?\d+\b"),
     ("Pokemon", r"\bpokemon\b"),
     ("Gundam", r"\bgundam\b"),
