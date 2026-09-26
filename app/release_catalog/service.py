@@ -329,7 +329,8 @@ class ReleaseCatalog:
             row = await self._release(session, guild_id, release_id)
             sources = (await session.scalars(select(ReleaseSource).where(ReleaseSource.release_id == row.id).order_by(ReleaseSource.id.desc()).limit(5))).all()
             audits = (await session.scalars(select(ReleaseAudit).where(ReleaseAudit.release_id == row.id).order_by(ReleaseAudit.id.desc()).limit(5))).all()
-            result = snapshot(row)
+            from .source_confidence import attach
+            result = (await attach(session, [row]))[0]
             confirmation = await session.scalar(select(ReleaseAudit).where(ReleaseAudit.release_id == row.id, ReleaseAudit.action.in_(("CONFIRMED", "AUTO_CONFIRMED", "RETRACTED", "ARCHIVED"))).order_by(ReleaseAudit.id.desc()).limit(1))
             result["confirmation_mode"] = "AUTOMATIC_SOURCE_POLICY" if confirmation and confirmation.action == "AUTO_CONFIRMED" and row.status == "CONFIRMED" else "MANUAL"
             return {"release": result, "sources": [snapshot(s) for s in sources], "audit": [snapshot(a) for a in audits]}
@@ -424,17 +425,35 @@ class ReleaseCatalog:
     async def list_releases(self, guild_id: int, *, status: str = "ALL", game: str | None = None, page: int = 1) -> dict:
         positive_id(guild_id, "Server ID")
         self._page(page)
-        status = choice(status, STATUSES + ("ALL",), "Status")
+        status = choice(status, STATUSES + ("LEAKED", "ALL"), "Status")
         await self.ensure_schema()
         query = select(Release).where(Release.guild_id == guild_id)
-        if status != "ALL":
-            query = query.where(Release.status == status)
+        if status == "ARCHIVED":
+            query = query.where(Release.status == 'ARCHIVED')
+        elif status != 'ALL':
+            query = query.where(Release.status != 'ARCHIVED')
         if game:
             query = query.where(func.lower(Release.game) == clean(game, "Game", 80).lower())
         query = query.order_by(Release.updated_at.desc(), Release.id.desc())
         async with self.sessions() as session:
-            rows = (await session.scalars(query.offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE + 1))).all()
-            return {"items": [snapshot(row) for row in rows[:PAGE_SIZE]], "page": page, "has_more": len(rows) > PAGE_SIZE}
+            from .source_confidence import attach
+            if status in ('ALL', 'ARCHIVED'):
+                rows = (await session.scalars(query.offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE + 1))).all()
+                data = await attach(session, rows)
+            else:
+                # Confidence is derived from all saved sources, including old
+                # authoritative evidence outside the five-source display limit.
+                data=[]; offset=0; skipped=0; target=(page-1)*PAGE_SIZE
+                while len(data) <= PAGE_SIZE:
+                    rows=(await session.scalars(query.offset(offset).limit(100))).all()
+                    if not rows: break
+                    offset += len(rows)
+                    for row in await attach(session, rows):
+                        if row['listing_confidence']['state'] != status: continue
+                        if skipped < target: skipped += 1; continue
+                        data.append(row)
+                        if len(data)>PAGE_SIZE: break
+            return {"items": data[:PAGE_SIZE], "page": page, "has_more": len(data) > PAGE_SIZE}
 
     async def calendar(self, guild_id: int, *, start: str | None = None, days: int = 90, game: str | None = None, region: str | None = None, language: str | None = None, page: int = 1) -> dict:
         positive_id(guild_id, "Server ID")
@@ -460,5 +479,13 @@ class ReleaseCatalog:
         positive_id(guild_id, "Server ID")
         await self.ensure_schema()
         async with self.sessions() as session:
-            rows = (await session.execute(select(Release.status, func.count()).where(Release.guild_id == guild_id).group_by(Release.status))).all()
-            return {status: dict(rows).get(status, 0) for status in STATUSES}
+            from .source_confidence import attach
+            counts={state:0 for state in ('CONFIRMED','LEAKED','RUMORED','ARCHIVED')}
+            last=0
+            while True:
+                rows=(await session.scalars(select(Release).where(Release.guild_id==guild_id,Release.id>last)
+                    .order_by(Release.id).limit(100))).all()
+                if not rows: break
+                last=rows[-1].id
+                for row in await attach(session,rows): counts[row['listing_confidence']['state']] += 1
+            return counts
