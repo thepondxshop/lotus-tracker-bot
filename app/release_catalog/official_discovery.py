@@ -13,13 +13,22 @@ from .ingestion_store import aware
 from .official import OfficialSource, OfficialPage, OfficialCheck
 from .official_parser import approved_url, evaluate, primary_product_text, release_windows
 
-VERSION = '1.6.4'
-SUPPORTED_GAMES = ('One Piece', 'Pokemon')
+VERSION = '1.6.7'
+from . import publisher_products
+SUPPORTED_GAMES = ('One Piece', 'Pokemon', *publisher_products.ROOTS)
+DISCOVERY_ROOTS = {'One Piece':'https://en.onepiece-cardgame.com/products/',
+                   'Pokemon':'https://www.pokemon.com/us/pokemon-tcg/product-gallery', **publisher_products.ROOTS}
 from .one_piece_products import product_path, product_identity
 from . import pokemon_products
 
 
 def product_url(url, game=None):
+    if game in publisher_products.ROOTS:
+        return publisher_products.product_url(game,url)
+    if game is None:
+        for supported in publisher_products.ROOTS:
+            result=publisher_products.product_url(supported,url)
+            if result:return result
     if game in (None, 'Pokemon'):
         result = pokemon_products.product_url(url)
         if result or game == 'Pokemon':
@@ -37,6 +46,9 @@ def product_url(url, game=None):
 
 
 def candidate(doc, game='One Piece'):
+    if game in publisher_products.ROOTS:
+        details=publisher_products.identity(game,doc)
+        return dict(**details,windows=release_windows(publisher_products.date_text(game,doc))) if details else None
     if game == 'Pokemon':
         details = pokemon_products.product_identity(doc)
         if not details:
@@ -110,6 +122,7 @@ class OfficialDiscovery:
             for game, marker in (
                 ('One Piece', 'https://en.onepiece-cardgame.com/products/#coverage-1.6.3'),
                 ('Pokemon', pokemon_products.INDEX + '#coverage-1.6.4'),
+                *((g,u+'#coverage-1.6.7') for g,u in publisher_products.ROOTS.items()),
             ):
                 done = await s.scalar(select(DiscoveryPage.id).where(
                     DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(marker)))
@@ -132,13 +145,30 @@ class OfficialDiscovery:
                         state='BASELINED', checked_at=self.started_at))
                 s.add(DiscoveryPage(guild_id=guild, url_key=digest(marker), url=marker,
                     state='COVERAGE_BASELINE', checked_at=self.started_at))
-                if game == 'Pokemon' and cfg.enabled:
+                if game in ('Pokemon', *publisher_products.ROOTS) and cfg.enabled:
                     index = await s.scalar(select(OfficialSource).where(
-                        OfficialSource.guild_id == guild, OfficialSource.url == pokemon_products.INDEX))
+                        OfficialSource.guild_id == guild, OfficialSource.url == DISCOVERY_ROOTS[game]))
                     if index:
                         index.next_due = utcnow()
 
         self.prepared_guilds.add(guild)
+
+    async def baseline_index(self, guild, game, doc):
+        if game not in publisher_products.ROOTS or not publisher_products.index_url(game,doc['url']):
+            return
+        marker=publisher_products.index_url(game,doc['url'])+'#index-baseline-1.6.7'
+        async with self.sessions() as s,s.begin():
+            await self.store.guild_lock(s,guild)
+            cfg=await s.get(DiscoverySettings,guild)
+            if not cfg or not cfg.enabled:return
+            done=await s.scalar(select(DiscoveryPage.id).where(DiscoveryPage.guild_id==guild,DiscoveryPage.url_key==digest(marker)))
+            if done:return
+            known=set((await s.scalars(select(DiscoveryPage.url_key).where(DiscoveryPage.guild_id==guild))).all())
+            for url in publisher_products.links(game,doc):
+                if not product_url(url,game) or digest(url) in known:continue
+                known.add(digest(url))
+                s.add(DiscoveryPage(guild_id=guild,url_key=digest(url),url=url,state='BASELINED',checked_at=utcnow()))
+            s.add(DiscoveryPage(guild_id=guild,url_key=digest(marker),url=marker,state='COVERAGE_BASELINE',checked_at=utcnow()))
 
     async def configure(self, guild, actor, enabled):
         await self.ensure()
@@ -166,13 +196,14 @@ class OfficialDiscovery:
             cfg.enabled, cfg.actor_id = enabled, actor
             if enabled:
                 indexes = (await s.scalars(select(OfficialSource).where(OfficialSource.guild_id == guild,
-                    OfficialSource.url.in_(('https://en.onepiece-cardgame.com/products/', pokemon_products.INDEX))))).all()
+                    OfficialSource.url.in_(tuple(DISCOVERY_ROOTS.values()))))).all()
                 for index in indexes:
                     index.next_due = utcnow()
             return {'enabled': enabled, 'first_setup': first}
 
     async def status(self, guild):
         await self.ensure()
+        await self.verifier.defaults(guild)
         async with self.sessions() as s:
             cfg = await s.get(DiscoverySettings, guild)
             counts = dict((await s.execute(select(DiscoveryPage.state, func.count()).where(
@@ -180,7 +211,7 @@ class OfficialDiscovery:
             pages = (await s.scalars(select(DiscoveryPage).where(DiscoveryPage.guild_id == guild,
                 DiscoveryPage.state != 'COVERAGE_BASELINE'))).all()
             games = {}
-            for game, root in (('One Piece', 'https://en.onepiece-cardgame.com/products/'), ('Pokemon', pokemon_products.INDEX)):
+            for game, root in DISCOVERY_ROOTS.items():
                 source = await s.scalar(select(OfficialSource).where(OfficialSource.guild_id == guild, OfficialSource.url == root))
                 states = {}
                 for page in pages:
@@ -216,7 +247,7 @@ class OfficialDiscovery:
             item = candidate(doc, source.game)
             if not item:
                 if explicit:
-                    raise CatalogError('This page is not a supported One Piece or US Pokemon product-gallery page.')
+                    raise CatalogError('This page is not a supported publisher product or set-overview page. Check /release official coverage.')
                 return {'state': 'UNSUPPORTED'}
             saved = await s.scalar(select(DiscoveryPage).where(
                 DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(item['url'])))
@@ -287,7 +318,7 @@ class OfficialDiscovery:
             source = await s.scalar(select(OfficialSource).where(OfficialSource.id == source_id,
                 OfficialSource.guild_id == guild, OfficialSource.enabled.is_(True)))
             if not source or source.game not in SUPPORTED_GAMES or not product_url(source.url, source.game):
-                raise CatalogError('Use the source ID for a specific One Piece or US Pokemon product page, not the index.')
+                raise CatalogError('Use the source ID for a supported product or set-overview page, not its index.')
             page = await s.scalar(select(OfficialPage).where(OfficialPage.source_id == source.id,
                 OfficialPage.url_key == digest(source.url)))
             if not page:
