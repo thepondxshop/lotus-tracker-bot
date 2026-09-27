@@ -767,7 +767,8 @@ async def update_game_roles(
     )
 
     message = (
-        "\u2705 **Game preferences updated.**\n\n"
+        "⚠️ **Game selection needs attention.**\n\n"
+        if errors else "✅ **Game preferences updated.**\n\n"
     )
 
     if current_games:
@@ -806,7 +807,7 @@ async def update_game_roles(
         )
 
     return (
-        True,
+        not errors,
         message,
     )
 
@@ -1337,78 +1338,71 @@ async def games(
 
 @bot.tree.command(
     name="setupgames",
-    description="Post the persistent game selector.",
+    description="Post or update the persistent game selector.",
 )
-@app_commands.checks.has_permissions(
-    administrator=True
-)
-async def setupgames(
-    interaction,
-):
-
-    await interaction.response.defer(
-        ephemeral=True
-    )
-
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(message_id="Optional ID of an existing Lotus game selector in the roles channel.")
+async def setupgames(interaction, message_id: str | None = None):
+    await interaction.response.defer(ephemeral=True)
     if interaction.guild is None:
-
+        await interaction.followup.send("Use this inside the server.", ephemeral=True)
         return
-
-    channel_id = (
-        safe_int(
-            CHANNEL_ROLES
-        )
-    )
-
-    channel = (
-
-        interaction.guild.get_channel(
-            channel_id
-        )
-
-        if channel_id
-
-        else None
-    )
-
+    channel_id = safe_int(CHANNEL_ROLES)
+    channel = interaction.guild.get_channel(channel_id) if channel_id else None
     if channel is None:
-
-        await interaction.followup.send(
-
-            "\u274c Roles channel not found.",
-
-            ephemeral=True,
-        )
-
+        await interaction.followup.send("Roles channel not found. Check CHANNEL_ROLES in Railway.", ephemeral=True)
         return
 
     embed = discord.Embed(
-
-        title="\U0001f3b4 Choose Your Games",
-
+        title="🎴 Choose Your Games",
         description=(
-            "Select every TCG you want Lotus alerts for.\n\n"
-            "You can customize product types with `/alertprefs` "
-            "and languages/regions with `/familyprefs`."
+            "Choose every TCG you want alerts for. You may select multiple games.\n\n"
+            "Your game roles control which games you follow. Your subscription controls "
+            "which alert features you unlock.\n\n"
+            "Each submission replaces your selection, so include every game you want to keep.\n"
+            "Use `/alertprefs` for product types and `/familyprefs` for languages."
         ),
     )
-
-    await channel.send(
-
-        embed=embed,
-
-        view=PersistentGameSelectView(),
-    )
-
-    await interaction.followup.send(
-
-        (
-            f"\u2705 Selector posted "
-            f"in {channel.mention}."
+    embed.add_field(
+        name="Games",
+        value="\n".join(
+            f"{emoji} {'Magic: The Gathering (MTG)' if game == 'MTG' else game}"
+            for game, emoji, _description in GAME_DATA
         ),
-
-        ephemeral=True,
+        inline=False,
     )
+    embed.set_footer(text="Lotus Tracker Bot • Game selector 1.0.1")
+    view = PersistentGameSelectView()
+    if message_id is not None:
+        try:
+            target_id = int(message_id.strip())
+            if target_id <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            await interaction.followup.send("Enter the numeric message ID of the old game selector.", ephemeral=True)
+            return
+        try:
+            existing = await channel.fetch_message(target_id)
+        except discord.NotFound:
+            await interaction.followup.send("That message was not found in the configured roles channel.", ephemeral=True)
+            return
+        except discord.Forbidden:
+            await interaction.followup.send("I cannot read that message. Check my roles-channel permissions.", ephemeral=True)
+            return
+        selector_found = any(
+            getattr(component, "custom_id", None) == "lotus_persistent_game_selector"
+            for row in existing.components
+            for component in getattr(row, "children", [])
+        )
+        if existing.author.id != bot.user.id or not selector_found:
+            await interaction.followup.send("That is not one of my persistent game selectors. No message was changed.", ephemeral=True)
+            return
+        await existing.edit(embed=embed, view=view)
+        action = "updated"
+    else:
+        await channel.send(embed=embed, view=view)
+        action = "posted"
+    await interaction.followup.send(f"Game selector {action} in {channel.mention}, including MTG.", ephemeral=True)
 
 
 # =========================================================
