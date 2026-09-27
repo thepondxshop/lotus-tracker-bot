@@ -14,6 +14,8 @@ from urllib.parse import (
 import aiohttp
 from app import shopify_pacing
 
+from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details, explicit_mtg_family
+
 from app.product_family import (
     detect_product_family,
 )
@@ -22,7 +24,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C11
+# Component Version 1.0.6-C11 + MTG 1.0.0
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -451,6 +453,10 @@ def classify_game(
         f" {text} "
     )
 
+    if has_mtg_identity(text):
+        return classify_mtg(title, product.get("product_type"),
+                            [product.get("tags") or "", product.get("vendor") or "", product.get("handle") or ""])
+
     for unsupported in UNSUPPORTED_GAME_TERMS:
 
         if unsupported in padded_text:
@@ -768,6 +774,10 @@ def infer_product_type(
     tags=None,
 ):
 
+    mtg = mtg_product_details(title, raw_type, tags)
+    if mtg:
+        return mtg[1]
+
     if has_strong_single_evidence(
         title,
         raw_type,
@@ -1012,6 +1022,10 @@ def infer_product_category(
     raw_type=None,
     tags=None,
 ):
+
+    mtg = mtg_product_details(title, raw_type, tags)
+    if mtg:
+        return mtg[0]
 
     title_text = (
         normalize_text(
@@ -1849,7 +1863,7 @@ def _collection_score(handle, title=""):
         "pokemon", "pokémon", "gundam",
         "dragon ball", "fusion world", "fusion-world",
         "riftbound", "palworld", "naruto", "cyberpunk",
-        "azuki", "hellbreak",
+        "azuki", "hellbreak", "magic-the-gathering", "magic the gathering", "mtg",
     )
     for term in game_terms:
         if term in probe:
@@ -2768,6 +2782,12 @@ class ShopifyAdapter:
             )
         )
 
+        if game == "MTG":
+            mtg = mtg_product_details(title, raw_type,
+                                      [tags or "", product.get("vendor") or "", handle])
+            if mtg:
+                product_category, product_type = mtg
+
         family_probe = dict(
             product
         )
@@ -2783,6 +2803,11 @@ class ShopifyAdapter:
         ] = (
             selected_variant_title
         )
+
+        if game == "MTG":
+            explicit_family = explicit_mtg_family(product)
+            if explicit_family:
+                family_probe["product_family"] = explicit_family
 
         product_family = (
             detect_product_family(
