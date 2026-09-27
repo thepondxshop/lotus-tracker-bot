@@ -53,7 +53,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.6-N1 + MTG 1.0.0
+# Version 1.0.6-Q1 + MTG 1.0.0
 #
 # Compact alert layout
 # Previous -> current price display
@@ -1455,6 +1455,7 @@ async def route_event_to_discord(
     # SEND WITH RETRIES
     # =====================================================
 
+    prepared_at = time.monotonic()
     message = None
 
     for attempt in range(
@@ -1528,10 +1529,22 @@ async def route_event_to_discord(
                 f"{type(error).__name__}: {error}"
             )
 
+    sent_at = time.monotonic()
+    from app.event_queue import event_age_seconds
+    age_at_post = event_age_seconds(event)
     print(f"LOTUS DISPATCH TIMING | Event={event.get('event_type')} | "
           f"Store={event.get('store_name')} | "
-          f"DispatchSeconds={time.monotonic() - dispatch_started:.3f} | "
+          f"DispatchSeconds={sent_at - dispatch_started:.3f} | "
           f"EligibleMentions={len(eligible_members)}")
+    print(f"LOTUS DELIVERY TIMING | Event={event.get('event_type')} | "
+          f"Store={event.get('store_name')} | "
+          f"PreparationSeconds={prepared_at - dispatch_started:.3f} | "
+          f"DiscordSendSeconds={sent_at - prepared_at:.3f} | Attempts={attempt} | "
+          f"QueueAgeSeconds={event.get('_lotus_queue_age_seconds')} | "
+          f"EnqueueToPostSeconds={age_at_post} | "
+          f"Selection={event.get('_lotus_queue_selection', 'UNKNOWN')} | "
+          f"ProductURL={event.get('product_url')}")
+    persistence_started = time.monotonic()
     await save_alert_delivery(
         product_url=event.get("product_url"),
         store_name=event.get("store_name"),
@@ -1549,6 +1562,10 @@ async def route_event_to_discord(
             message.id
         ),
     )
+
+    print(f"LOTUS DELIVERY SAVE TIMING | Store={event.get('store_name')} | "
+          f"Event={event.get('event_type')} | "
+          f"SaveSeconds={time.monotonic() - persistence_started:.3f}")
 
     print(
         (
@@ -1623,9 +1640,13 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v1.0.6-N2 / 6K-2C6 started "
+        "Lotus Event Worker v1.0.6-Q1 started "
         f"(dispatch timeout={EVENT_DISPATCH_TIMEOUT_SECONDS}s)."
     )
+
+    from app.event_queue import PRIORITY_ENABLED, LOOKAHEAD, MAX_PRIORITY_BURST
+    print(f"LOTUS QUEUE MODE | PriorityEnabled={PRIORITY_ENABLED} | "
+          f"Lookahead={LOOKAHEAD} | PriorityBurst={MAX_PRIORITY_BURST}", flush=True)
 
     while not bot.is_closed():
         try:
@@ -1646,6 +1667,8 @@ async def run_event_worker(bot):
             queue_age = max(0.0, time.time()-enqueued) if isinstance(enqueued,(int,float)) else None
             print(f"LOTUS QUEUE TIMING | Store={event.get('store_name')} | "
                   f"Event={event.get('event_type')} | QueueAgeSeconds={queue_age} | "
+                  f"Selection={event.get('_lotus_queue_selection')} | "
+                  f"QueueDepthAtPop={event.get('_lotus_queue_depth_at_pop')} | "
                   f"ProductURL={event.get('product_url')}")
             try:
                 await asyncio.wait_for(
