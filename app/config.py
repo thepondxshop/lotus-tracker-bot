@@ -4,7 +4,7 @@ import os
 # =========================================================
 # LOTUS CONFIGURATION
 # PonDeX Trackers
-# Version 0.7.6-fixed
+# Version 1.0.6-MTG1
 # =========================================================
 
 
@@ -22,6 +22,8 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
+
+    "MTG": os.getenv("ROLE_MTG"),
 
     "One Piece":
         os.getenv(
@@ -142,6 +144,8 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+
+    ("MTG", "🧙", "Magic: The Gathering alerts"),
 
     (
         "One Piece",
