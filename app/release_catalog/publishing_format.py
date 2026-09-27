@@ -36,6 +36,8 @@ def notice_embed(n):
     when = facts.get('reported_date')
     if when and str(when).upper() != 'UNKNOWN':
         label = {'ADMIN_REPORT': 'Admin-reported date • not publisher verification',
+                 'DISTRIBUTOR_REPORT': 'Distributor-reported release date',
+                 'PUBLISHER_REPORT': 'Publisher-reported release date',
                  'SOURCE_REPORT': 'Source-reported date • unconfirmed'}.get(facts.get('date_origin'),
                  'Catalog date' if facts['status'] == 'CONFIRMED' else 'Reported date • unconfirmed')
         e.add_field(name=label, value=safe(when, 60), inline=False)
@@ -62,7 +64,7 @@ def notice_embed(n):
     e.add_field(name='Admin review', value=text[:1000], inline=False)
     e.add_field(name='Availability', value='Release/source discovery only. This is not a stock or purchasable-preorder confirmation.', inline=False)
     ref = f"Release #{n['release_id']}" if n.get('release_id') else 'Unmatched source lead'
-    e.set_footer(text=f"Lotus Release Radar 1.6.7 • Alert #{n['id']} • {ref}")
+    e.set_footer(text=f"Lotus Release Radar 1.6.8 • Alert #{n['id']} • {ref}")
     return e
 
 
