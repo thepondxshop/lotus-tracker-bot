@@ -284,7 +284,7 @@ def determine_alert_route(event):
     # Universal independent retailers share the existing paid shop channel.
     # Use an explicit allowlist; unknown sources must not fall into Free alerts.
     if source_type in {
-        "bigcommerce", "woocommerce", "square_weebly", "prestashop", "shopware", "magento",
+        "bigcommerce", "woocommerce", "square_weebly", "prestashop", "shopware", "magento", "masterpacks",
     }:
         supported_events = {
             "DISCOVERED", "PAGE_LIVE", "COMING_SOON", "PREORDER_LIVE",
@@ -1735,4 +1735,3 @@ async def run_event_worker(bot):
             await asyncio.sleep(
                 2
             )
-
