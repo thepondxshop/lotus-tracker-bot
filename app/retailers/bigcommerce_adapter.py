@@ -19,6 +19,8 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
+from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
@@ -35,6 +37,7 @@ _DISCOVERY_LAST_URL = {}
 
 SITEMAP_PATHS = ("/xmlsitemap.php", "/sitemap.xml", "/sitemap_index.xml")
 TCG_PRIORITY = (
+    "magic-the-gathering", "mtg",
     "pokemon","one-piece","onepiece","gundam","fusion-world","riftbound",
     "palworld","naruto","cyberpunk","azuki","hellbreak","booster","deck","tcg","card","single",
 )
@@ -154,6 +157,9 @@ def is_non_tcg_merchandise(title):
 
 
 def classify_game(title):
+    if has_mtg_identity(title):
+        return classify_mtg(title)
+
     t = clean(title).lower()
 
     if not t:
@@ -190,6 +196,10 @@ def classify_game(title):
 
 
 def category(title):
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[0]
+
     t = clean(title).lower()
 
     if ONE_PIECE_CODE.search(
@@ -232,6 +242,10 @@ def category(title):
 
 
 def product_type(title):
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[1]
+
     c = category(
         title
     )
