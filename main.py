@@ -317,56 +317,11 @@ intents.members = True
 # =========================================================
 
 GAME_CHOICES = [
-
     app_commands.Choice(
-        name="One Piece",
-        value="One Piece",
-    ),
-
-    app_commands.Choice(
-        name="Pokemon",
-        value="Pokemon",
-    ),
-
-    app_commands.Choice(
-        name="Gundam",
-        value="Gundam",
-    ),
-
-    app_commands.Choice(
-        name="Dragon Ball Fusion World",
-        value="Dragon Ball Fusion World",
-    ),
-
-    app_commands.Choice(
-        name="Riftbound",
-        value="Riftbound",
-    ),
-
-    app_commands.Choice(
-        name="Palworld",
-        value="Palworld",
-    ),
-
-    app_commands.Choice(
-        name="Naruto",
-        value="Naruto",
-    ),
-
-    app_commands.Choice(
-        name="Cyberpunk TCG",
-        value="Cyberpunk TCG",
-    ),
-
-    app_commands.Choice(
-        name="Azuki TCG",
-        value="Azuki TCG",
-    ),
-
-    app_commands.Choice(
-        name="Hellbreak TCG",
-        value="Hellbreak TCG",
-    ),
+        name="Magic: The Gathering (MTG)" if game == "MTG" else game,
+        value=game,
+    )
+    for game, _emoji, _description in GAME_DATA
 ]
 
 
@@ -9438,6 +9393,9 @@ from app.release_catalog.commands import register_release_catalog_commands
 from app.release_catalog.ingestion_runner import start_release_ingestion, stop_release_ingestion
 
 register_release_catalog_commands(bot)
+
+from app.mtg_commands import register_mtg_commands
+register_mtg_commands(bot)
 
 if not DISCORD_TOKEN:
 
