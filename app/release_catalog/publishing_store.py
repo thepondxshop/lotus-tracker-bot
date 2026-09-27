@@ -13,13 +13,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .service import (CatalogError, Release, ReleaseSource, clean, digest, exact_date,
                       identity, public_source_url, snapshot, utcnow, FORMATS)
-from .ingestion_store import Item, Watch, aware
+from .ingestion_store import Item, Watch, aware, compatible
 from .official import OfficialCheck
 from .radar import evidence_summary
-from .extraction import GAMES
+from .extraction import GAMES, Candidate, parse_date
 from .source_confidence import attach, classify
 
-VERSION = '1.6.2'
+VERSION = '1.6.8'
 FIELDS = {'title': 180, 'game': 80, 'set_code': 40, 'region': 40,
           'language': 40, 'product_format': 20, 'reported_date': 10}
 
@@ -211,6 +211,43 @@ class PublishingStore:
             notice = await self._queue_release(s, cfg, rid)
             return unpack(notice)
 
+    async def _reported_date(self, s, guild, release):
+        """Read current, identity-linked product evidence; never promote status.
+
+        Historical source notes can contain superseded dates and adjacent SKU
+        prose. Only the structured date from the current linked item is used.
+        """
+        rows = (await s.execute(select(Item, Watch).join(Watch, Watch.id == Item.watch_id).where(
+            Watch.guild_id == guild, Item.release_id == release.id,
+            Item.state.in_(('CREATED', 'LINKED'))).order_by(Item.id).limit(201))).all()
+        if len(rows) > 200:
+            return None, None, [], ['Too many source records to resolve a reported date.']
+        dates, sources, kinds = set(), [], set()
+        for item, watch in rows:
+            try:
+                raw = json.loads(item.payload_json or '{}')
+                if not isinstance(raw, dict):
+                    continue
+                candidate = Candidate(url=item.url, title=raw.get('title') or '',
+                    game=raw.get('game') or '', set_code=raw.get('set_code'),
+                    product_format=raw.get('product_format') or 'UNKNOWN',
+                    region=raw.get('region') or 'UNKNOWN', language=raw.get('language') or 'UNKNOWN')
+                if not compatible(candidate, release):
+                    continue
+                when, invalid = parse_date(raw.get('release_date'))
+            except (TypeError, ValueError):
+                continue
+            if invalid or not when:
+                continue
+            dates.add(when)
+            kinds.add(watch.kind)
+            sources.append({'kind': watch.kind, 'label': watch.label, 'url': item.url})
+        if len(dates) > 1:
+            return None, None, sources, ['Conflicting product release dates reported by sources; no single date selected.']
+        origin = ({'DISTRIBUTOR': 'DISTRIBUTOR_REPORT', 'PUBLISHER': 'PUBLISHER_REPORT'}
+                  .get(next(iter(kinds)), 'SOURCE_REPORT') if len(kinds) == 1 else 'SOURCE_REPORT')
+        return next(iter(dates), None), origin, sources, []
+
     async def _payload(self, s, n):
         item = await s.get(Item, n.item_id) if n.item_id else None
         if item and n.notice_key.startswith('source:'):
@@ -247,6 +284,16 @@ class PublishingStore:
             for issues in unresolved:
                 flags.extend(json.loads(issues or '[]')[:5])
             src = [{'kind': x.kind, 'label': x.label, 'url': x.url} for x in sources]
+            reported, origin, date_sources, date_flags = await self._reported_date(s, n.guild_id, row)
+            flags.extend(date_flags)
+            if not facts['reported_date'] and reported:
+                facts.update(reported_date=reported, date_origin=origin)
+                # Keep the date's provenance visible even when newer comments
+                # have pushed its source outside the last-three-source display.
+                for source in reversed(date_sources[:3]):
+                    src = [source] + [x for x in src if x['url'] != source['url']]
+            elif reported and facts['reported_date'] != reported:
+                flags.append('Source-reported date differs from the catalog date; catalog date retained.')
         elif item:
             watch = await s.get(Watch, item.watch_id)
             if not watch or watch.guild_id != n.guild_id:
@@ -255,7 +302,9 @@ class PublishingStore:
             listing = classify({'status': 'RUMORED', 'reported_details': json.dumps(raw)},
                 [{'kind': watch.kind, 'url': item.url, 'note': json.dumps(raw)}])
             facts = {k: raw.get(k) or 'UNKNOWN' for k in FIELDS if k != 'reported_date'}
-            facts.update(reported_date=raw.get('release_date'), status='RUMORED', date_origin='SOURCE_REPORT')
+            facts.update(reported_date=raw.get('release_date'), status='RUMORED',
+                         date_origin={'DISTRIBUTOR': 'DISTRIBUTOR_REPORT',
+                                      'PUBLISHER': 'PUBLISHER_REPORT'}.get(watch.kind, 'SOURCE_REPORT'))
             src = [{'kind': watch.kind, 'label': watch.label, 'url': item.url}]
             windows = []
             flags = ['Product identity needs review.'] + json.loads(item.issues_json or '[]')[:8]
