@@ -504,25 +504,19 @@ async def pop_next_event(
     if redis_client is None:
         return None
 
-    result = (
-        await redis_client.blpop(
-            EVENT_QUEUE_KEY,
-            timeout=timeout,
-        )
-    )
-
+    from app.event_queue import pop_priority_event, event_age_seconds
+    result = await pop_priority_event(redis_client, EVENT_QUEUE_KEY, timeout=timeout)
     if not result:
         return None
-
-    _, raw_payload = (
-        result
-    )
-
+    raw_payload, selection, depth = result
     try:
-
-        return json.loads(
-            raw_payload
-        )
+        event = json.loads(raw_payload)
+        if not isinstance(event, dict):
+            raise ValueError("Event payload must be an object")
+        event["_lotus_queue_selection"] = selection
+        event["_lotus_queue_depth_at_pop"] = depth
+        event["_lotus_queue_age_seconds"] = event_age_seconds(event)
+        return event
 
     except Exception as error:
 
