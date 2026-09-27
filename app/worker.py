@@ -53,7 +53,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.6-N1
+# Version 1.0.6-N1 + MTG 1.0.0
 #
 # Compact alert layout
 # Previous -> current price display
@@ -122,6 +122,15 @@ DEFAULT_FAMILY_PREFERENCES = {
 # =========================================================
 
 def validate_event_game(event):
+    from app.mtg_products import classify_mtg, has_mtg_identity
+    identity = f"{event.get('product_name') or ''} {event.get('product_type') or ''}"
+    if has_mtg_identity(identity) and event.get("game") != "MTG":
+        return False
+    if event.get("game") == "MTG":
+        # Game may have been established by retailer taxonomy, which is not
+        # included in the compact event. Supply the established game as a tag.
+        return classify_mtg(event.get("product_name"), event.get("product_type"), "MTG") == "MTG"
+
     game = (
         event.get("game")
         or ""
@@ -275,7 +284,7 @@ def determine_alert_route(event):
     # Universal independent retailers share the existing paid shop channel.
     # Use an explicit allowlist; unknown sources must not fall into Free alerts.
     if source_type in {
-        "bigcommerce", "woocommerce", "square_weebly", "prestashop", "shopware",
+        "bigcommerce", "woocommerce", "square_weebly", "prestashop", "shopware", "magento",
     }:
         supported_events = {
             "DISCOVERED", "PAGE_LIVE", "COMING_SOON", "PREORDER_LIVE",
@@ -1703,5 +1712,4 @@ async def run_event_worker(bot):
             await asyncio.sleep(
                 2
             )
-
 
