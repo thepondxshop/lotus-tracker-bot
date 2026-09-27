@@ -3438,6 +3438,9 @@ def normalize_retailer_domain(
 # This lets us inspect Lotus's platform decision before onboarding.
 # =========================================================
 
+from app.retailer_assessment import register_retailer_assessment
+register_retailer_assessment(bot)
+
 @bot.tree.command(
     name="detectretailer",
     description="Detect a retailer storefront platform without adding it.",
@@ -8051,15 +8054,20 @@ async def scanshopify(
 )
 async def shopifystatus(
     interaction,
+    page: app_commands.Range[int, 1, 10000] = 1,
 ):
 
-    from app.shopify_status import build_shopify_status
-    data = get_shopify_monitor_status()
-    worker_online = bot.shopify_monitor_task is not None and not bot.shopify_monitor_task.done()
+    from app.shopify_status import build_shopify_status, ShopifyStatusView
+    def load_status():
+        return (get_shopify_monitor_status(),
+                bot.shopify_monitor_task is not None and not bot.shopify_monitor_task.done())
+    data, worker_online = load_status()
+    view = ShopifyStatusView(interaction.user.id, interaction.guild_id, load_status, data, page)
     await interaction.response.send_message(
-        embed=build_shopify_status(data, worker_online), ephemeral=True,
+        embed=build_shopify_status(data, worker_online, view.page), view=view, ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )
+    view.message = await interaction.original_response()
 
 
 # =========================================================
