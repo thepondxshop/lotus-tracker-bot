@@ -27,6 +27,8 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
 
+from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
@@ -89,6 +91,7 @@ HTML_DISCOVERY_PATHS = (
 )
 
 TCG_PRIORITY = (
+    "magic-the-gathering", "mtg",
     "pokemon",
     "pokémon",
     "one-piece",
@@ -1254,6 +1257,9 @@ def classify_game(
     url="",
 ):
 
+    if has_mtg_identity(title):
+        return classify_mtg(title)
+
     title_text = clean(
         title
     ).lower()
@@ -1386,6 +1392,10 @@ def is_non_tcg_merchandise(title):
 
 def product_category(title):
 
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[0]
+
     text = clean(
         title
     ).lower()
@@ -1435,6 +1445,10 @@ def product_category(title):
 
 
 def product_type(title):
+
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[1]
 
     category = product_category(
         title
