@@ -167,6 +167,15 @@ class UserGamePreference(Base):
         nullable=False,
     )
 
+    # The deployed table requires this column. Python-side defaults ensure
+    # inserts work even when PostgreSQL has no server default.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
 
 # =========================================================
 # PRODUCT-TYPE ALERT PREFERENCES
