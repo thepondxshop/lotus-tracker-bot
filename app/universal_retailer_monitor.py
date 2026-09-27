@@ -3,7 +3,7 @@ Lotus Tracker Bot
 PonDeX Trackers
 
 Universal Retailer Monitor
-Version: 1.1.1
+Version: 1.1.2-M1
 
 Step 6J-4A — Magento 2 / Adobe Commerce Universal Platform Support
 
@@ -46,7 +46,7 @@ from app.retailers.delta_discovery import discover_new_product_urls
 from app.store_health import record_store_failure, record_store_success
 
 
-VERSION = "1.1.1"
+VERSION = "1.1.2-M1"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
@@ -73,6 +73,7 @@ SUPPORTED_UNIVERSAL_PLATFORMS = {
     "prestashop",
     "shopware",
     "magento",
+    "masterpacks",
 }
 
 # Shopware 6 and Magento use platform-specific discovery. Keep both out of the
@@ -440,8 +441,13 @@ def make_product_event(
         else normalize_price(item.get("price"))
     )
 
+    _, availability_known, availability_state = get_availability_info(item)
+    platform_data = deserialize_platform_data(item.get("platform_data"))
     return ProductEvent(
         event_type=normalized_event_type,
+        availability_known=availability_known,
+        availability_state=availability_state,
+        availability_confidence=normalize_text(platform_data.get("availability_confidence"), "LOW"),
         game=normalize_text(item.get("game"), "Unknown"),
         product_name=normalize_text(item.get("title"), "Unknown Product"),
         store_name=normalize_text(getattr(store, "name", None), "Unknown Store"),
@@ -1018,7 +1024,7 @@ def round_robin(values: list[str], cursor: int, count: int) -> tuple[list[str], 
     return selected, next_cursor
 
 
-def choose_refresh_urls(store_id: int, known_products: list[dict[str, Any]]) -> dict[str, Any]:
+def choose_refresh_urls(store_id: int, known_products: list[dict[str, Any]], *, total_limit: int = FAST_REFRESH_TOTAL_LIMIT, priority_limit: int = FAST_REFRESH_PRIORITY_LIMIT) -> dict[str, Any]:
     priority: list[str] = []
     rotating: list[str] = []
 
@@ -1035,11 +1041,11 @@ def choose_refresh_urls(store_id: int, known_products: list[dict[str, Any]]) -> 
     priority_selected, next_priority = round_robin(
         priority,
         _PRIORITY_CURSOR.get(store_id, 0),
-        FAST_REFRESH_PRIORITY_LIMIT,
+        priority_limit,
     )
     _PRIORITY_CURSOR[store_id] = next_priority
 
-    normal_slots = max(0, FAST_REFRESH_TOTAL_LIMIT - len(priority_selected))
+    normal_slots = max(0, total_limit - len(priority_selected))
     rotating_selected, next_rotating = round_robin(
         rotating,
         _REFRESH_CURSOR.get(store_id, 0),
@@ -1054,7 +1060,7 @@ def choose_refresh_urls(store_id: int, known_products: list[dict[str, Any]]) -> 
             continue
         seen.add(url)
         selected.append(url)
-        if len(selected) >= FAST_REFRESH_TOTAL_LIMIT:
+        if len(selected) >= total_limit:
             break
 
     return {
@@ -1177,7 +1183,11 @@ async def scan_store(
             if callable(getattr(adapter, "set_known_product_urls", None)):
                 adapter.set_known_product_urls(known_urls)
 
-            refresh_plan = choose_refresh_urls(store.id, known_products)
+            refresh_plan = choose_refresh_urls(
+                store.id, known_products,
+                total_limit=8 if platform == "masterpacks" else FAST_REFRESH_TOTAL_LIMIT,
+                priority_limit=4 if platform == "masterpacks" else FAST_REFRESH_PRIORITY_LIMIT,
+            )
             refresh_urls = refresh_plan["urls"]
             result["refresh_selected"] = len(refresh_urls)
             result["refresh_priority_selected"] = refresh_plan["priority_selected"]
@@ -1212,7 +1222,28 @@ async def scan_store(
             # Includes WooCommerce in Step 6J-3D2.
             # -------------------------------------------------
             delta_products = []
-            if platform in DELTA_DISCOVERY_PLATFORMS and delta_discovery_allowed_now(store.id):
+            if platform == "masterpacks" and delta_discovery_allowed_now(store.id):
+                result["delta_attempted"] = True
+                MONITOR_STATUS["delta_discovery_attempts"] += 1
+                _LAST_DELTA_DISCOVERY_AT[store.id] = time.monotonic()
+                try:
+                    delta_products = await asyncio.wait_for(
+                        adapter.discover_delta_products(known_urls, limit=6),
+                        timeout=DELTA_DISCOVERY_TIMEOUT_SECONDS,
+                    )
+                    result["delta_validated_products"] = len(delta_products)
+                    result["delta_new_candidates"] = len(delta_products)
+                    MONITOR_STATUS["delta_discovery_completed"] += 1
+                    MONITOR_STATUS["delta_discovery_validated_products"] += len(delta_products)
+                except asyncio.TimeoutError:
+                    result["delta_timed_out"] = True
+                    MONITOR_STATUS["delta_discovery_timeouts"] += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    MONITOR_STATUS["delta_discovery_soft_errors"] += 1
+                    logger.warning("MASTERPACKS DISCOVERY PAUSED | %s | ContinueWithRefresh=True", error)
+            elif platform in DELTA_DISCOVERY_PLATFORMS and delta_discovery_allowed_now(store.id):
                 result["delta_attempted"] = True
                 MONITOR_STATUS["delta_discovery_attempts"] += 1
                 _LAST_DELTA_DISCOVERY_AT[store.id] = time.monotonic()
@@ -1286,7 +1317,7 @@ async def scan_store(
             # Existing deep discovery fallback: every ~15 min.
             # -------------------------------------------------
             discovery_products = []
-            if discovery_allowed_now(store.id):
+            if platform != "masterpacks" and discovery_allowed_now(store.id):
                 result["discovery_attempted"] = True
                 MONITOR_STATUS["deep_discovery_attempts"] += 1
                 _LAST_DISCOVERY_AT[store.id] = time.monotonic()
