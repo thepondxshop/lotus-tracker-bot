@@ -39,6 +39,8 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 
+from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 from app.affiliate_feeds import get_official_feed_source
@@ -150,6 +152,7 @@ SHOPWARE_STRUCTURAL_MARKERS = (
 )
 
 SUPPORTED_GAME_TERMS: dict[str, tuple[str, ...]] = {
+    "MTG": ("magic the gathering", "magic: the gathering", "mtg"),
     "One Piece": (
         "one piece tcg",
         "one piece card game",
@@ -404,6 +407,9 @@ def same_store_host(domain: str, url: str) -> bool:
 
 
 def classify_game(title: str) -> str | None:
+    if has_mtg_identity(title):
+        return classify_mtg(title)
+
     lowered = clean_text(title).lower()
     if not lowered:
         return None
@@ -447,6 +453,10 @@ def classify_game(title: str) -> str | None:
 
 
 def classify_product_category(title: str) -> str:
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[0]
+
     lowered = f" {clean_text(title).lower()} "
     if any(term in lowered for term in SINGLE_TERMS):
         return "SINGLE"
@@ -458,6 +468,10 @@ def classify_product_category(title: str) -> str:
 
 
 def infer_product_type(title: str) -> str:
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[1]
+
     lowered = clean_text(title).lower()
     checks = (
         ("booster box", "Booster Box"),
