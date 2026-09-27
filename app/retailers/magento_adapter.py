@@ -26,6 +26,8 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
+from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 from app.retailers.shopware_adapter import (
@@ -72,6 +74,7 @@ DEFAULT_SEARCH_TERMS = (
     "cyberpunk",
     "azuki",
     "hellbreak",
+    "magic the gathering",
 )
 
 UNSUPPORTED_GAME_TERMS = (
@@ -184,6 +187,8 @@ def _availability_from_item(item: dict[str, Any]) -> tuple[bool, bool, str]:
 
 
 def _is_supported_tcg_product(title: str) -> bool:
+    if has_mtg_identity(title):
+        return classify_mtg(title) == "MTG"
     lowered = clean_text(title).lower()
     if not lowered or any(term in lowered for term in UNSUPPORTED_GAME_TERMS):
         return False
