@@ -466,6 +466,7 @@ RETAILER_PLATFORM_CHOICES = [
         name="Magento 2 / Adobe Commerce",
         value="magento",
     ),
+    app_commands.Choice(name="Masterpacks (custom)", value="masterpacks"),
 ]
 
 
@@ -5466,6 +5467,7 @@ async def addretailer(
         "prestashop",
         "shopware",
         "magento",
+        "masterpacks",
     }:
 
         await interaction.followup.send(
@@ -5868,6 +5870,7 @@ async def setretailerplatform(
         "prestashop",
         "shopware",
         "magento",
+        "masterpacks",
     }
 
     if clean_platform not in approved_platforms:
@@ -6063,6 +6066,7 @@ async def setretailerplatform(
             "prestashop": "PrestaShop",
             "shopware": "Shopware 6",
             "magento": "Magento 2 / Adobe Commerce",
+            "masterpacks": "Masterpacks",
         }
 
         old_platform_label = (
@@ -6442,6 +6446,7 @@ async def scanretailer(
             "prestashop",
             "shopware",
             "magento",
+            "masterpacks",
         }:
 
             await interaction.followup.send(
@@ -6595,6 +6600,7 @@ async def scanretailer(
             "prestashop": "PrestaShop",
             "shopware": "Shopware 6",
             "magento": "Magento 2 / Adobe Commerce",
+            "masterpacks": "Masterpacks",
         }.get(platform, platform)
 
         embed.add_field(
@@ -6870,6 +6876,7 @@ async def setretaileractive(
         "prestashop",
         "shopware",
         "magento",
+        "masterpacks",
     }
 
     try:
@@ -7191,6 +7198,7 @@ async def stores(
         "prestashop": "PrestaShop",
         "shopware": "Shopware 6",
         "magento": "Magento 2 / Adobe Commerce",
+        "masterpacks": "Masterpacks",
         "pokemon_center": "Pokémon Center",
         "major_retailer": "Major Retailer",
     }
