@@ -11,6 +11,8 @@ from urllib.parse import (
 
 import aiohttp
 
+from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+
 from app.retailer_adapter import (
     RetailerAdapter,
     RetailerProduct,
@@ -458,6 +460,9 @@ def is_discovery_candidate(url):
 
 
 def classify_game(title):
+    if has_mtg_identity(title):
+        return classify_mtg(title)
+
     text = clean_text(title).lower()
 
     if not text:
@@ -551,6 +556,10 @@ def has_strong_single_card_evidence(title):
 
 
 def classify_product_category(title):
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[0]
+
     text = clean_text(title).lower()
 
     # Strong individual-card evidence must beat contextual sealed wording.
@@ -586,6 +595,10 @@ def classify_product_category(title):
 
 
 def infer_product_type(title):
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[1]
+
     text = clean_text(title).lower()
 
     if has_strong_single_card_evidence(title):
