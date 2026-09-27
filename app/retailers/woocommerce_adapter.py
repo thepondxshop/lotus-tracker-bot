@@ -30,6 +30,8 @@ from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
 
+from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+
 from app.retailer_adapter import (
     RetailerAdapter,
     RetailerProduct,
@@ -420,6 +422,10 @@ def strong_card_listing_structure(title):
 
 
 def classify_game_with_taxonomy(title, taxonomy_terms):
+    if has_mtg_identity(taxonomy_terms) and not has_mtg_identity(title):
+        if classify_mtg(title, tags=taxonomy_terms):
+            return "MTG", "TAXONOMY_PLUS_PRODUCT_STRUCTURE"
+        return None, "TAXONOMY_INSUFFICIENT"
     direct = classify_game(title)
     if direct:
         return direct, "TITLE"
@@ -430,6 +436,9 @@ def classify_game_with_taxonomy(title, taxonomy_terms):
 
 
 def classify_game(title):
+    if has_mtg_identity(title):
+        return classify_mtg(title)
+
     text = clean_text(title).lower()
 
     if not text:
@@ -522,6 +531,10 @@ def has_strong_single_card_evidence(title):
 
 
 def classify_product_category(title):
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[0]
+
     text = clean_text(title).lower()
 
     if has_strong_single_card_evidence(title):
@@ -543,6 +556,10 @@ def classify_product_category(title):
 
 
 def infer_product_type(title):
+    mtg = mtg_product_details(title)
+    if mtg:
+        return mtg[1]
+
     text = clean_text(title).lower()
 
     if has_strong_single_card_evidence(title):
@@ -1936,6 +1953,11 @@ class WooCommerceAdapter(RetailerAdapter):
             product_category = "SINGLE"
 
         product_type = infer_product_type(title)
+        if game == "MTG":
+            details = mtg_product_details(title, tags=taxonomy_terms)
+            if details:
+                product_category, product_type = details
+
 
         if (
             product_category == "SINGLE"
