@@ -46,7 +46,7 @@ from app.retailers.delta_discovery import discover_new_product_urls
 from app.store_health import record_store_failure, record_store_success
 
 
-VERSION = "1.1.2-M1"
+VERSION = "1.1.2-M1-SCG1"
 logger = logging.getLogger("lotus.universal_retailer_monitor")
 DEFAULT_SCAN_INTERVAL = 60
 MAX_STORES_PER_CYCLE = 100
@@ -1222,13 +1222,14 @@ async def scan_store(
             # Includes WooCommerce in Step 6J-3D2.
             # -------------------------------------------------
             delta_products = []
-            if platform == "masterpacks" and delta_discovery_allowed_now(store.id):
+            uses_catalog_delta = platform == "masterpacks" or bool(getattr(adapter, "uses_catalog_delta", False))
+            if uses_catalog_delta and delta_discovery_allowed_now(store.id):
                 result["delta_attempted"] = True
                 MONITOR_STATUS["delta_discovery_attempts"] += 1
                 _LAST_DELTA_DISCOVERY_AT[store.id] = time.monotonic()
                 try:
                     delta_products = await asyncio.wait_for(
-                        adapter.discover_delta_products(known_urls, limit=6),
+                        adapter.discover_delta_products(known_urls, limit=6 if platform == "masterpacks" else 12),
                         timeout=DELTA_DISCOVERY_TIMEOUT_SECONDS,
                     )
                     result["delta_validated_products"] = len(delta_products)
@@ -1242,8 +1243,8 @@ async def scan_store(
                     raise
                 except Exception as error:
                     MONITOR_STATUS["delta_discovery_soft_errors"] += 1
-                    logger.warning("MASTERPACKS DISCOVERY PAUSED | %s | ContinueWithRefresh=True", error)
-            elif platform in DELTA_DISCOVERY_PLATFORMS and delta_discovery_allowed_now(store.id):
+                    logger.warning("RETAILER CATALOG DISCOVERY PAUSED | Store=%s | %s | ContinueWithRefresh=True", store.name, error)
+            elif not uses_catalog_delta and platform in DELTA_DISCOVERY_PLATFORMS and delta_discovery_allowed_now(store.id):
                 result["delta_attempted"] = True
                 MONITOR_STATUS["delta_discovery_attempts"] += 1
                 _LAST_DELTA_DISCOVERY_AT[store.id] = time.monotonic()
@@ -1317,7 +1318,7 @@ async def scan_store(
             # Existing deep discovery fallback: every ~15 min.
             # -------------------------------------------------
             discovery_products = []
-            if platform != "masterpacks" and discovery_allowed_now(store.id):
+            if not uses_catalog_delta and discovery_allowed_now(store.id):
                 result["discovery_attempted"] = True
                 MONITOR_STATUS["deep_discovery_attempts"] += 1
                 _LAST_DISCOVERY_AT[store.id] = time.monotonic()
@@ -1393,7 +1394,11 @@ async def scan_store(
         else:
             # Initial/manual scans and adapters without fast-refresh support.
             products = await adapter.get_normalized_products()
-            result["scan_mode"] = "FULL_DISCOVERY"
+            result["scan_mode"] = (
+                "BOUNDED_CATALOG_DISCOVERY"
+                if bool(getattr(adapter, "uses_catalog_delta", False))
+                else "FULL_DISCOVERY"
+            )
 
     except Exception as error:
         result["error"] = f"FETCH_ERROR:{type(error).__name__}:{error}"
