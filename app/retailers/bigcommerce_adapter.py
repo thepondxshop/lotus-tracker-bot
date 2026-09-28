@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 BigCommerce Universal Retailer Adapter
-Version 1.0.7
-Step 6J-2B2 — BigCommerce Sealed Product Classification Integrity
+Version 1.0.8
+Game Nerdz / Star City Games product metadata compatibility
 
 Public storefront + sitemap GETs only.
 No auth guessing, cart mutation, checkout automation, CAPTCHA/queue bypass.
@@ -20,11 +20,12 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 
 from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+from app.event_listing_filter import is_event_listing
 
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.65
@@ -423,6 +424,25 @@ def language(f):
     )
 
 
+def escape_json_string_whitespace(raw):
+    """Escape literal LF/CR/TAB inside strings; leave all other syntax intact."""
+    out = []
+    quoted = False
+    escaped = False
+    for char in raw:
+        if quoted and not escaped and char in "\n\r\t":
+            out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[char])
+            continue
+        out.append(char)
+        if escaped:
+            escaped = False
+        elif quoted and char == "\\":
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+    return "".join(out)
+
+
 def jsonld_objects(text):
     out = []
 
@@ -431,9 +451,11 @@ def jsonld_objects(text):
     ):
 
         try:
-            p = json.loads(
-                m.group(1).strip()
-            )
+            raw = m.group(1).strip()
+            try:
+                p = json.loads(raw)
+            except json.JSONDecodeError:
+                p = json.loads(escape_json_string_whitespace(raw))
 
         except Exception:
             continue
@@ -452,13 +474,38 @@ def jsonld_objects(text):
     return out
 
 
-def product_schema(text):
+def identity_url(value):
+    try:
+        parsed = urlparse(str(value))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        return (parsed.hostname.lower().removeprefix("www."), parsed.path.rstrip("/"))
+    except ValueError:
+        return None
+
+
+def schema_matches_url(schema, url):
+    expected = identity_url(url)
+    if not expected:
+        return False
+    claimed = schema.get("url")
+    if claimed and identity_url(claimed) != expected:
+        return False
+    offers = schema.get("offers") or []
+    if isinstance(offers, dict):
+        offers = [offers]
+    links = [o.get("url") for o in offers if isinstance(o, dict) and o.get("url")] if isinstance(offers, list) else []
+    return bool((claimed or links) and all(identity_url(v) == expected for v in links))
+
+
+def product_schema(text, expected_url=None):
     q = list(
         jsonld_objects(
             text
         )
     )
 
+    products = []
     while q:
         x = q.pop(
             0
@@ -502,7 +549,7 @@ def product_schema(text):
         )
 
         if "product" in types:
-            return x
+            products.append(x)
 
         if isinstance(
             x.get(
@@ -516,7 +563,48 @@ def product_schema(text):
                 ]
             )
 
-    return None
+    if expected_url:
+        matched = [x for x in products if schema_matches_url(x, expected_url)]
+        if len(matched) == 1:
+            return matched[0]
+        # Preserve old URL-less single-product pages, but never choose a
+        # different product or an arbitrary recommendation from a graph.
+        if not matched and len(products) == 1:
+            x = products[0]
+            offers = x.get("offers") or []
+            if isinstance(offers, dict):
+                offers = [offers]
+            if not isinstance(offers, list):
+                return None
+            if not x.get("url") and not any(o.get("url") for o in offers if isinstance(o, dict)):
+                return x
+        return None
+    return products[0] if len(products) == 1 else None
+
+
+def product_identity(title, schema, url):
+    """Game evidence from the title or the exact product's explicit brand."""
+    if is_event_listing(title, schema.get("category", ""), url) or is_non_tcg_merchandise(title):
+        return None, "UNKNOWN", "TCG Product", "REJECTED"
+    game = classify_game(title)
+    if game:
+        return game, category(title), product_type(title), "TITLE"
+    if not schema_matches_url(schema, url):
+        return None, "UNKNOWN", "TCG Product", "NO_PRODUCT_IDENTITY"
+    cat = category(title)
+    if (re.match(r"^pok[eé]mon\b", clean(title), re.I)
+            and cat in {"SEALED", "ACCESSORY"}
+            and not any(term in clean(title).lower() for term in UNSUPPORTED)):
+        return "Pokemon", cat, product_type(title), "POKEMON_TITLE_AND_FORMAT"
+    brand = schema.get("brand")
+    if isinstance(brand, dict):
+        brand = brand.get("name")
+    brand = clean(brand) if isinstance(brand, str) else ""
+    if brand.casefold() in {"magic: the gathering", "magic the gathering", "mtg"}:
+        details = mtg_product_details("MTG " + title)
+        if details:
+            return "MTG", details[0], details[1], "EXACT_PRODUCT_BRAND_AND_FORMAT"
+    return None, "UNKNOWN", "TCG Product", "NO_SUPPORTED_GAME"
 
 
 def offer(schema):
@@ -1243,7 +1331,7 @@ class BigCommerceAdapter(
 
                     schema = (
                         product_schema(
-                            text
+                            text, expected_url=url
                         )
                     )
 
@@ -1406,7 +1494,7 @@ class BigCommerceAdapter(
 
                         schema = (
                             product_schema(
-                                text
+                                text, expected_url=url
                             )
                         )
 
@@ -1634,11 +1722,7 @@ class BigCommerceAdapter(
 
             return None
 
-        game = (
-            classify_game(
-                title
-            )
-        )
+        game, cat, ptype, game_source = product_identity(title, schema, url)
 
         if not game:
 
@@ -1685,18 +1769,6 @@ class BigCommerceAdapter(
             self.diagnostics[
                 "adapter_unknown_availability"
             ] += 1
-
-        cat = (
-            category(
-                title
-            )
-        )
-
-        ptype = (
-            product_type(
-                title
-            )
-        )
 
         fam = (
             family(
@@ -1762,6 +1834,8 @@ class BigCommerceAdapter(
         )
 
         pdata = {
+            "game_source": game_source,
+            "adapter_version": VERSION,
 
             "adapter":
                 "bigcommerce",
