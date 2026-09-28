@@ -1,8 +1,8 @@
 """
 Lotus Tracker Bot / PonDeX Trackers
 BigCommerce Universal Retailer Adapter
-Version 1.0.8
-Game Nerdz / Star City Games product metadata compatibility
+Version 1.0.9
+Star City Games bounded catalog discovery; Game Nerdz compatibility retained
 
 Public storefront + sitemap GETs only.
 No auth guessing, cart mutation, checkout automation, CAPTCHA/queue bypass.
@@ -15,7 +15,7 @@ import html as html_lib
 import json
 import re
 import time
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import aiohttp
 
@@ -25,7 +25,7 @@ from app.event_listing_filter import is_event_listing
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
-VERSION = "1.0.8"
+VERSION = "1.0.9"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.65
@@ -35,6 +35,32 @@ MAX_PRODUCT_PAGES = 200
 
 # Per-process, per-store progress; no database or baseline changes.
 _DISCOVERY_LAST_URL = {}
+_SCG_SITEMAP_CURSOR = {}
+_SCG_LAST_PRODUCT = {}
+SCG_DISCOVERY_SECONDS = 60
+SCG_DELTA_SECONDS = 22
+SCG_PRODUCT_LIMIT = 32
+SCG_SEALED_URL = re.compile(r"-sld-(?:mtg|poke|rift|punk)-", re.I)
+
+
+def starcity_host(domain):
+    return normalize_domain(domain).lower().removeprefix("www.") == "starcitygames.com"
+
+
+def starcity_sitemap_page(url):
+    """Only numbered product sitemaps actually advertised by the store."""
+    try:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        if (parsed.scheme not in {"http", "https"}
+                or not starcity_host(parsed.hostname or "")
+                or parsed.path != "/xmlsitemap.php"
+                or query.get("type") != ["products"]):
+            return None
+        page = int(query.get("page", [""])[0])
+        return page if page > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 SITEMAP_PATHS = ("/xmlsitemap.php", "/sitemap.xml", "/sitemap_index.xml")
 TCG_PRIORITY = (
@@ -982,6 +1008,12 @@ class BigCommerceAdapter(
         self.known_product_urls = set()
         self.discovery_budget_seconds = None
         self._discovery_deadline = None
+        self.uses_catalog_delta = starcity_host(self.domain)
+        self._scg_delta = False
+        self._scg_sources_by_url = {}
+        if self.uses_catalog_delta:
+            self.max_product_pages = min(self.max_product_pages, SCG_PRODUCT_LIMIT)
+            self.discovery_budget_seconds = SCG_DISCOVERY_SECONDS
 
         self._reset()
 
@@ -990,6 +1022,10 @@ class BigCommerceAdapter(
         self,
     ):
         self.diagnostics = {
+            "adapter_version": VERSION,
+            "discovery_profile": "SCG_SEALED_CATALOG" if self.uses_catalog_delta else "GENERIC_SITEMAP",
+            "discovery_scope": "SUPPORTED_SEALED_PRODUCTS" if self.uses_catalog_delta else "GENERIC_PRODUCTS",
+            "rejection_reasons": {},
 
             "pages_checked":
                 0,
@@ -1104,10 +1140,105 @@ class BigCommerceAdapter(
             return None
 
 
+    async def _discover_starcity(self, session):
+        # The general 10,000-URL cap never reaches SCG's recent catalog.
+        # Always check the highest numbered product sitemap, then rotate
+        # older maps. Sitemap rank is discovery evidence, never stock evidence.
+        root = await self._get(session, self.base_url + "/xmlsitemap.php")
+        if not root:
+            return []
+        maps = {}
+        for raw in LOC.findall(root):
+            url = clean(raw)
+            page = starcity_sitemap_page(url)
+            if page is not None:
+                maps[page] = url
+        if not maps:
+            self.diagnostics["last_error"] = "SCG_PRODUCT_SITEMAPS_NOT_FOUND"
+            return []
+        self.diagnostics["sitemaps_seen"] += 1
+        pages = sorted(maps, reverse=True)
+        self.diagnostics["catalog_sitemap_count"] = len(pages)
+        self.diagnostics["catalog_head_page"] = pages[0]
+        older = pages[1:]
+        cursor = _SCG_SITEMAP_CURSOR.get(self.domain, 0) % max(1, len(older))
+        count = min(1 if self._scg_delta else 3, len(older))
+        selected = [pages[0]] + [older[(cursor + i) % len(older)] for i in range(count)]
+        all_urls = set()
+        candidates = []
+        self._scg_sources_by_url = {}
+        self.diagnostics["catalog_pages_read"] = []
+        known = {identity_url(u) for u in self.known_product_urls}
+        for page in selected:
+            if self._budget_expired():
+                break
+            await asyncio.sleep(self.request_delay)
+            sitemap_url = maps[page]
+            body = await self._get(session, sitemap_url)
+            if not body:
+                continue
+            self.diagnostics["sitemaps_seen"] += 1
+            self.diagnostics["catalog_pages_read"].append(page)
+            if page != pages[0]:
+                _SCG_SITEMAP_CURSOR[self.domain] = (older.index(page) + 1) % len(older)
+            batch = set()
+            for raw in LOC.findall(body):
+                url = clean(raw)
+                ident = identity_url(url)
+                if not ident or ident[0] != "starcitygames.com":
+                    continue
+                all_urls.add(url)
+                # Known SCG SKU URL prefixes identify candidates only. Product
+                # metadata must still prove the game, packaging, price/stock.
+                if SCG_SEALED_URL.search(urlparse(url).path):
+                    batch.add(url)
+            ranked = sorted(batch, key=lambda u: (-priority(u), u))
+            last = _SCG_LAST_PRODUCT.get((self.domain, sitemap_url))
+            if last in ranked:
+                start = ranked.index(last) + 1
+                ranked = ranked[start:] + ranked[:start]
+            for url in ranked:
+                self._scg_sources_by_url[url] = sitemap_url
+                if url not in candidates:
+                    candidates.append(url)
+        self.diagnostics["product_urls_discovered"] = len(all_urls)
+        self.diagnostics["catalog_sealed_candidates"] = len(candidates)
+        # New candidates first; delta scans leave known URLs to fast refresh.
+        unseen = [u for u in candidates if identity_url(u) not in known]
+        if self._scg_delta:
+            candidates = unseen
+        else:
+            candidates = unseen + [u for u in candidates if identity_url(u) in known]
+        selected_urls = candidates[:self.max_product_pages]
+        print(f"BIGCOMMERCE SCG DISCOVERY | Store={self.store_name} | Adapter={VERSION} | "
+              f"Scope=SUPPORTED_SEALED_PRODUCTS | CatalogSitemaps={len(pages)} | "
+              f"PagesRead={self.diagnostics['catalog_pages_read']} | "
+              f"URLs={len(all_urls)} | SealedCandidates={self.diagnostics['catalog_sealed_candidates']} | "
+              f"Selected={len(selected_urls)} | Delta={self._scg_delta}")
+        return selected_urls
+
+    async def discover_delta_products(self, known_urls, limit=12):
+        """Bounded SCG new-page discovery, using the same parser as validation."""
+        if not self.uses_catalog_delta:
+            return []
+        old = (self.max_product_pages, self.discovery_budget_seconds, self._scg_delta,
+               self.known_product_urls)
+        try:
+            self.set_known_product_urls(known_urls)
+            self.max_product_pages = max(1, min(int(limit), 12))
+            self.discovery_budget_seconds = SCG_DELTA_SECONDS
+            self._scg_delta = True
+            return await self.get_normalized_products()
+        finally:
+            (self.max_product_pages, self.discovery_budget_seconds, self._scg_delta,
+             self.known_product_urls) = old
+
     async def _discover(
         self,
         session,
     ):
+        if self.uses_catalog_delta:
+            return await self._discover_starcity(session)
         queue = [
 
             urljoin(
@@ -1319,6 +1450,8 @@ class BigCommerceAdapter(
                     # Advance even after a failed fetch; retry on the next full pass.
                     if self.discovery_budget_seconds is not None:
                         _DISCOVERY_LAST_URL[self.domain] = url
+                    if self.uses_catalog_delta and url in self._scg_sources_by_url:
+                        _SCG_LAST_PRODUCT[(self.domain, self._scg_sources_by_url[url])] = url
                     text = (
                         await self._get(
                             session,
@@ -1729,6 +1862,11 @@ class BigCommerceAdapter(
             self.diagnostics[
                 "products_rejected"
             ] += 1
+
+            reasons = self.diagnostics["rejection_reasons"]
+            reasons[game_source] = reasons.get(game_source, 0) + 1
+            print(f"BIGCOMMERCE PAGE SKIPPED | Store={self.store_name} | Adapter={VERSION} | "
+                  f"URL={url} | Reason={game_source} | Title={title}")
 
             return None
 
