@@ -642,9 +642,14 @@ def extract(url, body, settings=None, content_type="text/html"):
                     if isinstance(item, dict)
                 }
 
+                picture = product.get("largePic") or product.get("pic") or product.get("thumb")
+                picture = str(picture).strip() if picture else None
+                if picture:
+                    picture = urljoin(url, picture if picture.startswith(("/", "https://", "http://")) else "/images/" + picture)
                 gts.append(dict(
                     name=product["name"],
                     sku=product.get("sku"),
+                    image=picture,
                     description=product.get("description", ""),
                     manufacturer=fields.get("manufacturer"),
                     configuration=fields.get("configurations"),
