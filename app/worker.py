@@ -5,6 +5,12 @@ import time
 
 import discord
 
+from app.alert_summary import build_notification_chunks
+from app.tcg_identity import (
+    DISCOVERY_GAMES, NEW_TCG, JURASSIC_TCG, discovery_identity, title_identity,
+    has_named_tcg_title,
+)
+
 from app.affiliate import (
     AFFILIATE_DISCLOSURE,
     build_affiliate_url,
@@ -53,7 +59,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.6-Q1 + MTG 1.0.0
+# Version 1.0.6-A1 (retains Q1 + MTG 1.0.0)
 #
 # Compact alert layout
 # Previous -> current price display
@@ -122,6 +128,18 @@ DEFAULT_FAMILY_PREFERENCES = {
 # =========================================================
 
 def validate_event_game(event):
+    explicit = title_identity(event.get("product_name"))
+    assigned = event.get("game")
+    # A generic TCG title is not a conflict with independently established
+    # taxonomy. A named competing title is always a conflict.
+    if explicit and explicit != NEW_TCG and explicit != assigned:
+        return False
+    if assigned in DISCOVERY_GAMES:
+        return discovery_identity({
+            "title": event.get("product_name"),
+            "product_type": event.get("product_type"),
+            "tags": assigned if assigned == JURASSIC_TCG else "TCG",
+        }) == assigned
     from app.mtg_products import classify_mtg, has_mtg_identity
     identity = f"{event.get('product_name') or ''} {event.get('product_type') or ''}"
     if has_mtg_identity(identity) and event.get("game") != "MTG":
@@ -562,6 +580,8 @@ def _game_display(game):
         return None
 
     game_icons = {
+        JURASSIC_TCG: "🦖",
+        NEW_TCG: "🔎",
         "One Piece": "🏴‍☠️",
         "Pokemon": "⚡",
         "Pokémon": "⚡",
@@ -963,6 +983,14 @@ async def build_event_embed(event):
             inline=False,
         )
 
+    if game in DISCOVERY_GAMES:
+        language = event.get("language") or "Unknown"
+        embed.add_field(
+            name="🔎 TCG Discovery",
+            value=f"New game discovery • Language: {language}",
+            inline=False,
+        )
+
     # =====================================================
     # STOCK / AVAILABILITY
     # =====================================================
@@ -1349,6 +1377,19 @@ async def route_event_to_discord(
                         event.get('product_type'), event.get('product_url')):
         print(f"EVENT SUPPRESSED | Reason=EVENT_REGISTRATION | Store={event.get('store_name')} | ProductURL={event.get('product_url')}")
         return False
+    event = dict(event)
+    discovered = discovery_identity({
+        "title": event.get("product_name"), "product_type": event.get("product_type"),
+    })
+    if discovered and (title_identity(event.get("product_name")) == JURASSIC_TCG
+                       or has_named_tcg_title(event.get("product_name"))):
+        previous_game = event.get("game")
+        if previous_game != discovered:
+            event["game"] = discovered
+            event["product_family"] = "UNKNOWN"
+            event["language"] = "Unknown"
+            print(f"EVENT GAME CORRECTED | Previous={previous_game} | Game={discovered} | "
+                  f"Product={event.get('product_name')}")
     dispatch_started = time.monotonic()
     # =====================================================
     # GAME SAFETY CHECK BEFORE ROLE PING
@@ -1443,7 +1484,7 @@ async def route_event_to_discord(
         alert_type,
         minimum_tier,
     )
-    mention_chunks = build_mention_chunks(eligible_members)
+    notification_chunks = build_notification_chunks(event, eligible_members)
 
     embed, affiliate_used = (
         await build_event_embed(
@@ -1465,16 +1506,12 @@ async def route_event_to_discord(
         try:
             message = (
                 await channel.send(
-                    content=(
-                        mention_chunks[0]
-                        if mention_chunks
-                        else None
-                    ),
+                    content=notification_chunks[0][0],
                     embed=embed,
                     allowed_mentions=(
                         discord.AllowedMentions(
                             roles=False,
-                            users=True,
+                            users=[discord.Object(id=user_id) for user_id in notification_chunks[0][1]],
                             everyone=False,
                         )
                     ),
@@ -1511,15 +1548,14 @@ async def route_event_to_discord(
     if message is None:
         return False
 
-    # Large servers can exceed one Discord content field. Additional chunks
-    # contain mentions only; the product embed is posted once.
-    for mention_chunk in mention_chunks[1:]:
+    # Every recipient gets product context; post the product embed only once.
+    for content, recipient_ids in notification_chunks[1:]:
         try:
             await channel.send(
-                content=mention_chunk,
+                content=content,
                 allowed_mentions=discord.AllowedMentions(
                     roles=False,
-                    users=True,
+                    users=[discord.Object(id=user_id) for user_id in recipient_ids],
                     everyone=False,
                 ),
             )
@@ -1640,7 +1676,7 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v1.0.6-Q1 started "
+        "Lotus Event Worker v1.0.6-A1 started "
         f"(dispatch timeout={EVENT_DISPATCH_TIMEOUT_SECONDS}s)."
     )
 
