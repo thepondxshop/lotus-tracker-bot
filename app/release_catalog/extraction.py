@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 
 from .service import CatalogError, digest, public_source_url
 from .distributors import product_url, public_data, phd_sku_fragment
+from .tcg_scope import non_tcg_reason
 
 
 GAMES = (
@@ -306,11 +307,7 @@ def candidate(data, url, settings, extractor):
     )
     text = norm(title + " " + str(data.get("game") or ""))
 
-    if not title or re.search(
-        r"\b(funko|lego|nanoblock|model kit|plastic model|"
-        r"puzzle|plush|statue|figure)\b",
-        text,
-    ):
+    if not title or non_tcg_reason(title):
         return None
 
     if "dragon ball" in text and "fusion world" not in text:
