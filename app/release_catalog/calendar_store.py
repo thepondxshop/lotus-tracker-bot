@@ -12,6 +12,7 @@ from .service import Release, ReleaseSource, CatalogError, snapshot, utcnow, pub
 from .official import OfficialCheck
 from .source_confidence import classify, structured
 from .calendar_dates import parse_period, placement
+from .tcg_scope import non_tcg_reason
 
 VERSION = '1.0.0-CAL1'
 
@@ -253,6 +254,7 @@ class CalendarStore:
             result = []
             for n, row in enumerate(releases):
                 if n % 100 == 0: await asyncio.sleep(0)
+                if non_tcg_reason(row.title): continue
                 result.append(make_entry(snapshot(row), grouped.get(row.id, []), checks.get(row.id), images.get(row.id)))
             return result
 
@@ -282,6 +284,7 @@ class CalendarStore:
                 if existing and existing.state != 'RETRY': return None
                 # Recheck exact date/status at the send boundary.
                 row = await self.catalog._release(s, guild, entry['id'])
+                if non_tcg_reason(row.title): return None
                 if row.status != 'CONFIRMED' or row.release_date != day or not row.confirmed_source_id:
                     return None
                 if existing:
