@@ -9,7 +9,7 @@ from . import pokemon_products, publisher_products
 from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
 from .calendar_dates import season_bounds
 
-VERSION = '1.6.8-CAL1'
+VERSION = '1.6.9-AZ1'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'MTG': ('https://magic.wizards.com/en', 'UNKNOWN', 'UNKNOWN'),
@@ -49,6 +49,7 @@ class Document(HTMLParser):
         self.title_done = False
         self.anchor = None
         self.image_url = None
+        self.images = []
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == 'meta' and (a.get('property') or a.get('name', '')).lower() == 'og:image':
@@ -56,6 +57,8 @@ class Document(HTMLParser):
         if tag in ('script','style','noscript','nav','footer','header'):
             self.skip.append(tag)
         if self.skip: return
+        if tag == 'img' and a.get('src') and len(self.images) < 100:
+            self.images.append({'src':a['src'],'alt':a.get('alt','')})
         if tag == 'title':
             if self.title_done:
                 self.skip.append(tag); return
@@ -91,7 +94,8 @@ def parse_page(url, html):
     text = '\n'.join(' '.join(x.split()) for x in ''.join(doc.parts).splitlines() if x.strip())
     return {'url':url, 'title':' '.join(doc.title)[:500], 'headings':doc.headings[:30],
             'text':text[:100000], 'links':doc.links[:800], 'detail_headings':doc.detail_headings[:30],
-            'image_url':urljoin(url, doc.image_url) if doc.image_url else None}
+            'image_url':urljoin(url, doc.image_url) if doc.image_url else None,
+            'images':doc.images}
 
 
 def access_challenge(page):
@@ -282,6 +286,9 @@ def evaluate(release, page, language, region):
         if item:
             language,region=item['language'],item['region']
             result.update(language=language,region=region)
+            if game=='Azuki TCG' and item['publisher_scope']=='PRODUCT':
+                result.pop('image_url',None)
+                if item.get('image_url'):result['image_url']=item['image_url']
             if item['publisher_scope']=='SET':result['issues'].append('Publisher set announcement; individual packaging is not established.')
     if match == 'PRODUCT_GROUP':
         result['issues'].append('Multiple product variants; not one combined bundle.')
