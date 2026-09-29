@@ -21,10 +21,10 @@ class OfficialCommands(app_commands.Group):
                 await self.verifier.discovery.configure(interaction.guild_id,interaction.user.id,enabled)
             return await self.verifier.discovery.status(interaction.guild_id)
         def render(data):
-            result=embed('Official page discovery 1.6.7',
+            result=embed('Official page discovery '+VERSION,
                 f"Automatic discovery: {'ON' if data['enabled'] else 'OFF'}\n"
                 'New leads publish before admin review. Five-minute feed target; cooldowns and scan capacity apply.\n'
-                'New game feeds baseline their first readable index; later new links can publish.\n'
+                'New feeds baseline old links; Azuki product pages also catch up current/future dated releases.\n'
                 'Use /release official coverage for supported formats and remaining gaps.')
             for game, state in data.get('games', {}).items():
                 last = state['last']
@@ -63,7 +63,7 @@ class OfficialCommands(app_commands.Group):
         from .publisher_products import COVERAGE
         async def work():return None
         def render(_):
-            result=embed('Official discovery coverage 1.6.7',
+            result=embed('Official discovery coverage '+VERSION,
                 'Supported routes require readable publisher content. Listing confirmation is separate from stock, exact SKU dates and admin review.')
             for game,label in {'One Piece':'Product pages: boosters, decks, collections and accessories',
                 'Pokemon':'US product gallery; access challenges can block discovery',**COVERAGE}.items():
