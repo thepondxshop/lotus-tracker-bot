@@ -16,6 +16,7 @@ from app import shopify_pacing
 
 from app.tcg_identity import (
     DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
+    FUSION_WORLD_GAME, has_fusion_world_identity,
 )
 
 from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details, explicit_mtg_family
@@ -28,7 +29,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-A1 (retains C11 + MTG 1.0.0)
+# Component Version 1.0.6-A2.1 (retains C11 + MTG 1.0.0)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -589,22 +590,8 @@ def _classify_known_game(
             "Gundam"
         )
 
-    if (
-        "dragon ball super card game fusion world"
-        in text
-
-        or
-        "dragon ball fusion world"
-        in text
-
-        or
-        "fusion world tcg"
-        in text
-    ):
-
-        return (
-            "Dragon Ball Fusion World"
-        )
+    if has_fusion_world_identity(text):
+        return FUSION_WORLD_GAME
 
     if (
         "riftbound"
