@@ -13,13 +13,20 @@ from .ingestion_store import aware
 from .official import OfficialSource, OfficialPage, OfficialCheck
 from .official_parser import approved_url, evaluate, primary_product_text, release_windows
 
-VERSION = '1.6.7'
+VERSION = '1.6.9-AZ1'
 from . import publisher_products
+from . import azuki_products
 SUPPORTED_GAMES = ('One Piece', 'Pokemon', *publisher_products.ROOTS)
 DISCOVERY_ROOTS = {'One Piece':'https://en.onepiece-cardgame.com/products/',
                    'Pokemon':'https://www.pokemon.com/us/pokemon-tcg/product-gallery', **publisher_products.ROOTS}
 from .one_piece_products import product_path, product_identity
 from . import pokemon_products
+
+
+def initial_page_state(url):
+    # Newly supported Azuki product pages need their own date read before we
+    # can distinguish upcoming announcements from the historical catalog.
+    return 'DATE_PENDING' if azuki_products.product_url(url) else 'BASELINED'
 
 
 def product_url(url, game=None):
@@ -142,7 +149,7 @@ class OfficialDiscovery:
                     if digest(url) in known or (game == 'One Piece' and re.fullmatch(r'/products/(?:op|eb|prb)\d+\.html', urlsplit(url).path)):
                         continue
                     s.add(DiscoveryPage(guild_id=guild, url_key=digest(url), url=url,
-                        state='BASELINED', checked_at=self.started_at))
+                        state=initial_page_state(url), checked_at=self.started_at))
                 s.add(DiscoveryPage(guild_id=guild, url_key=digest(marker), url=marker,
                     state='COVERAGE_BASELINE', checked_at=self.started_at))
                 if game in ('Pokemon', *publisher_products.ROOTS) and cfg.enabled:
@@ -167,7 +174,7 @@ class OfficialDiscovery:
             for url in publisher_products.links(game,doc):
                 if not product_url(url,game) or digest(url) in known:continue
                 known.add(digest(url))
-                s.add(DiscoveryPage(guild_id=guild,url_key=digest(url),url=url,state='BASELINED',checked_at=utcnow()))
+                s.add(DiscoveryPage(guild_id=guild,url_key=digest(url),url=url,state=initial_page_state(url),checked_at=utcnow()))
             s.add(DiscoveryPage(guild_id=guild,url_key=digest(marker),url=marker,state='COVERAGE_BASELINE',checked_at=utcnow()))
 
     async def configure(self, guild, actor, enabled):
@@ -192,7 +199,7 @@ class OfficialDiscovery:
                         urls.add(product_url(urljoin(doc.get('url', ''), href)))
                 for url in urls - {None}:
                     s.add(DiscoveryPage(guild_id=guild, url_key=digest(url), url=url,
-                        state='BASELINED', checked_at=utcnow()))
+                        state=initial_page_state(url), checked_at=utcnow()))
             cfg.enabled, cfg.actor_id = enabled, actor
             if enabled:
                 indexes = (await s.scalars(select(OfficialSource).where(OfficialSource.guild_id == guild,
@@ -251,6 +258,16 @@ class OfficialDiscovery:
                 return {'state': 'UNSUPPORTED'}
             saved = await s.scalar(select(DiscoveryPage).where(
                 DiscoveryPage.guild_id == guild, DiscoveryPage.url_key == digest(item['url'])))
+            if saved and saved.state == 'DATE_PENDING' and not explicit:
+                saved.checked_at = page.checked_at
+                windows = item.get('windows', [])
+                # First catalog catch-up is limited to one unambiguous current
+                # or future release window. Undated entries remain observable.
+                if len(windows) != 1:
+                    return {'state': 'DATE_PENDING'}
+                if windows[0]['end'] < utcnow().date().isoformat():
+                    saved.state = 'PAST'
+                    return {'state': 'PAST'}
             if saved and saved.state == 'BASELINED' and not explicit:
                 saved.checked_at = page.checked_at
                 return {'state': 'BASELINED'}
