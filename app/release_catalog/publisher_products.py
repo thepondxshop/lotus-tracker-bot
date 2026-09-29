@@ -2,6 +2,7 @@
 import re
 from urllib.parse import urlsplit, urlunsplit, urljoin, parse_qs
 from .extraction import norm
+from . import azuki_products
 
 # Explicit routes: do not turn arbitrary news, cards or event pages into products.
 ROOTS = {
@@ -20,7 +21,7 @@ COVERAGE = {
     'Naruto':'Dedicated products and set overviews; combined pages stay grouped',
     'MTG':'Homepage-linked set/product families; individual SKU splitting is not enabled',
     'Riftbound':'Set overview announcements; individual SKU splitting is not enabled',
-    'Azuki TCG':'Named AZK set announcements; individual SKU splitting is not enabled',
+    'Azuki TCG':'Product catalog: booster boxes, individual starter decks, Relic Hunter Boxes and accessories; named AZK set news',
 }
 
 def _url(game, value):
@@ -33,6 +34,9 @@ def _url(game, value):
 
 
 def product_url(game, value):
+    if game=='Azuki TCG':
+        product=azuki_products.product_url(value)
+        if product:return product
     p=_url(game,value)
     if not p:return None
     path=p.path.rstrip('/')
@@ -52,6 +56,9 @@ def product_url(game, value):
 
 
 def index_url(game,value):
+    if game=='Azuki TCG':
+        index=azuki_products.index_url(value)
+        if index:return index
     p=_url(game,value)
     if not p:return None
     path=p.path.rstrip('/'); root=urlsplit(ROOTS[game]).path.rstrip('/')
@@ -76,13 +83,17 @@ def links(game,page):
     for href,label in page.get('links',[]):
         url=urljoin(page['url'],href)
         target=product_url(game,url)
-        if game=='Azuki TCG' and target and not (re.search(r'\bAZK[ -]?\d+\b',label,re.I) and re.search(r'\bIntroducing\b',label,re.I) and not re.search(r'\bEVENT\b',label)):
+        if game=='Azuki TCG' and target and not azuki_products.product_url(target) and not (re.search(r'\bAZK[ -]?\d+\b',label,re.I) and re.search(r'\bIntroducing\b',label,re.I) and not re.search(r'\bEVENT\b',label)):
             continue
         if target:
             if target!=page['url'] and target not in products:products.append(target)
         else:
             target=index_url(game,url)
             if target and target!=page['url'] and target not in indexes:indexes.append(target)
+    # Product catalog first: homepage news often precedes individual SKU details.
+    if game=='Azuki TCG' and page['url'].rstrip('/')==ROOTS[game].rstrip('/'):
+        indexes=[azuki_products.INDEX]+[x for x in indexes if x!=azuki_products.INDEX]
+        return indexes+products
     return products+indexes
 
 
@@ -107,6 +118,8 @@ def identity(game,page):
     if not url:return None
     from .official_parser import access_challenge
     if access_challenge(page):return None
+    if game=='Azuki TCG' and azuki_products.product_url(page['url']):
+        return azuki_products.identity(page)
     lines=_lines(page); body='\n'.join(lines)
     title=_title(page); headings=page.get('headings',[])+page.get('detail_headings',[])
     if re.search(r'404|not found|registration|event ticket',title,re.I):return None
