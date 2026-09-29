@@ -14,6 +14,10 @@ from urllib.parse import (
 import aiohttp
 from app import shopify_pacing
 
+from app.tcg_identity import (
+    DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
+)
+
 from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details, explicit_mtg_family
 
 from app.product_family import (
@@ -24,7 +28,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C11 + MTG 1.0.0
+# Component Version 1.0.6-A1 (retains C11 + MTG 1.0.0)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -421,7 +425,27 @@ def is_non_tcg_merchandise(
     )
 
 
-def classify_game(
+def classify_game(product):
+    """Explicit title evidence wins; unknown TCGs never borrow a set-code role."""
+    if is_non_tcg_merchandise(product):
+        return None
+    identity = title_identity(product.get("title"))
+    discovered = discovery_identity(product)
+    if discovered:
+        return discovered
+    if identity == JURASSIC_TCG:
+        return None
+    if identity and identity not in DISCOVERY_GAMES:
+        # Try the title alone before any possibly stale retailer taxonomy.
+        direct = _classify_known_game({"title": product.get("title")})
+        if direct == identity:
+            return direct
+        legacy = _classify_known_game(product)
+        return legacy if legacy == identity else None
+    return _classify_known_game(product)
+
+
+def _classify_known_game(
     product,
 ):
 
@@ -667,9 +691,7 @@ def classify_game(
     # Set codes overlap across games (for example Gundam EB02).
     # Use the One Piece code fallback only after explicit game matches.
     if (
-        ONE_PIECE_SET_PATTERN.search(
-            title
-        )
+        re.search(r"\b(?:op|eb|prb)[-\s]?\d{1,2}\b", title, re.IGNORECASE)
 
         and
         SEALED_CONTEXT_PATTERN.search(
@@ -2821,6 +2843,9 @@ class ShopifyAdapter:
                 ),
             )
         )
+
+        if game in DISCOVERY_GAMES:
+            product_family = explicit_discovery_family(family_probe)
 
         purchase_limit = (
             infer_purchase_limit(
