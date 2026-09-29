@@ -4,7 +4,7 @@ import io
 import textwrap
 from datetime import date
 import discord
-from .calendar_store import VERSION
+UI_VERSION = '1.1.0-CAL2'
 from .service import CatalogError
 
 
@@ -30,43 +30,47 @@ def font(size):
 
 def month_png(year, month, entries, games=None):
     Image, ImageDraw, _ = pillow()
-    image = Image.new('RGB', (1120, 960), '#111827')
+    weeks = calendar.Calendar(firstweekday=6).monthdayscalendar(year, month)
+    width, top, cell_w, cell_h = 1600, 206, 220, 132
+    footer = top + len(weeks)*cell_h + 16
+    image = Image.new('RGB', (width, footer+142), '#111827')
     d = ImageDraw.Draw(image)
-    filtered = [e for e in entries if games is None or e['game'] in games]
-    exact = {}
-    pending = []
-    for e in filtered:
+    exact, pending = {}, []
+    for e in entries:
+        if games is not None and e['game'] not in games: continue
         p = e.get('period')
         if not p: continue
         anchor = date.fromisoformat(p['anchor'])
         if (anchor.year, anchor.month) != (year, month): continue
         if p['tba']: pending.append(e)
         else: exact.setdefault(anchor.day, []).append(e)
-    d.text((32, 26), 'LOTUS  /  RELEASE CALENDAR', font=font(19), fill='#93c5fd')
-    d.text((32, 62), f'{calendar.month_name[month]} {year}', font=font(38), fill='white')
+    def fitted(text, max_width, size):
+        text=str(text)
+        while text and d.textlength(text, font=font(size))>max_width:
+            text=text[:-1]
+        return text
+    d.text((32, 20), 'LOTUS  /  RELEASE CALENDAR', font=font(24), fill='#93c5fd')
+    d.text((32, 60), f'{calendar.month_name[month]} {year}', font=font(56), fill='white')
     label = 'All games' if games is None else ', '.join(games) or 'No games selected'
-    d.text((32, 111), textwrap.shorten(label, width=100, placeholder='...'), font=font(17), fill='#cbd5e1')
-    weeks = calendar.Calendar(firstweekday=6).monthdayscalendar(year, month)
+    d.text((32, 132), fitted(label,1530,24), font=font(24), fill='#cbd5e1')
     for i, label in enumerate(('SUN','MON','TUE','WED','THU','FRI','SAT')):
-        d.text((40+i*152, 158), label, font=font(17), fill='#94a3b8')
+        d.text((44+i*cell_w, 172), label, font=font(24), fill='#94a3b8')
     for week, days in enumerate(weeks):
         for col, day in enumerate(days):
-            x, y = 28+col*152, 188+week*100
-            d.rounded_rectangle((x,y,x+144,y+92),radius=10,fill='#1e293b')
+            x, y = 30+col*cell_w, top+week*cell_h
+            rows=exact.get(day, []) if day else []
+            d.rounded_rectangle((x,y,x+cell_w-10,y+cell_h-10),radius=12,
+                fill='#163b36' if rows else '#1e293b',outline='#34d399' if rows else None,width=2)
             if not day: continue
-            d.text((x+10,y+7),str(day),font=font(22),fill='white')
-            rows = exact.get(day, [])
+            d.text((x+14,y+8),str(day),font=font(42),fill='white')
             if rows:
-                d.text((x+10,y+39),f'{len(rows)} release'+('s' if len(rows)>1 else ''),font=font(15),fill='#86efac')
-                title = rows[0].get('set_code') or rows[0]['title']
-                d.text((x+10,y+62), textwrap.shorten(title,width=17,placeholder='...'),font=font(13),fill='#cbd5e1')
-    # Always outside the numbered day cells: TBA is never a day-31 release.
-    y = 814
-    d.rounded_rectangle((28,y,1090,912),radius=12,fill='#30283e')
-    d.text((44,y+12),f'PERIOD-END TBA  /  {len(pending)} product'+('s' if len(pending)!=1 else ''),font=font(20),fill='#e9d5ff')
+                d.text((x+14,y+66),f'{len(rows)} release'+('s' if len(rows)>1 else ''),font=font(27),fill='#86efac')
+    # Period endpoints organize uncertain dates, never imply a numbered-day release.
+    d.rounded_rectangle((30,footer,1570,footer+90),radius=12,fill='#30283e')
+    d.text((46,footer+10),f'PERIOD-END TBA  /  {len(pending)} product'+('s' if len(pending)!=1 else ''),font=font(28),fill='#e9d5ff')
     groups = sorted({e['period']['label'] for e in pending})
-    d.text((44,y+46),textwrap.shorten(' | '.join(groups) or 'No period-end listings this month.',width=106,placeholder='...'),font=font(16),fill='#e2e8f0')
-    d.text((32,931),'Select a day for product images and details. TBA endpoints are not release dates.',font=font(16),fill='#94a3b8')
+    d.text((46,footer+50),fitted(' | '.join(groups) or 'No period-end listings this month.',1490,23),font=font(23),fill='#e2e8f0')
+    d.text((32,footer+106),'Open Week zoom below for readable lists and clickable day buttons.',font=font(25),fill='#94a3b8')
     out=io.BytesIO(); image.save(out,format='PNG'); out.seek(0)
     return out
 
@@ -93,7 +97,7 @@ def product_embed(entry):
     if entry.get('notes'):e.add_field(name='Notes',value=safe('\n'.join(entry['notes']),500),inline=False)
     if entry.get('source_url'): e.add_field(name='Source',value=f"[View source]({entry['source_url']})",inline=False)
     e.set_thumbnail(url=entry.get('image_url') or 'attachment://image-pending.png')
-    e.set_footer(text=f"Lotus Calendar {VERSION} • Release #{entry['id']} • Release date does not establish stock")
+    e.set_footer(text=f"Lotus Calendar {UI_VERSION} • Release #{entry['id']} • Release date does not establish stock")
     return e
 
 
