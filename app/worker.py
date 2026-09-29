@@ -5,6 +5,11 @@ import time
 
 import discord
 
+from app.tcg_discovery_admin import (
+    queue_tcg_discovery_review,
+    start_tcg_discovery_notifier,
+)
+
 from app.alert_summary import build_notification_chunks
 from app.tcg_identity import (
     DISCOVERY_GAMES, NEW_TCG, JURASSIC_TCG, discovery_identity, title_identity,
@@ -59,7 +64,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.6-A1 (retains Q1 + MTG 1.0.0)
+# Version 1.0.6-A2 (retains A1 notifications + Q1 + MTG 1.0.0)
 #
 # Compact alert layout
 # Previous -> current price display
@@ -1408,6 +1413,8 @@ async def route_event_to_discord(
 
         return False
 
+    queue_tcg_discovery_review(bot, event)
+
     alert_type = (
         determine_alert_route(
             event
@@ -1676,9 +1683,11 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v1.0.6-A1 started "
+        "Lotus Event Worker v1.0.6-A2 started "
         f"(dispatch timeout={EVENT_DISPATCH_TIMEOUT_SECONDS}s)."
     )
+
+    start_tcg_discovery_notifier(bot)
 
     from app.event_queue import PRIORITY_ENABLED, LOOKAHEAD, MAX_PRIORITY_BURST
     print(f"LOTUS QUEUE MODE | PriorityEnabled={PRIORITY_ENABLED} | "
