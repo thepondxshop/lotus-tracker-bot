@@ -76,6 +76,36 @@ def json_details(value):
     return {}
 
 
+def source_dates(row, sources):
+    """Exact dates in retained product evidence, keeping the latest note per URL.
+
+    Reading evidence never promotes a record or changes announcement eligibility.
+    Free-text dates and order deadlines are deliberately not interpreted here.
+    """
+    latest = {}
+    for source in sources:
+        url = public_url(source.get('url'))
+        if url and str(source.get('kind', '')).upper() in ('PUBLISHER', 'DISTRIBUTOR'):
+            latest[url] = source
+    result = []
+    for url, source in latest.items():
+        data = json_details(source.get('note'))
+        if data.get('match_scope') == 'GAME_LAUNCH': continue
+        if any(x in (data.get('issues') or []) for x in
+               ('INVALID_RELEASE_DATE', 'SOURCE_SCOPE_CONFLICT', 'MULTIPLE_LANGUAGES')): continue
+        conflict = False
+        for field in ('region', 'language'):
+            a, b = str(row.get(field) or '').casefold(), str(data.get(field) or '').casefold()
+            if a not in ('', 'unknown') and b not in ('', 'unknown') and a != b:
+                conflict = True
+        if conflict: continue
+        p = placement(parse_period(data.get('release_date')))
+        if p and not p['tba']:
+            p.update(scope='PRODUCT', source_url=url, source_kind=str(source['kind']).upper())
+            result.append(p)
+    return result
+
+
 def make_entry(row, sources, check=None, image_override=None):
     """Exact catalog dates win; broad endpoints only determine TBA placement."""
     confidence = classify(row, sources)
@@ -101,8 +131,19 @@ def make_entry(row, sources, check=None, image_override=None):
         period = placement(parse_period(row['release_date']))
         date_origin = 'Catalog date'
     else:
+        recorded = source_dates(row, sources)
+        exact_dates = {p['anchor'] for p in recorded}
         distinct = {(p['start'], p['end'], p['precision']): p for p in periods}
-        if len(distinct) == 1:
+        if recorded and (len(exact_dates) > 1 or any(
+                not p['start'] <= recorded[0]['anchor'] <= p['end'] for p in periods)):
+            period = None; date_origin = 'Conflicting release windows'
+            notes.append('Recorded product dates disagree; no single date selected.')
+        elif recorded:
+            period = recorded[-1]
+            date_origin = 'Distributor-listed date' if period['source_kind'] == 'DISTRIBUTOR' else 'Publisher-listed date'
+            source_url = period['source_url']
+            notes.append('Exact date from saved product evidence; catalog confirmation is tracked separately.')
+        elif len(distinct) == 1:
             period = next(iter(distinct.values())); date_origin = 'Publisher window'
             source_url = period.get('source_url') or source_url
         elif len(distinct) > 1:
