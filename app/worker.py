@@ -14,6 +14,7 @@ from app.alert_summary import build_notification_chunks
 from app.tcg_identity import (
     DISCOVERY_GAMES, NEW_TCG, JURASSIC_TCG, discovery_identity, title_identity,
     has_named_tcg_title,
+    FUSION_WORLD_GAME,
 )
 
 from app.affiliate import (
@@ -64,7 +65,7 @@ from app.redis_client import (
 # =========================================================
 # LOTUS EVENT WORKER
 # PonDeX Trackers
-# Version 1.0.6-A2 (retains A1 notifications + Q1 + MTG 1.0.0)
+# Version 1.0.6-A2.1 (Fusion World alias correction; retains A1 + A2)
 #
 # Compact alert layout
 # Previous -> current price display
@@ -1383,6 +1384,13 @@ async def route_event_to_discord(
         print(f"EVENT SUPPRESSED | Reason=EVENT_REGISTRATION | Store={event.get('store_name')} | ProductURL={event.get('product_url')}")
         return False
     event = dict(event)
+    if (event.get("game") == NEW_TCG
+            and title_identity(event.get("product_name")) == FUSION_WORLD_GAME):
+        # Repair older queued events before role eligibility and admin review.
+        # Keep language/family unknown if that was the recorded evidence.
+        event["game"] = FUSION_WORLD_GAME
+        print(f"EVENT GAME CORRECTED | Previous={NEW_TCG} | Game={FUSION_WORLD_GAME} | "
+              f"Product={event.get('product_name')}")
     discovered = discovery_identity({
         "title": event.get("product_name"), "product_type": event.get("product_type"),
     })
@@ -1683,7 +1691,7 @@ async def run_event_worker(bot):
     await bot.wait_until_ready()
 
     print(
-        "Lotus Event Worker v1.0.6-A2 started "
+        "Lotus Event Worker v1.0.6-A2.1 started "
         f"(dispatch timeout={EVENT_DISPATCH_TIMEOUT_SECONDS}s)."
     )
 
