@@ -4,3 +4,5 @@ asyncpg
 redis
 aiohttp
 alembic
+
+Pillow>=11.3,<13
