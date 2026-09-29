@@ -21,9 +21,9 @@ import discord
 
 from app.config import GAME_DATA
 from app.redis_client import get_redis
-from app.tcg_identity import DISCOVERY_GAMES, NEW_TCG, JURASSIC_TCG
+from app.tcg_identity import DISCOVERY_GAMES, NEW_TCG, JURASSIC_TCG, title_identity
 
-VERSION = "1.0.6-A2"
+VERSION = "1.0.6-A2.1"
 IO_TIMEOUT = 5
 SEND_TIMEOUT = 20
 RETRY_SECONDS = 60
@@ -71,7 +71,8 @@ def _name_key(value):
 
 
 def _registered(name):
-    key = _name_key(name)
+    identity = title_identity(name)
+    key = _name_key(identity if identity and identity != NEW_TCG else name)
     return bool(key) and any(_name_key(game) == key for game, _, _ in GAME_DATA)
 
 
@@ -129,6 +130,8 @@ def candidate_from_event(event):
     # Existing supported games must not generate new-game admin notices just
     # because a Railway role ID has not been configured yet.
     if _registered(game):
+        return None
+    if _registered(title_identity(event.get("product_name")) or ""):
         return None
     if game not in DISCOVERY_GAMES:
         return None
@@ -237,7 +240,8 @@ class DiscoveryNotifier:
                 await self._io(redis.zrem(base+":due", key))
                 return True
             candidate = Candidate(**json.loads(payload))
-            if _registered(candidate.name):
+            if (_registered(candidate.name)
+                    or _registered(title_identity(candidate.product) or "")):
                 message_id = "already_registered"
             elif key in self.delivered:
                 message_id = self.delivered[key]
