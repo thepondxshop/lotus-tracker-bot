@@ -72,7 +72,7 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C11
+# Component Version 1.0.6-A1 (retains C11 scheduling)
 # Step 6K-2C4 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
@@ -1327,105 +1327,30 @@ def should_alert_new_shopify_product(item):
     return False, "UNKNOWN_DISCOVERY_SOURCE"
 
 
-def add_new_product_events(
-    events_to_send,
-    item,
-    store,
-    deal_data=None,
-):
+def add_new_product_events(events_to_send, item, store, deal_data=None):
+    """One observation produces one initial alert; later transitions are separate.
 
-    events_to_send.append(
-
-        make_product_event(
-
-            event_type=(
-                ProductEventType.DISCOVERED
-            ),
-
-            item=item,
-
-            store=store,
-
-            in_stock=(
-                item[
-                    "available"
-                ]
-            ),
-
-            deal_data=(
-                deal_data
-            ),
-        )
-    )
-
-    state_mapping = {
-
-        "PAGE_LIVE":
-            (
-                ProductEventType.PAGE_LIVE,
-                False,
-            ),
-
-        "COMING_SOON":
-            (
-                ProductEventType.COMING_SOON,
-                False,
-            ),
-
-        "PREORDER_LIVE":
-            (
-                ProductEventType.PREORDER_LIVE,
-                True,
-            ),
-
-        "PREORDER_PAGE":
-            (
-                ProductEventType.PAGE_LIVE,
-                False,
-            ),
-
-        "STOCK_AVAILABLE":
-            (
-                ProductEventType.STOCK_AVAILABLE,
-                True,
-            ),
-    }
-
-    mapping = (
-        state_mapping.get(
-            item.get(
-                "product_state"
-            )
-        )
-    )
-
-    if mapping:
-
-        event_type, in_stock = (
-            mapping
-        )
-
-        events_to_send.append(
-
-            make_product_event(
-
-                event_type=(
-                    event_type
-                ),
-
-                item=item,
-
-                store=store,
-
-                in_stock=(
-                    in_stock
-                ),
-
-                deal_data=(
-                    deal_data
-                ),
-            )
-        )
+    This runs only after the existing seed/backfill checks. A preorder title
+    alone cannot generate PREORDER_LIVE: purchasable availability is required.
+    """
+    state = str(item.get("product_state") or "").upper()
+    available = item.get("available") is True
+    if state == "PREORDER_LIVE" and available:
+        event_type = ProductEventType.PREORDER_LIVE
+    elif available:
+        event_type = ProductEventType.STOCK_AVAILABLE
+    elif state == "COMING_SOON":
+        event_type = ProductEventType.COMING_SOON
+    elif state in {"PAGE_LIVE", "PREORDER_PAGE", "PREORDER_LIVE", "STOCK_AVAILABLE"}:
+        event_type = ProductEventType.PAGE_LIVE
+    else:
+        event_type = ProductEventType.DISCOVERED
+    events_to_send.append(make_product_event(
+        event_type=event_type, item=item, store=store,
+        in_stock=available, deal_data=deal_data,
+    ))
+    print(f"SHOPIFY INITIAL ALERT | Update=1.0.6-A1 | Event={event_type.value} | "
+          f"Game={item.get('game')} | Store={store.name} | Product={item.get('title')}")
 
 
 async def find_store_product(
@@ -3939,6 +3864,7 @@ def get_shopify_monitor_status():
         runtime.append(row)
     data.update({
         'component_version': '1.0.6-C11',
+        'alert_update_version': '1.0.6-A1',
         'scheduler_heartbeat_age_seconds': round(now-_SCHEDULER_HEARTBEAT, 1) if _SCHEDULER_HEARTBEAT is not None else None,
         'store_runtime': runtime,
         "scheduler": "INDEPENDENT_STORES_C11",
