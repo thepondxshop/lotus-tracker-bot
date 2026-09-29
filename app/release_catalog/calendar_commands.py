@@ -1,5 +1,6 @@
 """Member /calendar and administrator setup commands."""
 import discord
+import logging
 from discord import app_commands
 from .calendar_runtime import CalendarRuntime
 from .calendar_ui import open_calendar
@@ -16,6 +17,7 @@ class CalendarAdmin(app_commands.Group):
         await interaction.response.send_message('Calendar setup requires a server administrator.',ephemeral=True);return False
     async def on_error(self,interaction,error):
         cause=getattr(error,'original',error)
+        logging.getLogger(__name__).error('LOTUS CALENDAR COMMAND | Type=%s',type(cause).__name__,exc_info=(type(cause),cause,cause.__traceback__))
         message=str(cause) if isinstance(cause,CatalogError) else 'Calendar command failed. Check bot channel permissions and Railway logs.'
         if interaction.response.is_done():await interaction.followup.send(message,ephemeral=True)
         else:await interaction.response.send_message(message,ephemeral=True)
