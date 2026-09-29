@@ -6,9 +6,14 @@ Unrecognized games stay discoverable under a neutral label, not another role.
 import re
 import unicodedata
 
-VERSION = "1.0.6-A1"
+VERSION = "1.0.6-A2.1"
 NEW_TCG = "New TCG — identity unverified"
 JURASSIC_TCG = "Jurassic Park TCG"
+FUSION_WORLD_GAME = "Dragon Ball Fusion World"
+FUSION_WORLD_PATTERN = re.compile(
+    r"\b(?:(?:dragon\s*ball(?:\s+super)?(?:\s+card\s+game)?|dbs(?:cg)?)"
+    r"\s+fusion\s*world|fusion\s*world\s+(?:tcg|card\s+game))\b"
+)
 DISCOVERY_GAMES = frozenset({NEW_TCG, JURASSIC_TCG})
 
 
@@ -18,6 +23,14 @@ def _text(value):
     value = unicodedata.normalize("NFKC", str(value or "")).casefold()
     value = value.replace("é", "e")
     return re.sub(r"\s+", " ", re.sub(r"[-_:®™]+", " ", value)).strip()
+
+
+def has_fusion_world_identity(value):
+    """Accept catalog spelling/punctuation variants, but require Fusion World.
+
+    Dragon Ball Super or Masters alone is not Fusion World evidence.
+    """
+    return bool(FUSION_WORLD_PATTERN.search(_text(value)))
 
 
 _TCG = re.compile(r"\b(?:tcg|ccg|trading card game|collectible card game|card game)\b")
@@ -35,7 +48,7 @@ _GAME_PATTERNS = tuple((game, re.compile(pattern)) for game, pattern in (
     ("Pokemon", r"\bpokemon\b"),
     ("MTG", r"\b(?:mtg|magic the gathering)\b"),
     ("Gundam", r"\bgundam\b"),
-    ("Dragon Ball Fusion World", r"\b(?:dragon ball(?: super card game)? fusion world|fusion world tcg)\b"),
+    (FUSION_WORLD_GAME, FUSION_WORLD_PATTERN.pattern),
     ("Riftbound", r"\briftbound\b"),
     ("Palworld", r"\bpalworld\b"),
     ("Naruto", r"\bnaruto\b"),
