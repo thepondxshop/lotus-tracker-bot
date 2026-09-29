@@ -4,8 +4,9 @@ import io
 import textwrap
 from datetime import date
 import discord
-UI_VERSION = '1.1.0-CAL2'
+UI_VERSION = '1.1.1-CAL2-IMG1'
 from .service import CatalogError
+from .calendar_images import asset_path
 
 
 def pillow():
@@ -75,12 +76,31 @@ def month_png(year, month, entries, games=None):
     return out
 
 
-def placeholder_png():
+def placeholder_png(entry=None):
     Image, ImageDraw, _ = pillow()
-    image=Image.new('RGB',(240,240),'#1e293b'); d=ImageDraw.Draw(image)
-    d.text((36,75),'PRODUCT IMAGE',font=font(18),fill='#94a3b8')
-    d.text((50,110),'COMING SOON',font=font(18),fill='#cbd5e1')
+    entry=entry or {}
+    image=Image.new('RGB',(960,600),'#111827'); d=ImageDraw.Draw(image)
+    d.text((40,28),'LOTUS  /  ARTWORK PENDING',font=font(24),fill='#93c5fd')
+    d.rounded_rectangle((40,88,920,502),radius=22,fill='#1e293b',outline='#475569',width=3)
+    d.text((70,113),str(entry.get('game') or 'TCG release')[:40],font=font(30),fill='#a5b4fc')
+    label=str(entry.get('set_code') or entry.get('product_format') or 'PRODUCT')
+    d.text((70,170),label[:18],font=font(66),fill='white')
+    title=str(entry.get('title') or 'Product image coming soon')
+    lines=textwrap.wrap(title,width=42)[:3]
+    for n,line in enumerate(lines):d.text((70,280+n*46),line,font=font(31),fill='#e2e8f0')
+    d.text((70,447),'Illustrative placeholder',font=font(26),fill='#fcd34d')
+    d.text((40,535),'Final product artwork has not been supplied.',font=font(29),fill='#cbd5e1')
     out=io.BytesIO();image.save(out,format='PNG');out.seek(0);return out
+
+
+def product_image_file(entry):
+    name=entry.get('image_asset')
+    if name:
+        path=asset_path(name)
+        if path: return discord.File(path,filename=name)
+    if not entry.get('image_url'):
+        return discord.File(placeholder_png(entry),filename='image-pending.png')
+    return None
 
 
 def product_embed(entry):
@@ -96,6 +116,7 @@ def product_embed(entry):
         e.add_field(name='TBA placement',value='Shown at the end of its period for organization. This is not an exact release date.',inline=False)
     if entry.get('notes'):e.add_field(name='Notes',value=safe('\n'.join(entry['notes']),500),inline=False)
     if entry.get('source_url'): e.add_field(name='Source',value=f"[View source]({entry['source_url']})",inline=False)
+    if entry.get('image_label'):e.add_field(name='Artwork',value=safe(entry['image_label'],500),inline=False)
     e.set_thumbnail(url=entry.get('image_url') or 'attachment://image-pending.png')
     e.set_footer(text=f"Lotus Calendar {UI_VERSION} • Release #{entry['id']} • Release date does not establish stock")
     return e
@@ -105,5 +126,6 @@ def announcement_embed(entry, day):
     e=product_embed(entry)
     e.title=f"🎉 Release day • {safe(entry['title'],205)}"
     e.description=f"**{safe(entry['title'],200)} releases today — {day:%B %d, %Y}!**\nHappy hunting, collectors! 🪷\n\nRetailer stock and opening times may vary."
-    if not entry.get('image_url'): e.set_thumbnail(url=None)
+    e.set_thumbnail(url=None)
+    e.set_image(url=entry.get('image_url') or 'attachment://image-pending.png')
     return e
