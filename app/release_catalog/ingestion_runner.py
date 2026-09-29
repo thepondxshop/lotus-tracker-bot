@@ -203,11 +203,15 @@ class IngestionRunner:
         finally: self.state='STOPPED'
 
 def start_release_ingestion(bot):
+    calendar=getattr(bot,'release_calendar',None)
+    if calendar: calendar.start()
     publisher=getattr(bot,'release_publisher',None)
     if publisher: publisher.start()
     runner=getattr(bot,'release_ingestion',None)
     if runner: return runner.start(bot)
 async def stop_release_ingestion(bot):
+    calendar=getattr(bot,'release_calendar',None)
+    if calendar: await calendar.stop()
     publisher=getattr(bot,'release_publisher',None)
     if publisher: await publisher.stop()
     runner=getattr(bot,'release_ingestion',None)
