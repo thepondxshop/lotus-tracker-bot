@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import discord
 from .calendar_store import CalendarStore
 from .calendar_render import UI_VERSION
-from .calendar_render import announcement_embed, month_png, safe
+from .calendar_render import announcement_embed, month_png, safe, product_image_file
 from .service import CatalogError
 
 LOG=logging.getLogger(__name__)
@@ -122,7 +122,9 @@ class CalendarRuntime:
         groups=[members[i:i+70] for i in range(0,len(members),70)] or [[]]
         try:
             ids=groups[0]
-            message=await channel.send(content=' '.join(f'<@{x}>' for x in ids) or None,embed=embed,
+            picture=await asyncio.to_thread(product_image_file,entry)
+            image_args={'file':picture} if picture else {}
+            message=await channel.send(content=' '.join(f'<@{x}>' for x in ids) or None,embed=embed,**image_args,
                 allowed_mentions=discord.AllowedMentions(everyone=False,roles=False,users=[discord.Object(id=x) for x in ids]))
             await self.store.delivered(key,'SENT',message.id)
         except (discord.Forbidden, discord.NotFound) as error:
