@@ -13,6 +13,7 @@ from .official import OfficialCheck
 from .source_confidence import classify, structured
 from .calendar_dates import parse_period, placement
 from .tcg_scope import non_tcg_reason
+from .calendar_images import resolve_image
 
 VERSION = '1.0.0-CAL1'
 
@@ -156,12 +157,9 @@ def make_entry(row, sources, check=None, image_override=None):
                 ('release_date', 'release_window', 'release_period', 'release_season')
                 if parse_period(raw.get(k))), None)
             date_origin = 'Reported date/window' if period else 'Date not announced'
-    image = public_url(image_override) if image_override else None
-    if not image:
-        image = next((public_url(v) for v in evidence_images + [raw.get('image_url'), raw.get('image')]
-                      if isinstance(v, str) and public_url(v)), None)
+    artwork = resolve_image(row, sources, check, image_override)
     exact = bool(period and not period['tba'])
-    return {**row, 'period': period, 'image_url': image, 'source_url': source_url,
+    return {**row, 'period': period, **artwork, 'source_url': source_url,
         'confidence': confidence['label'], 'date_origin': date_origin, 'notes': list(dict.fromkeys(notes)),
         'announceable': bool(exact and row.get('release_date') and row.get('status') == 'CONFIRMED'
                             and row.get('confirmed_source_id') and 'Date evidence needs review.' not in notes)}
