@@ -5,6 +5,17 @@ import textwrap
 from datetime import date
 import discord
 from .calendar_store import VERSION
+from .service import CatalogError
+
+
+def pillow():
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        return Image, ImageDraw, ImageFont
+    except ModuleNotFoundError as error:
+        if error.name != 'PIL' and not str(error.name).startswith('PIL.'):
+            raise
+        raise CatalogError('Calendar images need Pillow. Add Pillow>=11.3,<13 to the repository-root requirements.txt, commit it, and rebuild/redeploy Railway. Then run /calendaradmin setup again.') from error
 
 
 def safe(value, limit=1000):
@@ -12,13 +23,13 @@ def safe(value, limit=1000):
 
 
 def font(size):
-    from PIL import ImageFont
+    _, _, ImageFont = pillow()
     try: return ImageFont.truetype('DejaVuSans.ttf', size)
     except OSError: return ImageFont.load_default(size=size)
 
 
 def month_png(year, month, entries, games=None):
-    from PIL import Image, ImageDraw
+    Image, ImageDraw, _ = pillow()
     image = Image.new('RGB', (1120, 960), '#111827')
     d = ImageDraw.Draw(image)
     filtered = [e for e in entries if games is None or e['game'] in games]
@@ -61,7 +72,7 @@ def month_png(year, month, entries, games=None):
 
 
 def placeholder_png():
-    from PIL import Image, ImageDraw
+    Image, ImageDraw, _ = pillow()
     image=Image.new('RGB',(240,240),'#1e293b'); d=ImageDraw.Draw(image)
     d.text((36,75),'PRODUCT IMAGE',font=font(18),fill='#94a3b8')
     d.text((50,110),'COMING SOON',font=font(18),fill='#cbd5e1')
