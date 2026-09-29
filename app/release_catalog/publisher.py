@@ -7,6 +7,7 @@ import discord
 from .publishing_store import PublishingStore
 from .publishing_format import notice_embed, audience_event
 from .service import CatalogError
+from .tcg_scope import non_tcg_reason
 
 LOG = logging.getLogger(__name__)
 
@@ -112,6 +113,10 @@ class ReleasePublisher:
             await self.recover(n)
             return
         if n['state'] not in ('READY', 'RETRY'):
+            return
+        reason = non_tcg_reason(n['payload']['facts']['title'])
+        if reason:
+            await self.store.delivery(guild, nid, state='SKIPPED', error=reason)
             return
         from app.event_listing_filter import is_event_listing
         if n['payload']['facts']['status'] == 'ARCHIVED' or is_event_listing(n['payload']['facts']['title']):
