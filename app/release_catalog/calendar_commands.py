@@ -4,7 +4,7 @@ import logging
 from discord import app_commands
 from .calendar_runtime import CalendarRuntime
 from .calendar_ui import open_calendar
-from .calendar_store import VERSION
+from .calendar_render import UI_VERSION
 from .service import CatalogError
 
 class CalendarAdmin(app_commands.Group):
@@ -66,7 +66,7 @@ class CalendarAdmin(app_commands.Group):
         cfg=await self.runtime.store.settings(interaction.guild_id)
         rows=await self.runtime.store.delivery_rows(interaction.guild_id)
         problem=[r for r in rows if r['state'] in ('SENDING','UNCERTAIN')]
-        e=discord.Embed(title=f'Lotus Calendar {VERSION}',description=
+        e=discord.Embed(title=f'Lotus Calendar {UI_VERSION}',description=
             f"Worker: {self.runtime.state}\nCalendar channel: {cfg.get('channel_id') or 'Not configured'}\n"
             f"Announcement channel: {cfg.get('announcement_channel_id') or 'Not configured'}\n"
             f"Announcements: {'ON' if cfg['announcements_enabled'] else 'OFF'}\n"
