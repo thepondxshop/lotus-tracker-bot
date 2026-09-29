@@ -332,6 +332,8 @@ def register_release_catalog_commands(bot, *, catalog: ReleaseCatalog | None = N
     from .publisher import ReleasePublisher
     group.publisher = ReleasePublisher(bot, group.watch_group.store, group.watch_group.runner.official)
     bot.release_publisher = group.publisher
+    from .calendar_commands import register_calendar
+    register_calendar(bot, catalog, group.watch_group.runner.official)
     bot.tree.add_command(group)
     print(f"LOTUS RELEASE CATALOG | Version={VERSION} | Commands=REGISTERED | Mode=ADMIN_ONLY | AI=OFF | Publishing=CONFIGURED_SEPARATELY", flush=True)
     return group
