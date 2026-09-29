@@ -5,7 +5,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 import discord
 from .calendar_dates import month_shift
-from .calendar_render import month_png, placeholder_png, product_embed, safe
+from .calendar_render import month_png, placeholder_png, product_embed, safe, product_image_file
 from .calendar_runtime import can_access
 from .calendar_render import UI_VERSION
 
@@ -225,7 +225,8 @@ class CalendarView(OwnedView):
         if not items:return [header],[]
         entry=items[self.page];card=product_embed(entry)
         card.set_thumbnail(url=None);card.set_image(url=entry.get('image_url') or 'attachment://image-pending.png')
-        files=[discord.File(await asyncio.to_thread(placeholder_png),filename='image-pending.png')] if not entry.get('image_url') else []
+        file=await asyncio.to_thread(product_image_file,entry)
+        files=[file] if file else []
         return [header,card],files
 
     async def update(self,interaction):
