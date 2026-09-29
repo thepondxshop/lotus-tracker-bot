@@ -7,8 +7,9 @@ from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
 from .extraction import canonical_url, host, norm, code, CODE
 from . import pokemon_products, publisher_products
 from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
+from .calendar_dates import season_bounds
 
-VERSION = '1.6.7'
+VERSION = '1.6.8-CAL1'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'MTG': ('https://magic.wizards.com/en', 'UNKNOWN', 'UNKNOWN'),
@@ -47,8 +48,11 @@ class Document(HTMLParser):
         self.in_title = False
         self.title_done = False
         self.anchor = None
+        self.image_url = None
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        if tag == 'meta' and (a.get('property') or a.get('name', '')).lower() == 'og:image':
+            self.image_url = a.get('content') or self.image_url
         if tag in ('script','style','noscript','nav','footer','header'):
             self.skip.append(tag)
         if self.skip: return
@@ -86,7 +90,8 @@ def parse_page(url, html):
     doc = Document(); doc.feed(html)
     text = '\n'.join(' '.join(x.split()) for x in ''.join(doc.parts).splitlines() if x.strip())
     return {'url':url, 'title':' '.join(doc.title)[:500], 'headings':doc.headings[:30],
-            'text':text[:100000], 'links':doc.links[:800], 'detail_headings':doc.detail_headings[:30]}
+            'text':text[:100000], 'links':doc.links[:800], 'detail_headings':doc.detail_headings[:30],
+            'image_url':urljoin(url, doc.image_url) if doc.image_url else None}
 
 
 def access_challenge(page):
@@ -160,8 +165,8 @@ def discovery_links(game, page, releases):
 MONTHS = {m.lower(): i for i,m in enumerate(calendar.month_name) if m}
 MONTHS.update({m.lower():i for i,m in enumerate(calendar.month_abbr) if m})
 MONTH_RE = '|'.join(sorted(MONTHS,key=len,reverse=True))
-DATE_RE = re.compile(rf'\b(?:(?P<iso>20\d{{2}}-\d{{2}}-\d{{2}})|(?P<month>{MONTH_RE})\.?\s+(?:(?P<day>\d{{1,2}})(?:st|nd|rd|th)?[,.]?\s+)?(?P<year>20\d{{2}})|(?P<quarter>Q[1-4])\s+(?P<qy>20\d{{2}}))\b',re.I)
-RELEASE_WORD = re.compile(r'\breleas(?:e|es|ed|ing)|\blaunch(?:es|ing)?\b|\bavailable\b|\bon sale\b',re.I)
+DATE_RE = re.compile(rf'\b(?:(?P<iso>20\d{{2}}-\d{{2}}-\d{{2}})|(?P<month>{MONTH_RE})\.?\s+(?:(?P<day>\d{{1,2}})(?:st|nd|rd|th)?[,.]?\s+)?(?P<year>20\d{{2}})|(?P<quarter>Q[1-4])\s+(?P<qy>20\d{{2}})|(?P<season>Spring|Summer|Autumn|Fall|Winter)\s+(?P<sy>20\d{{2}})|(?P<year_only>20\d{{2}})(?![-/]))\b',re.I)
+RELEASE_WORD = re.compile(r'\breleas(?:e|es|ed|ing)|\blaunch(?:es|ing)?\b|\bavailable\b|\bon sale\b|\bcoming\b',re.I)
 
 
 def release_windows(text):
@@ -171,6 +176,8 @@ def release_windows(text):
         prefix = text[max(0,m.start()-170):m.start()]
         marker = list(RELEASE_WORD.finditer(prefix))
         if not marker: continue
+        if m['year_only'] and not re.fullmatch(r'[\s:–—-]*(?:(?:date|window|in|for)\s*:?\s*)*', prefix[marker[-1].end():], re.I):
+            continue
         if re.search(r'pre.?order\s*$',prefix[:marker[-1].start()],re.I): continue
         if re.search(r'update|announcement|posted|published',prefix[marker[-1].end():],re.I): continue
         context = prefix[max(0,marker[-1].start()-25):]
@@ -181,6 +188,10 @@ def release_windows(text):
             elif m['quarter']:
                 y=int(m['qy']); mo=(int(m['quarter'][1])-1)*3+1
                 start=date(y,mo,1);end=date(y,mo+2,calendar.monthrange(y,mo+2)[1]);precision='QUARTER'
+            elif m['season']:
+                start,end=season_bounds(m['season'],int(m['sy']));precision='SEASON'
+            elif m['year_only']:
+                y=int(m['year_only']);start=date(y,1,1);end=date(y,12,31);precision='YEAR'
             else:
                 y=int(m['year']); mo=MONTHS[m['month'].lower()]
                 if m['day']: start=end=date(y,mo,int(m['day']));precision='DAY'
@@ -264,6 +275,8 @@ def evaluate(release, page, language, region):
     result={'url':page['url'],'match_scope':match,'language':language,'region':region,
             'publisher_title':page['title'],'windows':windows,
             'state':'OFFICIAL_MENTION','issues':[]}
+    if match == 'PRODUCT' and page.get('image_url'):
+        result['image_url'] = page['image_url']
     if game in publisher_products.ROOTS:
         item=publisher_products.identity(game,page)
         if item:
