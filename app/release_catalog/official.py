@@ -9,6 +9,7 @@ from .service import Release, ReleaseSource, CatalogError, digest, snapshot, utc
 from .ingestion_store import aware, Watch, Item
 from .public_http import PublicHTTP, FetchError
 from . import publisher_products
+from . import azuki_products
 from .official_parser import PRESETS, VERSION, approved_url, parse_page, discovery_links, evaluate, access_challenge
 
 LOG=logging.getLogger(__name__)
@@ -285,8 +286,11 @@ class OfficialVerifier:
                                 if link not in seen and link not in queue:
                                     # New pages first; existing pages rotate after the outstanding queue.
                                     if digest(link) not in known: new_links.append(link)
-                                    elif new_cycle and url==source['url']: queue.append(link)
-                            if source['game'] in self.discovery_games and url!=source['url']:
+                                    elif new_cycle and (url==source['url'] or
+                                            (source['game']=='Azuki TCG' and azuki_products.index_url(doc['url']))):
+                                        queue.append(link)
+                            if (source['game'] in self.discovery_games and url!=source['url']
+                                    and not (source['game']=='Azuki TCG' and azuki_products.index_url(doc['url']))):
                                 queue=(queue+new_links)[:500]
                             else:
                                 queue=(new_links+queue)[:500]
