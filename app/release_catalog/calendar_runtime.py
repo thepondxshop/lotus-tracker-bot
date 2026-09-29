@@ -7,7 +7,8 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import discord
-from .calendar_store import CalendarStore, VERSION
+from .calendar_store import CalendarStore
+from .calendar_render import UI_VERSION
 from .calendar_render import announcement_embed, month_png, safe
 from .service import CatalogError
 
@@ -66,18 +67,19 @@ class CalendarRuntime:
     async def panel(self,cfg,entries,*,create=False):
         if not cfg.get('channel_id'):return
         now=datetime.now(ZoneInfo(cfg['timezone']))
-        sig=hashlib.sha256(json.dumps([now.year,now.month,entries],sort_keys=True,default=str).encode()).hexdigest()
+        sig=hashlib.sha256(json.dumps([UI_VERSION,now.year,now.month,entries],sort_keys=True,default=str).encode()).hexdigest()
         if not create and self.panel_signatures.get(cfg['guild_id'])==sig:return
         if not cfg.get('panel_id') and not create:return
         channel=await self.channel(cfg['guild_id'],cfg['channel_id'])
         from .calendar_ui import CalendarEntry
         picture=await asyncio.to_thread(month_png,now.year,now.month,entries)
         embed=discord.Embed(title='🪷 Lotus Release Calendar',description=
-            'All games are shown here. **Open my calendar** to choose your games and browse dates privately.\n'
+            'All games are shown here. Use the month buttons to browse privately, or **Week zoom** for larger text and clickable day buttons.\n'
+            'Tap the image to enlarge it. **Open my calendar** also lets you choose your games.\n'
             'Release-day pings are optional and start off.\n'
             'Month, quarter, season and year-only releases appear in period-end TBA sections.',colour=0x667ACD)
         embed.set_image(url='attachment://lotus-calendar.png')
-        embed.set_footer(text=f"Calendar {VERSION} • Updated from the catalog • {cfg['timezone']}")
+        embed.set_footer(text=f"Calendar {UI_VERSION} • Updated from the catalog • {cfg['timezone']}")
         file=discord.File(picture,filename='lotus-calendar.png')
         if cfg.get('panel_id'):
             try:
