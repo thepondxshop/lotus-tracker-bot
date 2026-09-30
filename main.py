@@ -1199,8 +1199,6 @@ class LotusTrackerBot(
         if self.database_ready:
             self.release_ingestion_task = start_release_ingestion(self)
 
-        start_x_monitor(self)
-
         synced = (
             await self.tree.sync()
         )
@@ -1210,7 +1208,6 @@ class LotusTrackerBot(
         )
 
     async def close(self):
-        await stop_x_monitor(self)
         await stop_release_ingestion(self)
         await super().close()
 
@@ -9406,9 +9403,6 @@ from app.release_catalog.commands import register_release_catalog_commands
 from app.release_catalog.ingestion_runner import start_release_ingestion, stop_release_ingestion
 
 register_release_catalog_commands(bot)
-
-from app.x_monitor import register_x_monitor_commands, start_x_monitor, stop_x_monitor
-register_x_monitor_commands(bot)
 
 from app.mtg_commands import register_mtg_commands
 register_mtg_commands(bot)
