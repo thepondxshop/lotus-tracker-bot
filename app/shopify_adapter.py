@@ -29,7 +29,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-A2.1 (retains C11 + MTG 1.0.0)
+# Component Version 1.0.6-C12 (retains A2.1 identity + MTG 1.0.0)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -1723,7 +1723,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C11"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C12"
 _STORE_CURRENCY_CACHE = {}
 _CURRENCY_REFRESH_NOT_BEFORE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
@@ -1885,22 +1885,30 @@ def _collection_score(handle, title=""):
 
 
 def _retry_after_seconds(value, attempt):
-    # Retry-After is a minimum delay, not a value to truncate to 30 seconds.
+    """Respect the server minimum AND repeated-throttle recovery backoff.
+
+    A repeated Retry-After: 60 must not pin a failing storefront to one
+    request every minute forever. Only 429 responses use this schedule;
+    healthy storefronts retain their existing request/poll intervals.
+    """
+    recovery_delay = min(60.0 * 2 ** max(0, min(attempt, 4)), 900.0)
     if value is not None:
         try:
-            seconds=float(str(value).strip())
-            if math.isfinite(seconds) and seconds>=0:
-                return max(1.0,seconds)
-        except (TypeError,ValueError,OverflowError):
+            seconds = float(str(value).strip())
+            if math.isfinite(seconds) and seconds >= 0:
+                return max(recovery_delay, seconds)
+        except (TypeError, ValueError, OverflowError):
             pass
         try:
-            date=parsedate_to_datetime(str(value))
-            if date.tzinfo is None: date=date.replace(tzinfo=timezone.utc)
-            seconds=(date-datetime.now(timezone.utc)).total_seconds()
-            if seconds>=0: return max(1.0,seconds)
-        except (TypeError,ValueError,OverflowError):
+            date = parsedate_to_datetime(str(value))
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            seconds = (date - datetime.now(timezone.utc)).total_seconds()
+            if seconds >= 0:
+                return max(recovery_delay, seconds)
+        except (TypeError, ValueError, OverflowError):
             pass
-    return min(60.0 * 2 ** min(attempt,4),900.0)
+    return recovery_delay
 
 
 def shopify_cooldown_remaining(domain):
@@ -2026,6 +2034,8 @@ class ShopifyAdapter:
                             evidence = dict(at=datetime.now(timezone.utc).isoformat(),
                                             purpose=purpose, path=urlparse(url).path,
                                             wait_seconds=wait_seconds,
+                                            throttle_streak=failures + 1,
+                                            recovery_policy="C12_SERVER_MINIMUM_AND_BACKOFF",
                                             headers=_header_summary(response.headers))
                             _DOMAIN_LAST_RATE_LIMIT[self.domain] = evidence
                             print("SHOPIFY DOMAIN COOLDOWN | "
@@ -3052,3 +3062,4 @@ class ShopifyAdapter:
                     or []
                 ),
         }
+
