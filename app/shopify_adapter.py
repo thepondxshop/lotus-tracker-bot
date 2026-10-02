@@ -15,6 +15,7 @@ from urllib.parse import (
 
 import aiohttp
 from app import shopify_pacing
+from lotus_bot_auth import operator_request_headers
 
 from app.tcg_identity import (
     DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
@@ -1725,7 +1726,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C13"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C14"
 _STORE_CURRENCY_CACHE = {}
 _CURRENCY_REFRESH_NOT_BEFORE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
@@ -1930,6 +1931,7 @@ def _header_summary(headers):
 
 
 _THEPONDX_SIGNED_ACCESS_CONFIRMED = False
+_OPERATOR_SIGNED_ACCESS_CONFIRMED = set()
 
 
 def _thepondx_signature_headers(url):
@@ -2041,6 +2043,10 @@ class ShopifyAdapter:
 
                 try:
                     signature_headers = _thepondx_signature_headers(url)
+                    operator_signed = False
+                    if not signature_headers:
+                        signature_headers = operator_request_headers(url, self.domain)
+                        operator_signed = bool(signature_headers)
                     request_options = {"allow_redirects": True}
                     if signature_headers:
                         request_options = {"headers": signature_headers, "allow_redirects": False}
@@ -2057,11 +2063,16 @@ class ShopifyAdapter:
                                 return body
                             try:
                                 data = json.loads(body)
-                                if (signature_headers and isinstance(data, dict)
+                                if (operator_signed and isinstance(data, dict)
+                                        and isinstance(data.get("products"), list)
+                                        and self.domain not in _OPERATOR_SIGNED_ACCESS_CONFIRMED):
+                                    _OPERATOR_SIGNED_ACCESS_CONFIRMED.add(self.domain)
+                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C14")
+                                if (signature_headers and not operator_signed and isinstance(data, dict)
                                         and isinstance(data.get("products"), list)
                                         and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
                                     _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
-                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C13")
+                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C14")
                                 shopify_pacing.succeeded(self.domain)
                                 return data
                             except Exception as error:
