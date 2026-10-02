@@ -4,7 +4,7 @@ import io
 import textwrap
 from datetime import date
 import discord
-UI_VERSION = '1.1.2-CAL3-IMG2'
+UI_VERSION = '1.1.3-CAL4-IMG2'
 from .service import CatalogError
 from .calendar_images import asset_path
 
