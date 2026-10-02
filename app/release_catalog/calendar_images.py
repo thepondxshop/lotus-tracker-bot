@@ -3,6 +3,8 @@ import json
 import re
 from pathlib import Path
 from .service import CatalogError, public_source_url
+from .publisher_artwork import unsuitable, HEROINES_PAGE, HEROINES_IMAGE
+from .calendar_identity import product_key, edition
 
 ASSETS = Path(__file__).parent / 'assets' / 'calendar'
 BUNDLED = {
@@ -35,7 +37,7 @@ def image_urls(data):
         elif isinstance(value, dict): add(value.get('url') or value.get('contentUrl'))
         else:
             url = valid_url(value)
-            if url and url not in result: result.append(url)
+            if url and not unsuitable(url) and url not in result: result.append(url)
     for key in ('image_url', 'image_urls', 'image', 'images'): add(data.get(key))
     return result
 
@@ -72,10 +74,21 @@ def resolve_image(row, sources, check=None, override=None):
     if url: return remote(url, 'Admin-selected product image')
     bundle = bundled(row)
     if bundle and bundle['image_kind'] == 'OFFICIAL': return bundle
+    # Repair the cached Bandai social banner without changing any release facts.
+    # This is exact-product and English-page scoped, never inferred from a date.
+    evidence_rows = (check or {}).get('evidence', [])
+    page_urls = [s.get('url') for s in sources if s.get('kind') == 'PUBLISHER']
+    page_urls += [e.get('url') for e in evidence_rows if e.get('match_scope') == 'PRODUCT']
+    repair_heroines = (product_key(row) == 'one-piece-gc2026-heroines'
+        and edition(row.get('language')) in ('', 'english')
+        and edition(row.get('region')) not in ('japanese', 'kr', 'korea', 'cn', 'china')
+        and HEROINES_PAGE in page_urls)
     for evidence in (check or {}).get('evidence', []):
         if evidence.get('match_scope') == 'PRODUCT':
             urls = image_urls(evidence)
             if urls: return remote(urls[0], 'Publisher product-page image', 'PUBLISHER')
+    if repair_heroines:
+        return remote(HEROINES_IMAGE, 'Official Bandai product packaging • verified 2026-10-02', 'PUBLISHER')
     # Linked sources retain newer images even when the original report is old.
     ordered = sorted(enumerate(sources), key=lambda pair:
                      (pair[1].get('kind') == 'PUBLISHER', pair[0]), reverse=True)
