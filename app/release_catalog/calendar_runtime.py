@@ -145,6 +145,9 @@ class CalendarRuntime:
     async def reconcile(self,cfg,entries):
         """Recover lost acknowledgments; retract changed dates without another ping."""
         by_id={e['id']:e for e in entries}
+        for entry in entries:
+            for member in entry.get('calendar_members', []):
+                by_id[member['id']] = member
         for row in await self.store.delivery_rows(cfg['guild_id']):
             channel=None
             if row['state'] in ('SENDING','UNCERTAIN'):
