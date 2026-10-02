@@ -9,7 +9,7 @@ from . import pokemon_products, publisher_products
 from .one_piece_products import product_path, product_identity, main_text, main_title, BOOSTERS
 from .calendar_dates import season_bounds
 
-VERSION = '1.6.9-AZ1'
+VERSION = '1.6.10-ART2'
 # Publisher-owned pages, reviewed 2026-09-20. Reachability is reported at runtime.
 PRESETS = {
     'MTG': ('https://magic.wizards.com/en', 'UNKNOWN', 'UNKNOWN'),
@@ -57,8 +57,8 @@ class Document(HTMLParser):
         if tag in ('script','style','noscript','nav','footer','header'):
             self.skip.append(tag)
         if self.skip: return
-        if tag == 'img' and a.get('src') and len(self.images) < 100:
-            self.images.append({'src':a['src'],'alt':a.get('alt','')})
+        if tag == 'img' and (a.get('data-src') or a.get('src')) and len(self.images) < 100:
+            self.images.append({'src':a.get('data-src') or a['src'],'alt':a.get('alt','')})
         if tag == 'title':
             if self.title_done:
                 self.skip.append(tag); return
@@ -92,10 +92,13 @@ class Document(HTMLParser):
 def parse_page(url, html):
     doc = Document(); doc.feed(html)
     text = '\n'.join(' '.join(x.split()) for x in ''.join(doc.parts).splitlines() if x.strip())
-    return {'url':url, 'title':' '.join(doc.title)[:500], 'headings':doc.headings[:30],
+    page = {'url':url, 'title':' '.join(doc.title)[:500], 'headings':doc.headings[:30],
             'text':text[:100000], 'links':doc.links[:800], 'detail_headings':doc.detail_headings[:30],
             'image_url':urljoin(url, doc.image_url) if doc.image_url else None,
             'images':doc.images}
+    from .publisher_artwork import one_piece_image
+    page['image_url'] = one_piece_image(page)
+    return page
 
 
 def access_challenge(page):
