@@ -3,6 +3,8 @@ import json
 import re
 import time
 import math
+import os
+import base64
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -1723,7 +1725,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C12"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C13"
 _STORE_CURRENCY_CACHE = {}
 _CURRENCY_REFRESH_NOT_BEFORE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
@@ -1927,6 +1929,47 @@ def _header_summary(headers):
             for name in names if headers.get(name) is not None}
 
 
+_THEPONDX_SIGNED_ACCESS_CONFIRMED = False
+
+
+def _thepondx_signature_headers(url):
+    """Attach merchant credentials only to their exact HTTPS origin.
+
+    No session-wide credentials: other stores and redirect targets must
+    never receive this store's signature. Error messages contain no values.
+    """
+    target = urlparse(url)
+    if (target.scheme != "https" or target.hostname != "thepondx.com"
+            or target.port not in (None, 443)
+            or target.username is not None or target.password is not None):
+        return {}
+    inp = os.environ.get("THEPONDX_CRAWLER_SIGNATURE_INPUT", "").strip()
+    sig = os.environ.get("THEPONDX_CRAWLER_SIGNATURE", "").strip()
+    if not inp and not sig:
+        return {}
+    invalid = "ThePondX crawler signature configuration is invalid or expired"
+    if not inp or not sig or any(ord(c) < 32 or ord(c) > 126 for c in inp + sig):
+        raise ValueError(invalid)
+    input_match = re.match(r'^([A-Za-z][A-Za-z0-9_-]*)=\(([^)]*)\)', inp)
+    signature_match = re.fullmatch(r'([A-Za-z][A-Za-z0-9_-]*)=:([A-Za-z0-9+/]*={0,2}):', sig)
+    expires = re.search(r';\s*expires=(\d+)', inp)
+    created = re.search(r';\s*created=(\d+)', inp)
+    if (not input_match or not signature_match
+            or input_match.group(1) != signature_match.group(1)
+            or '"@authority"' not in input_match.group(2)
+            or '"signature-agent"' not in input_match.group(2)
+            or not expires or int(expires.group(1)) <= time.time()
+            or not created or int(created.group(1)) > time.time()):
+        raise ValueError(invalid)
+    try:
+        if not base64.b64decode(signature_match.group(2), validate=True):
+            raise ValueError(invalid)
+    except ValueError:
+        raise ValueError(invalid) from None
+    return {"Signature-Input": inp, "Signature": sig,
+            "Signature-Agent": '"https://shopify.com"'}
+
+
 class ShopifyAdapter:
 
     def __init__(
@@ -1973,6 +2016,7 @@ class ShopifyAdapter:
         return lock
 
     async def _request(self, session, url, *, purpose, expect_json, required):
+        global _THEPONDX_SIGNED_ACCESS_CONFIRMED
         lock = self._domain_lock()
 
         async with lock:
@@ -1996,7 +2040,12 @@ class ShopifyAdapter:
                 self.diagnostics["requests_attempted"] += 1
 
                 try:
-                    async with session.get(url, allow_redirects=True) as response:
+                    signature_headers = _thepondx_signature_headers(url)
+                    request_options = {"allow_redirects": True}
+                    if signature_headers:
+                        request_options = {"headers": signature_headers, "allow_redirects": False}
+                        self.diagnostics["signed_requests_attempted"] = self.diagnostics.get("signed_requests_attempted", 0) + 1
+                    async with session.get(url, **request_options) as response:
                         status = int(response.status)
                         body = await response.text()
                         _DOMAIN_LAST_REQUEST_AT[self.domain] = time.monotonic()
@@ -2008,6 +2057,11 @@ class ShopifyAdapter:
                                 return body
                             try:
                                 data = json.loads(body)
+                                if (signature_headers and isinstance(data, dict)
+                                        and isinstance(data.get("products"), list)
+                                        and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
+                                    _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
+                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C13")
                                 shopify_pacing.succeeded(self.domain)
                                 return data
                             except Exception as error:
@@ -2076,7 +2130,7 @@ class ShopifyAdapter:
                     if required:
                         raise ShopifyHTTPError(
                             None,
-                            f"Shopify request failed for {purpose}: {type(error).__name__}: {error}",
+                            f"Shopify request failed for {purpose}: {type(error).__name__}",
                             url=url,
                             purpose=purpose,
                         )
