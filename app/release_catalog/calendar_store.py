@@ -15,6 +15,7 @@ from .calendar_dates import parse_period, placement
 from .tcg_scope import non_tcg_reason
 from .calendar_images import resolve_image
 from .calendar_identity import consolidate
+from .calendar_events import event_sale_dates
 
 VERSION = '1.0.0-CAL1'
 
@@ -102,9 +103,11 @@ def source_dates(row, sources):
             if a not in ('', 'unknown') and b not in ('', 'unknown') and a != b:
                 conflict = True
         if conflict: continue
-        p = placement(parse_period(data.get('release_date')))
+        sale_dates = event_sale_dates(data) if str(source.get('kind', '')).upper() == 'PUBLISHER' else []
+        p = placement(parse_period(sale_dates[0] if sale_dates else data.get('release_date')))
         if p and not p['tba']:
             p.update(scope='PRODUCT', source_url=url, source_kind=str(source['kind']).upper())
+            if sale_dates: p.update(event_sale_dates=sale_dates, availability_scope='EVENT_EXCLUSIVE')
             result.append(p)
     return result
 
@@ -159,11 +162,25 @@ def make_entry(row, sources, check=None, image_override=None):
                 if parse_period(raw.get(k))), None)
             date_origin = 'Reported date/window' if period else 'Date not announced'
     artwork = resolve_image(row, sources, check, image_override)
+    event_records = [p for p in source_dates(row, sources) if p.get('availability_scope') == 'EVENT_EXCLUSIVE']
+    if event_records and period:
+        # The earliest date applies only to the same product's confirmed sale
+        # dates, never application windows, attendance dates, or other editions.
+        first_days = {p['anchor'] for p in event_records}
+        if len(first_days) == 1 and period['anchor'] in first_days:
+            sales = sorted({d for p in event_records for d in p['event_sale_dates']})
+            period = {**period, 'availability_scope': 'EVENT_EXCLUSIVE', 'event_sale_dates': sales}
+            date_origin = 'First event on-sale day'
+            notes.append('Event/convention exclusive • first available on ' + sales[0] + '. Not a general retail release.')
+            if len(sales) > 1: notes.append('Other confirmed event sale dates: ' + ', '.join(sales[1:]) + '.')
+        else:
+            notes.append('Event sale dates disagree with the selected date; review required.')
     exact = bool(period and not period['tba'])
     return {**row, 'period': period, **artwork, 'source_url': source_url,
         'confidence': confidence['label'], 'date_origin': date_origin, 'notes': list(dict.fromkeys(notes)),
         'announceable': bool(exact and row.get('release_date') and row.get('status') == 'CONFIRMED'
-                            and row.get('confirmed_source_id') and 'Date evidence needs review.' not in notes)}
+                            and row.get('confirmed_source_id') and 'Date evidence needs review.' not in notes
+                            and 'Event sale dates disagree with the selected date; review required.' not in notes)}
 
 
 class CalendarStore:
