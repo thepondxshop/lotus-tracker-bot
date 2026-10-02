@@ -14,6 +14,7 @@ from .source_confidence import classify, structured
 from .calendar_dates import parse_period, placement
 from .tcg_scope import non_tcg_reason
 from .calendar_images import resolve_image
+from .calendar_identity import consolidate
 
 VERSION = '1.0.0-CAL1'
 
@@ -254,7 +255,7 @@ class CalendarStore:
                 if n % 100 == 0: await asyncio.sleep(0)
                 if non_tcg_reason(row.title): continue
                 result.append(make_entry(snapshot(row), grouped.get(row.id, []), checks.get(row.id), images.get(row.id)))
-            return result
+            return consolidate(result)
 
     async def save_image(self, guild, rid, sid, url):
         url = public_source_url(url, required=True)
@@ -278,6 +279,13 @@ class CalendarStore:
         try:
             async with self.writes, self.sessions() as s, s.begin():
                 await self.lock(s, guild)
+                member_ids = [m['id'] for m in entry.get('calendar_members', [])] or [entry['id']]
+                # A receipt for either original record prevents a second ping
+                # after consolidation or a change in representative record.
+                prior = await s.scalar(select(Delivery.key).where(
+                    Delivery.guild_id == guild, Delivery.release_id.in_(member_ids),
+                    Delivery.release_date == day, Delivery.state != 'RETRY'))
+                if prior: return None
                 existing = await s.get(Delivery, key)
                 if existing and existing.state != 'RETRY': return None
                 # Recheck exact date/status at the send boundary.
