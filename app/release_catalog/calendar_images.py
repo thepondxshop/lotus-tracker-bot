@@ -7,6 +7,7 @@ from .publisher_artwork import unsuitable, HEROINES_PAGE, HEROINES_IMAGE
 from .calendar_identity import product_key, edition
 
 ASSETS = Path(__file__).parent / 'assets' / 'calendar'
+JP_ASSETS = {'heroines-precious-box-jp.png', 'heroines-playmat-jp.png'}
 BUNDLED = {
     ('EB05', 'PACK'): ('eb05-en-pack.png', 'OFFICIAL'),
     ('EB05', 'BOX'): ('eb05-en-box.png', 'OFFICIAL'),
@@ -45,6 +46,22 @@ def image_urls(data):
 def bundled(row):
     if str(row.get('game', '')).casefold().replace(' ', '') != 'onepiece': return None
     language = str(row.get('language') or 'UNKNOWN').casefold()
+    region = str(row.get('region') or 'UNKNOWN').casefold()
+    title = re.sub(r'[^a-z0-9]+', ' ', str(row.get('title', '')).casefold()).strip()
+    form = str(row.get('product_format') or '').upper()
+    # Exact Japanese edition/product matching. Never attach these to the English gift set.
+    if region in ('jp', 'japan') and language in ('ja', 'jp', 'japanese'):
+        name = None
+        if title in ('one piece heroines precious box japanese', 'one piece heroines precious box',
+                     'heroines precious box') and form == 'SET':
+            name = 'heroines-precious-box-jp.png'
+        if title in ('official playmat nami robin with nico robin p 111 promo',
+                     'official playmat nami robin') and form == 'ACCESSORY':
+            name = 'heroines-playmat-jp.png'
+        if name and (ASSETS / name).is_file():
+            return {'image_url':'attachment://' + name, 'image_asset':name,
+                    'image_kind':'OFFICIAL', 'image_label':'Japanese product artwork • supplied and confirmed by admin'}
+
     region = str(row.get('region') or 'UNKNOWN').casefold()
     if language not in ('unknown', 'en', 'eng', 'english', ''): return None
     if region in ('jp', 'japan', 'kr', 'korea', 'cn', 'china'): return None
@@ -113,6 +130,6 @@ def resolve_image(row, sources, check=None, override=None):
 
 def asset_path(name):
     # Only deployed manifest assets may be opened, never a source-supplied path.
-    if name not in {item[0] for item in BUNDLED.values()}: return None
+    if name not in ({item[0] for item in BUNDLED.values()} | JP_ASSETS): return None
     path = ASSETS / name
     return path if path.is_file() else None
