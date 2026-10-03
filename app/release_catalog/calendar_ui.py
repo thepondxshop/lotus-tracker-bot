@@ -1,3 +1,4 @@
+from .calendar_filters import filter_editions
 """Personal ephemeral calendars and a persistent public entry panel."""
 import asyncio
 import calendar
@@ -108,6 +109,7 @@ class WeekSelect(discord.ui.Select):
 class CalendarView(OwnedView):
     def __init__(self,runtime,guild,user,year,month):
         super().__init__(runtime,guild,user);self.year=year;self.month=month
+        self.region='ALL';self.language='all'
         self.mode='month';self.day=None;self.week=0;self.page=0;self.pages=1
 
     def weeks(self):
@@ -155,6 +157,7 @@ class CalendarView(OwnedView):
     async def render(self):
         self.clear_items()
         entries=await self.runtime.entries(self.guild_id)
+        entries=filter_editions(entries,self.region,self.language)
         prefs=await self.runtime.store.preference(self.guild_id,self.user_id)
         entries=[e for e in entries if prefs['games'] is None or e['game'] in prefs['games']]
         if self.mode=='day' and self.day is not None:
@@ -202,7 +205,7 @@ class CalendarView(OwnedView):
                 'Click/tap the image to enlarge it. Dates inside the image are visual; use the controls below.\n'
                 '**Period-end TBA** holds month, quarter, season and year-only listings.',colour=0x667ACD)
             embed.set_image(url='attachment://my-calendar.png')
-            embed.set_footer(text=f'Calendar {UI_VERSION} • Personal filters • Controls expire after 10 minutes')
+            embed.set_footer(text=f'Calendar {UI_VERSION} • {self.region} / {self.language} • Controls expire after 10 minutes')
             return [embed],[discord.File(picture,filename='my-calendar.png')]
         prefix=f'{self.year:04d}-{self.month:02d}'
         if self.mode=='day':
@@ -270,7 +273,7 @@ class SettingsView(OwnedView):
             'Clear the second dropdown to turn all release-day pings off.',colour=0x667ACD)
 
 
-async def open_calendar(runtime,interaction,month=None,*,mode='month',offset=0):
+async def open_calendar(runtime,interaction,month=None,*,mode='month',offset=0,region='ALL',language='ALL'):
     if not interaction.guild_id:
         await interaction.response.send_message('Open the calendar in your server.',ephemeral=True);return
     cfg=await runtime.store.settings(interaction.guild_id)
@@ -286,6 +289,7 @@ async def open_calendar(runtime,interaction,month=None,*,mode='month',offset=0):
         await interaction.response.send_message('Use a month such as 2028-12 (years 2000–2099).',ephemeral=True);return
     await interaction.response.defer(ephemeral=True)
     view=CalendarView(runtime,interaction.guild_id,interaction.user.id,start.year,start.month)
+    view.region=region.strip().upper();view.language=language.strip().casefold()
     view.mode=mode
     if mode=='week':
         view.week=next(i for i,days in enumerate(view.weeks()) if start.day in days)
