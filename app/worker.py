@@ -1,4 +1,4 @@
-from app.regional_routes import regional_channel
+from app.regional_routes import route_decision, routing_status
 import asyncio
 import hashlib
 import json
@@ -1465,7 +1465,15 @@ async def route_event_to_discord(
         )
     )
 
-    channel_id = regional_channel(event, alert_type, access["minimum_tier"]) or channel_id
+    destination = route_decision(event, alert_type, access["minimum_tier"])
+    regional_id = destination["channel_id"]
+    channel_id = regional_id or channel_id
+    print("LOTUS ALERT ROUTE | " + json.dumps({
+        "version": "REG3", "reason": destination["reason"],
+        "destination_variable": destination["variable"], "region": event.get("region"),
+        "event": event.get("event_type"), "alert_type": alert_type,
+        "minimum_tier": access["minimum_tier"], "regional": bool(regional_id),
+        "channel_id": channel_id}), flush=True)
     if not channel_id:
         return False
 
@@ -1697,6 +1705,7 @@ async def run_event_worker(bot):
         f"(dispatch timeout={EVENT_DISPATCH_TIMEOUT_SECONDS}s)."
     )
 
+    print("LOTUS REGIONAL CONFIG | " + json.dumps(routing_status()), flush=True)
     start_tcg_discovery_notifier(bot)
 
     from app.event_queue import PRIORITY_ENABLED, LOOKAHEAD, MAX_PRIORITY_BURST
