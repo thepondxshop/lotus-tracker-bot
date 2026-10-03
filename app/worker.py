@@ -1,3 +1,4 @@
+from app.regional_routes import regional_channel
 import asyncio
 import hashlib
 import json
@@ -1464,6 +1465,7 @@ async def route_event_to_discord(
         )
     )
 
+    channel_id = regional_channel(event, alert_type, access["minimum_tier"]) or channel_id
     if not channel_id:
         return False
 
