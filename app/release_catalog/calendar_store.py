@@ -161,6 +161,16 @@ def make_entry(row, sources, check=None, image_override=None):
                 ('release_date', 'release_window', 'release_period', 'release_season')
                 if parse_period(raw.get(k))), None)
             date_origin = 'Reported date/window' if period else 'Date not announced'
+    if not period and date_origin == 'Date not announced':
+        reports = [s for s in sources if str(s.get('kind', '')).upper() == 'COMMUNITY'
+                   and json_details(s.get('note')).get('calendar_date_type') == 'REPORTED']
+        if reports:
+            report = max(reports, key=lambda s: s.get('id', 0))
+            period = placement(parse_period(json_details(report.get('note')).get('release_date')))
+            if period:
+                date_origin = 'Reported date — awaiting confirmation'
+                source_url = public_url(report.get('url')) or source_url
+                notes.append('Unconfirmed reported date. No release-day announcement is enabled by this evidence.')
     artwork = resolve_image(row, sources, check, image_override)
     event_records = [p for p in source_dates(row, sources) if p.get('availability_scope') == 'EVENT_EXCLUSIVE']
     if event_records and period:
