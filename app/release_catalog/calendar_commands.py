@@ -1,6 +1,8 @@
 """Member /calendar and administrator setup commands."""
 import discord
 import logging
+import json
+from datetime import date
 from discord import app_commands
 from .calendar_runtime import CalendarRuntime
 from .calendar_ui import open_calendar
@@ -60,6 +62,19 @@ class CalendarAdmin(app_commands.Group):
         await self.runtime.store.save_image(interaction.guild_id,release_id,source_id,image_url)
         self.runtime.cache.pop(interaction.guild_id,None)
         await interaction.followup.send('Calendar product image saved. Release dates and stock status were not changed.',ephemeral=True)
+    @app_commands.command(name='reporteddate',description='Place an unconfirmed reported date on the calendar; never confirms or pings')
+    async def reporteddate(self,interaction:discord.Interaction,release_id:int,release_date:str,source_url:str):
+        try:
+            parsed=date.fromisoformat(release_date)
+            if parsed.isoformat()!=release_date or not 2000<=parsed.year<=2099:raise ValueError()
+        except ValueError:raise CatalogError('Use an exact YYYY-MM-DD date (2000–2099).')
+        await interaction.response.defer(ephemeral=True)
+        await self.runtime.store.catalog.add_source(interaction.guild_id,interaction.user.id,release_id,
+            kind='COMMUNITY',label='Administrator-recorded reported release date',url=source_url,
+            note=json.dumps({'calendar_date_type':'REPORTED','release_date':release_date}))
+        self.runtime.cache.pop(interaction.guild_id,None)
+        await interaction.followup.send('Reported calendar date saved. Listing confidence and confirmed release date remain unchanged. Publisher/catalog dates take precedence. Reopen /calendar to see it.',ephemeral=True)
+
     @app_commands.command(name='status',description='Inspect calendar configuration and announcement delivery issues')
     async def status(self,interaction:discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -83,8 +98,8 @@ def register_calendar(bot,catalog,verifier):
     runtime=CalendarRuntime(bot,catalog,verifier)
     @app_commands.command(name='calendar',description='Browse releases, product images, period-end TBA and your game filters')
     @app_commands.guild_only()
-    async def calendar_command(interaction:discord.Interaction,month:str|None=None):
-        await open_calendar(runtime,interaction,month)
+    async def calendar_command(interaction:discord.Interaction,month:str|None=None,region:str="ALL",language:str="ALL"):
+        await open_calendar(runtime,interaction,month,region=region,language=language)
     bot.tree.add_command(calendar_command)
     bot.tree.add_command(CalendarAdmin(runtime))
     bot.release_calendar=runtime
