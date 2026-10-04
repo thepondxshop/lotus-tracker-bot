@@ -46,6 +46,7 @@ DEFAULT_KEYWORDS = (
     "Cyberpunk",
     "Azuki",
     "Hellbreak",
+    "Cataclysm Arcade",
 )
 
 
