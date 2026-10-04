@@ -72,7 +72,7 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C14 (optional operator signing; retains C12 backoff)
+# Component Version 1.0.6-C16 (optional operator signing; retains C12 backoff)
 # Step 6K-2C4 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
@@ -1587,6 +1587,7 @@ async def _scan_shopify_store_unlocked(store):
         totals[key] = diagnostics.get(diagnostic, 0)
     totals["partial_rate_limited"] = bool(diagnostics.get("partial_due_to_rate_limit"))
     totals["general_feed_skipped"] = bool(diagnostics.get("general_feed_skipped"))
+    totals["limited_coverage"] = bool(diagnostics.get("limited_coverage"))
     totals["batches"] = batch_count
     print(f"SHOPIFY PASS PHASES | Store={store.name} | Batches={batch_count} | "
           f"FetchAndDiscoverySeconds={time.monotonic()-started-processing_seconds:.3f} | "
@@ -3747,6 +3748,10 @@ async def _run_scheduled_store(store_id):
                 state['last_error'] = 'Partial scan; rate limited'
                 MONITOR_STATUS['rate_limited_scans'] = MONITOR_STATUS.get('rate_limited_scans', 0)+1
                 await _record_shopify_throttle(store.id, state['last_error'])
+            elif result.get('limited_coverage'):
+                failures = 0
+                state['outcome'] = 'PARTIAL_COVERAGE'
+                state['last_error'] = 'Collection-only recovery; general catalog not refreshed'
             else:
                 failures = 0
                 state['outcome'] = 'SUCCESS'
@@ -3794,7 +3799,7 @@ async def _run_scheduled_store(store_id):
 async def run_shopify_monitor():
     global _SCHEDULER_HEARTBEAT
     MONITOR_STATUS["running"] = True
-    print("Lotus Shopify Monitor 1.0.6-C14 started. Independent stores; adaptive recovery; max concurrent scans=4.")
+    print("Lotus Shopify Monitor 1.0.6-C16 started. Independent stores; adaptive recovery; max concurrent scans=4.")
     tasks = {}
     health_task = None
     last_health_probe = 0.0
@@ -3863,7 +3868,7 @@ def get_shopify_monitor_status():
                    recovery_mode=shopify_pacing.recovering(domain))
         runtime.append(row)
     data.update({
-        'component_version': '1.0.6-C14',
+        'component_version': '1.0.6-C16',
         'alert_update_version': '1.0.6-A1',
         'scheduler_heartbeat_age_seconds': round(now-_SCHEDULER_HEARTBEAT, 1) if _SCHEDULER_HEARTBEAT is not None else None,
         'store_runtime': runtime,
@@ -3878,4 +3883,3 @@ def get_shopify_monitor_status():
                           for k, v in _STORE_TIMINGS.items()},
     })
     return data
-
