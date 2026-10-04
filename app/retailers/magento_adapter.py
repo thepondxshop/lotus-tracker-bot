@@ -74,6 +74,8 @@ DEFAULT_SEARCH_TERMS = (
     "cyberpunk",
     "azuki",
     "hellbreak",
+    "cataclysm-arcade",
+    "cataclysm arcade",
     "magic the gathering",
 )
 
