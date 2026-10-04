@@ -313,7 +313,7 @@ class MasterpacksAdapter(RetailerAdapter):
                 # One website locale; never multiply discovery by language aliases.
                 if not urlsplit(target).path.startswith("/en/product/"): continue
                 if not re.search(
-                    r"/trading-card-games/(?:pokemon-tcg|one-piece-tcg|magic-the-gathering|riftbound[^/]*|gundam-card-game|palworld-tcg|cyberpunk-tcg|hellbreak-tcg|azuki-tcg|dragonball/fusion-world)/",
+                    r"/trading-card-games/(?:pokemon-tcg|one-piece-tcg|magic-the-gathering|riftbound[^/]*|gundam-card-game|palworld-tcg|cyberpunk-tcg|cataclysm-arcade(?:-tcg)?|hellbreak-tcg|azuki-tcg|dragonball/fusion-world)/",
                     urlsplit(target).path,
                 ): continue
                 pid = product_id(target)
