@@ -66,7 +66,7 @@ SITEMAP_PATHS = ("/xmlsitemap.php", "/sitemap.xml", "/sitemap_index.xml")
 TCG_PRIORITY = (
     "magic-the-gathering", "mtg",
     "pokemon","one-piece","onepiece","gundam","fusion-world","riftbound",
-    "palworld","naruto","cyberpunk","azuki","hellbreak","booster","deck","tcg","card","single",
+    "palworld","naruto","cyberpunk","azuki","hellbreak","cataclysm-arcade","cataclysm arcade","booster","deck","tcg","card","single",
 )
 UNSUPPORTED = (
     "magic the gathering","magic: the gathering","yu-gi-oh","yugioh","lorcana",
@@ -82,6 +82,7 @@ GAME_TERMS = {
     "Naruto": ("naruto tcg","naruto card game"),
     "Cyberpunk TCG": ("cyberpunk tcg","cyberpunk trading card game"),
     "Azuki TCG": ("azuki tcg","azuki trading card game"),
+    "Cataclysm Arcade": ("cataclysm arcade", "cataclysm-arcade"),
     "Hellbreak TCG": ("hellbreak tcg","hellbreak trading card game"),
 }
 SEALED = (
