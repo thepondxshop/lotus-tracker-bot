@@ -571,6 +571,8 @@ def _classify_game(title: str, extra_text: str = "") -> str | None:
         return "Cyberpunk TCG"
     if "azuki" in text and any(token in text for token in ("card", "tcg", "trading")):
         return "Azuki TCG"
+    if re.search(r"\bcataclysm[\s-]+arcade\b", text):
+        return "Cataclysm Arcade"
     if "hellbreak" in text:
         return "Hellbreak TCG"
     return None
