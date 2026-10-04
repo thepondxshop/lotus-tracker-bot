@@ -18,6 +18,20 @@ from app import shopify_pacing
 from app.shopify_request_evidence import record_response
 from lotus_bot_auth import operator_request_headers
 
+# Only collections that supplied a valid product list are recovery candidates.
+# This is process-local evidence, never guessed handles or cached stock data.
+_WORKING_COLLECTIONS = {}
+_RECOVERY_COLLECTION_CURSOR = {}
+
+
+def _recovery_collection(domain):
+    rows = list(_WORKING_COLLECTIONS.get(domain, {}).values())
+    if not rows:
+        return []
+    cursor = _RECOVERY_COLLECTION_CURSOR.get(domain, 0)
+    _RECOVERY_COLLECTION_CURSOR[domain] = cursor + 1
+    return [rows[cursor % len(rows)]]
+
 from app.tcg_identity import (
     DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
     FUSION_WORLD_GAME, has_fusion_world_identity,
@@ -33,7 +47,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C12 (retains A2.1 identity + MTG 1.0.0)
+# Component Version 1.0.6-C16 (retains A2.1 identity + MTG 1.0.0)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -2080,12 +2094,12 @@ class ShopifyAdapter:
                                         and isinstance(data.get("products"), list)
                                         and self.domain not in _OPERATOR_SIGNED_ACCESS_CONFIRMED):
                                     _OPERATOR_SIGNED_ACCESS_CONFIRMED.add(self.domain)
-                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C14")
+                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C16")
                                 if (signature_headers and not operator_signed and isinstance(data, dict)
                                         and isinstance(data.get("products"), list)
                                         and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
                                     _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
-                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C14")
+                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C16")
                                 shopify_pacing.succeeded(self.domain)
                                 return data
                             except Exception as error:
@@ -2237,7 +2251,9 @@ class ShopifyAdapter:
                 purpose="HEALTH_PROBE",
                 required=True,
             )
-            if not isinstance(data, dict):
+            if (not isinstance(data, dict)
+                    or not isinstance(data.get("products"), list)
+                    or any(not isinstance(p, dict) for p in data["products"])):
                 raise ShopifyHTTPError(
                     200,
                     "Shopify health probe returned an unexpected payload",
@@ -2396,10 +2412,17 @@ class ShopifyAdapter:
             delivered_keys = set()
             # Keep the strongest release collection hot; rotate the remaining
             # slot without increasing the two-collection request budget.
-            # A recovery pass gets one small product head, even when an old
-            # collection exists. Cart/sitemap/collection failures cannot consume
-            # every attempt before the product feed is reached.
-            priority_collections = [] if recovery else await self._discover_priority_collections(session)
+            # After the domain cooldown, revisit ONE collection already proven
+            # usable. Do not permanently strand recovery on the failing head.
+            # No discovery requests or fallback requests in this recovery pass.
+            priority_collections = (_recovery_collection(self.domain) if recovery
+                                    else await self._discover_priority_collections(session))
+            recovery_collection = bool(recovery and priority_collections)
+            self.diagnostics['limited_coverage'] = recovery_collection
+            if recovery_collection:
+                self.diagnostics['priority_collections'] = 1
+                print(f"SHOPIFY RECOVERY COVERAGE | Store={self.domain} | "
+                      f"Mode=KNOWN_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C16")
             if on_batch is not None and priority_collections:
                 hot = next((row for row in priority_collections if any(term in
                     (row[1] + " " + row[2]).lower() for term in
@@ -2429,20 +2452,32 @@ class ShopifyAdapter:
                       f"RevisitSeconds={round(collection_started-previous_check,3) if previous_check is not None else None}")
 
                 for page in range(1, (1 if recovery else MAX_COLLECTION_PAGES) + 1):
-                    data = await self._get_json(
-                        session,
-                        (
-                            f"{self.base_url}/collections/{handle}/products.json"
-                            f"?limit=250&page={page}"
-                        ),
-                        purpose=f"PRIORITY_COLLECTION:{handle}:PAGE:{page}",
-                        required=False,
-                    )
-                    if not isinstance(data, dict):
+                    try:
+                        data = await self._get_json(
+                            session,
+                            (
+                                f"{self.base_url}/collections/{handle}/products.json"
+                                f"?limit=250&page={page}"
+                            ),
+                            purpose=f"PRIORITY_COLLECTION:{handle}:PAGE:{page}",
+                            required=recovery_collection,
+                        )
+                    except ShopifyHTTPError as error:
+                        if error.status == 404:
+                            _WORKING_COLLECTIONS.get(self.domain, {}).pop(handle, None)
+                        raise
+                    if (not isinstance(data, dict) or not isinstance(data.get('products'), list)
+                            or any(not isinstance(p, dict) for p in data['products'])):
+                        if recovery_collection:
+                            raise ShopifyHTTPError(200, 'Recovery collection returned an unexpected payload',
+                                                   purpose='RECOVERY_COLLECTION')
                         collection_complete = False
                         break
 
                     page_products = data.get("products", []) or []
+                    known = _WORKING_COLLECTIONS.setdefault(self.domain, {})
+                    if handle in known or len(known) < 12:
+                        known[handle] = (0, handle, title)
                     successful_pages += 1
                     self.diagnostics["collection_pages_successful"] += 1
                     self.diagnostics["collection_products_seen"] += len(page_products)
@@ -2564,7 +2599,7 @@ class ShopifyAdapter:
 
             if recovery:
                 # Recovery checks the small head and preserves the deep cursor.
-                run_general = True
+                run_general = not recovery_collection
                 cursor = 1
             page_limit = 25 if recovery else 250
             general_pages = 0
@@ -2635,6 +2670,7 @@ class ShopifyAdapter:
                   f"SweepComplete={bool(self.diagnostics.get('general_sweep_complete'))}")
         products = list(products_by_key.values()) + anonymous_products
         if (products and not self.diagnostics["partial_due_to_rate_limit"]
+                and not self.diagnostics.get("limited_coverage")
                 and not shopify_pacing.recovering(self.domain)):
             _DOMAIN_THROTTLE_FAILURES.pop(self.domain,None)
 
@@ -3142,4 +3178,3 @@ class ShopifyAdapter:
                     or []
                 ),
         }
-
