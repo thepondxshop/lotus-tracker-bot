@@ -70,6 +70,7 @@ TCG_SEARCH_QUERIES = (
     "Cyberpunk TCG",
     "Azuki TCG",
     "Hellbreak TCG",
+    "Cataclysm Arcade",
 )
 
 STORE_API_PRODUCT_PATHS = (
@@ -107,6 +108,8 @@ TCG_TAXONOMY_TERMS = (
     "cyberpunk",
     "azuki",
     "hellbreak",
+    "cataclysm-arcade",
+    "cataclysm arcade",
 )
 
 # Pokémon-era/set taxonomy names are supporting evidence only.
@@ -222,6 +225,7 @@ GAME_PATTERNS = {
         "azuki tcg",
         "azuki trading card game",
     ),
+    "Cataclysm Arcade": ("cataclysm arcade", "cataclysm-arcade"),
     "Hellbreak TCG": (
         "hellbreak tcg",
         "hellbreak trading card game",
@@ -387,6 +391,8 @@ def taxonomy_game_hint(term_names):
         return "Cyberpunk TCG"
     if "azuki" in text:
         return "Azuki TCG"
+    if re.search(r"\bcataclysm[\s-]+arcade\b", text):
+        return "Cataclysm Arcade"
     if "hellbreak" in text:
         return "Hellbreak TCG"
     return None
