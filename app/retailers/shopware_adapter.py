@@ -198,6 +198,7 @@ SUPPORTED_GAME_TERMS: dict[str, tuple[str, ...]] = {
         "azuki tcg",
         "azuki trading card game",
     ),
+    "Cataclysm Arcade": ("cataclysm arcade", "cataclysm-arcade"),
     "Hellbreak TCG": (
         "hellbreak tcg",
         "hellbreak trading card game",
@@ -446,6 +447,8 @@ def classify_game(title: str) -> str | None:
         return "Cyberpunk TCG"
     if "azuki" in lowered:
         return "Azuki TCG"
+    if re.search(r"\bcataclysm[\s-]+arcade\b", lowered):
+        return "Cataclysm Arcade"
     if "hellbreak" in lowered:
         return "Hellbreak TCG"
 
@@ -2732,6 +2735,7 @@ class ShopwareAdapter(RetailerAdapter):
                             "gundam card game", "riftbound", "fusion world",
                             "palworld", "cyberpunk tcg", "azuki tcg",
                             "hellbreak tcg",
+                            "cataclysm arcade",
                         )
                     ):
                         self.diagnostics["listing_pages_with_game_text"] += 1
@@ -2786,6 +2790,7 @@ class ShopwareAdapter(RetailerAdapter):
                                     "gundam card game", "riftbound", "fusion world",
                                     "palworld", "cyberpunk tcg", "azuki tcg",
                                     "hellbreak tcg",
+                                    "cataclysm arcade",
                                 )
                             ):
                                 self.diagnostics[
