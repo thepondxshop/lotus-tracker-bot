@@ -33,6 +33,7 @@ GAMES = (
     ("Riftbound", r"\briftbound\b"), ("Palworld", r"\bpalworld\b"),
     ("Naruto", r"\bnaruto\b"), ("Cyberpunk TCG", r"\bcyberpunk\b"),
     ("Azuki TCG", r"\bazuki\b"), ("Hellbreak TCG", r"\bhellbreak\b"),
+    ("Cataclysm Arcade", r"\bcataclysm[\s-]+arcade\b"),
 )
 
 
