@@ -127,6 +127,8 @@ TCG_PRIORITY_TERMS = (
     "cyberpunk",
     "azuki",
     "hellbreak",
+    "cataclysm-arcade",
+    "cataclysm arcade",
     "booster",
     "deck",
     "starter",
