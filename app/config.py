@@ -22,6 +22,7 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
+    "Cataclysm Arcade": os.getenv("ROLE_CATACLYSM_ARCADE"),
 
     "MTG": os.getenv("ROLE_MTG"),
 
@@ -144,6 +145,7 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+    ("Cataclysm Arcade", "🚇", "Cataclysm Arcade alerts"),
 
     ("MTG", "🧙", "Magic: The Gathering alerts"),
 
