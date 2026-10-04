@@ -106,6 +106,8 @@ TCG_PRIORITY = (
     "cyberpunk",
     "azuki",
     "hellbreak",
+    "cataclysm-arcade",
+    "cataclysm arcade",
     "booster",
     "deck",
     "tcg",
@@ -200,6 +202,7 @@ GAME_TERMS = {
         "azuki-tcg",
         "azuki-trading-card-game",
     ),
+    "Cataclysm Arcade": ("cataclysm arcade", "cataclysm-arcade"),
     "Hellbreak TCG": (
         "hellbreak tcg",
         "hellbreak trading card game",
@@ -1172,6 +1175,7 @@ def looks_like_product_url(url):
         "/naruto/",
         "/azuki/",
         "/hellbreak/",
+        "/cataclysm-arcade/",
     )
 
     if any(
