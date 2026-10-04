@@ -28,6 +28,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import aiohttp
 
 from app.mtg_products import classify_mtg, has_mtg_identity, mtg_product_details
+from app.release_catalog.tcg_scope import non_tcg_reason
 
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
@@ -1378,6 +1379,9 @@ def classify_game(
 
 
 def is_non_tcg_merchandise(title):
+
+    if non_tcg_reason(title):
+        return True
 
     text = clean(
         title
