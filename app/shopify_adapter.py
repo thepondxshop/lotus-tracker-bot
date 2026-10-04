@@ -678,6 +678,9 @@ def _classify_known_game(
             "Hellbreak TCG"
         )
 
+    if re.search(r"\bcataclysm[\s-]+arcade\b", text):
+        return "Cataclysm Arcade"
+
     # Set codes overlap across games (for example Gundam EB02).
     # Use the One Piece code fallback only after explicit game matches.
     if (
@@ -1751,7 +1754,7 @@ PRIORITY_COLLECTION_TERMS = (
     "gundam",
     "dragon ball", "fusion world", "fusion-world",
     "riftbound", "palworld", "naruto",
-    "cyberpunk", "azuki", "hellbreak",
+    "cyberpunk", "azuki", "hellbreak", "cataclysm arcade", "cataclysm-arcade",
     "tcg", "trading card", "card game",
 )
 
@@ -1875,7 +1878,7 @@ def _collection_score(handle, title=""):
         "pokemon", "pokémon", "gundam",
         "dragon ball", "fusion world", "fusion-world",
         "riftbound", "palworld", "naruto", "cyberpunk",
-        "azuki", "hellbreak", "magic-the-gathering", "magic the gathering", "mtg",
+        "azuki", "hellbreak", "cataclysm arcade", "cataclysm-arcade", "magic-the-gathering", "magic the gathering", "mtg",
     )
     for term in game_terms:
         if term in probe:
