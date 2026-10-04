@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     func,
@@ -26,6 +26,22 @@ DEGRADED_AFTER = 1
 UNHEALTHY_AFTER = 3
 
 AUTO_DISABLE_AFTER = 5
+
+
+def _health_recovery_due(store, now=None):
+    """Access-denied storefronts need infrequent checks, not five-minute probes."""
+    error = str(store.last_error or '')
+    if not any(f'Shopify HTTP {code}' in error for code in (401, 403)):
+        return True
+    last = store.last_failure_at
+    if last is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return (now-last).total_seconds() >= 3600
 
 
 # =========================================================
@@ -184,6 +200,7 @@ async def record_store_failure(
 
         if failures >= AUTO_DISABLE_AFTER:
 
+            newly_disabled = store.active or store.disabled_reason != "HEALTH"
             store.health_status = (
                 "DISABLED"
             )
@@ -194,13 +211,14 @@ async def record_store_failure(
                 "HEALTH"
             )
 
-            print(
-                (
-                    "STORE AUTO-DISABLED: "
-                    f"{store.name} | "
-                    f"Failures={failures}"
+            if newly_disabled:
+                print(
+                    (
+                        "STORE AUTO-DISABLED: "
+                        f"{store.name} | "
+                        f"Failures={failures}"
+                    )
                 )
-            )
 
         elif failures >= UNHEALTHY_AFTER:
 
@@ -471,9 +489,7 @@ async def get_health_recovery_candidates():
             )
         )
 
-        return list(
-            result.scalars().all()
-        )
+        return [store for store in result.scalars().all() if _health_recovery_due(store)]
 
 
 # =========================================================
