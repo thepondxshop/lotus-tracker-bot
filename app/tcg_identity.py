@@ -55,6 +55,7 @@ _GAME_PATTERNS = tuple((game, re.compile(pattern)) for game, pattern in (
     ("Cyberpunk TCG", r"\bcyberpunk\b"),
     ("Azuki TCG", r"\bazuki\b"),
     ("Hellbreak TCG", r"\bhellbreak\b"),
+    ("Cataclysm Arcade", r"\bcataclysm[\s-]+arcade\b"),
     (JURASSIC_TCG, r"\bjurassic park\b"),
 ))
 # Keep intentionally excluded game lines excluded; this update does not
