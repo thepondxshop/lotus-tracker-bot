@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 from .commands import safe
 from .extraction import GAMES
+from .game_option import GameOption
 from .radar import ReleaseRadar
 from .radar_diagnostics import RadarDiagnostics
 VERSION = "1.6.7"
@@ -317,8 +318,7 @@ class RadarCommands(app_commands.Group):
             await self.failure(interaction, error)
 
     @app_commands.command(name='list', description='Browse active releases, official windows and saved retailer match counts')
-    @app_commands.choices(game=[app_commands.Choice(name=g, value=g) for g, _ in GAMES])
-    async def list_command(self, interaction: discord.Interaction, game: str | None = None,
+    async def list_command(self, interaction: discord.Interaction, game: app_commands.Transform[str, GameOption] | None = None,
                            page: app_commands.Range[int, 1, 10000] = 1):
         await self.open(interaction, lambda p: self.radar.page(interaction.guild_id, game, p), list_embed, page)
 
@@ -334,8 +334,7 @@ class RadarCommands(app_commands.Group):
         await self.open(interaction, lambda p: self.diagnostics.diagnose(interaction.guild_id, release_id, p), diagnostic_embed, page)
 
     @app_commands.command(name='formats', description='Preview or apply up to 50 title-based UNKNOWN product-format corrections')
-    @app_commands.choices(game=[app_commands.Choice(name=g,value=g) for g,_ in GAMES])
-    async def formats(self, interaction: discord.Interaction, game: str | None = None, apply: bool = False):
+    async def formats(self, interaction: discord.Interaction, game: app_commands.Transform[str, GameOption] | None = None, apply: bool = False):
         if not await self.interaction_check(interaction):
             return
         await interaction.response.defer(ephemeral=True,thinking=True)
@@ -347,8 +346,7 @@ class RadarCommands(app_commands.Group):
 
 
     @app_commands.command(name='unknowns', description='Inspect remaining UNKNOWN format titles and reported details')
-    @app_commands.choices(game=[app_commands.Choice(name=g,value=g) for g,_ in GAMES])
-    async def unknowns(self, interaction: discord.Interaction, game: str | None = None,
+    async def unknowns(self, interaction: discord.Interaction, game: app_commands.Transform[str, GameOption] | None = None,
                        page: app_commands.Range[int, 1, 10000] = 1):
         await self.open(interaction, lambda p: self.diagnostics.unknowns(interaction.guild_id,game,p), unknowns_embed, page)
 
@@ -381,8 +379,7 @@ class RadarCommands(app_commands.Group):
 
 
     @app_commands.command(name='reviews', description='Browse pending retailer identity decisions from saved observations')
-    @app_commands.choices(game=[app_commands.Choice(name=g,value=g) for g,_ in GAMES])
-    async def reviews(self, interaction: discord.Interaction, game: str | None = None,
+    async def reviews(self, interaction: discord.Interaction, game: app_commands.Transform[str, GameOption] | None = None,
                       page: app_commands.Range[int,1,10000] = 1):
         from .retailer_review import RetailerReview
         await self.open(interaction, lambda p: RetailerReview(self.root.watch_group.store).pending(interaction.guild_id,game,p), reviews_embed, page)
