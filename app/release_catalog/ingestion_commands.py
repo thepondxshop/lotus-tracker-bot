@@ -5,6 +5,7 @@ import json
 import discord
 from discord import app_commands
 from .extraction import GAMES
+from .game_option import GameOption
 from .ingestion_store import IngestionStore
 from .ingestion_runner import IngestionRunner
 from .distributors import PRESETS, ADAPTER_VERSION
@@ -154,9 +155,9 @@ class ReleaseWatchCommands(app_commands.Group):
             f"Next scan: {row['next_due']}\n\n"
             'New releases and evidence are saved automatically. A product URL tracks that item; a supported category/feed discovers additional items. Exceptions: /release watch review.')
     @app_commands.command(name='add',description='Configure a public source once; supported releases are then imported automatically')
-    @app_commands.choices(kind=[app_commands.Choice(name=x.title(),value=x) for x in ('DISTRIBUTOR','PUBLISHER','RETAILER')],game=[app_commands.Choice(name=g,value=g) for g,_ in GAMES])
+    @app_commands.choices(kind=[app_commands.Choice(name=x.title(),value=x) for x in ('DISTRIBUTOR','PUBLISHER','RETAILER')])
     @app_commands.describe(url='Public HTTPS category, feed, sitemap or product URL',label='Name of this source watch',game='Omit to include all supported games',region='Only set a region that applies to this entire source',language='Only set an edition language that applies to this entire source',auto_confirm='Approve clean dated items for the calendar; requires known source region and language')
-    async def add(self,interaction:discord.Interaction,url:str,kind:str,label:str,game:str|None=None,region:str='UNKNOWN',language:str='UNKNOWN',interval_minutes:app_commands.Range[int,15,10080]=60,auto_confirm:bool=False):
+    async def add(self,interaction:discord.Interaction,url:str,kind:str,label:str,game:app_commands.Transform[str, GameOption]|None=None,region:str='UNKNOWN',language:str='UNKNOWN',interval_minutes:app_commands.Range[int,15,10080]=60,auto_confirm:bool=False):
         await self.root._run(interaction,lambda:self.store.add_watch(interaction.guild_id,interaction.user.id,url=url,kind=kind,label=label,game=game,region=region,language=language,interval_minutes=interval_minutes,auto_confirm=auto_confirm),self.watch_embed)
     @app_commands.command(name='settings',description='Pause or enable a source and change its interval or approved scope')
     @app_commands.describe(auto_confirm='Source-policy approval for clean dated items; not a per-item human attestation')
