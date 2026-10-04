@@ -15,6 +15,7 @@ from urllib.parse import (
 
 import aiohttp
 from app import shopify_pacing
+from app.shopify_request_evidence import record_response
 from lotus_bot_auth import operator_request_headers
 
 from app.tcg_identity import (
@@ -2054,10 +2055,19 @@ class ShopifyAdapter:
                     if signature_headers:
                         request_options = {"headers": signature_headers, "allow_redirects": False}
                         self.diagnostics["signed_requests_attempted"] = self.diagnostics.get("signed_requests_attempted", 0) + 1
+                    request_started = time.monotonic()
+                    request_evidence = {}
                     async with session.get(url, **request_options) as response:
                         status = int(response.status)
                         body = await response.text()
                         _DOMAIN_LAST_REQUEST_AT[self.domain] = time.monotonic()
+
+                        request_evidence = record_response(
+                            domain=self.domain, url=url, purpose=purpose, status=status,
+                            auth_mode=("OPERATOR" if operator_signed else "MERCHANT") if signature_headers else "UNSIGNED",
+                            signature_headers=signature_headers or {}, response_headers=response.headers,
+                            body=body, elapsed=time.monotonic()-request_started,
+                        )
 
                         if status == 200:
                             self.diagnostics["http_200"] += 1
@@ -2103,7 +2113,8 @@ class ShopifyAdapter:
                                             purpose=purpose, path=urlparse(url).path,
                                             wait_seconds=wait_seconds,
                                             throttle_streak=failures + 1,
-                                            recovery_policy="C12_SERVER_MINIMUM_AND_BACKOFF",
+                                            recovery_policy="C15_STABLE_RECOVERY",
+                                            request=request_evidence,
                                             headers=_header_summary(response.headers))
                             _DOMAIN_LAST_RATE_LIMIT[self.domain] = evidence
                             print("SHOPIFY DOMAIN COOLDOWN | "
@@ -2623,7 +2634,8 @@ class ShopifyAdapter:
                   f"NextPage={self.diagnostics['general_next_page']} | "
                   f"SweepComplete={bool(self.diagnostics.get('general_sweep_complete'))}")
         products = list(products_by_key.values()) + anonymous_products
-        if products and not self.diagnostics["partial_due_to_rate_limit"]:
+        if (products and not self.diagnostics["partial_due_to_rate_limit"]
+                and not shopify_pacing.recovering(self.domain)):
             _DOMAIN_THROTTLE_FAILURES.pop(self.domain,None)
 
         if not products and self.diagnostics["rate_limit_exhausted"]:
