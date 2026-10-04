@@ -25,7 +25,7 @@ _MERCH = re.compile(
 )
 _CONFLICT = re.compile(
     r"\b(?:pokemon|pokémon|one piece|riftbound|gundam|fusion world|"
-    r"palworld|naruto|hellbreak|azuki|yugioh|yu gi oh|lorcana|digimon|"
+    r"palworld|naruto|hellbreak|azuki|cataclysm[\s-]+arcade|yugioh|yu gi oh|lorcana|digimon|"
     r"flesh and blood|star wars unlimited)\b"
 )
 
