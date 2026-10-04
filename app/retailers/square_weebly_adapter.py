@@ -93,6 +93,8 @@ TCG_URL_PRIORITY_TERMS = (
     "cyberpunk",
     "azuki",
     "hellbreak",
+    "cataclysm-arcade",
+    "cataclysm arcade",
     "tcg",
     "trading-card",
     "card-game",
@@ -333,6 +335,7 @@ GAME_PATTERNS = {
         "azuki tcg",
         "azuki trading card game",
     ),
+    "Cataclysm Arcade": ("cataclysm arcade", "cataclysm-arcade"),
     "Hellbreak TCG": (
         "hellbreak tcg",
         "hellbreak trading card game",
