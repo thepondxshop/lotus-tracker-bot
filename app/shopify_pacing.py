@@ -6,6 +6,7 @@ BASE_INTERVAL = 0.75
 MAX_INTERVAL = 12.0
 STABLE_SECONDS = 300.0
 STABLE_RESPONSES = 20
+RECOVERY_POLL_SECONDS = 60.0
 
 
 @dataclass
@@ -53,4 +54,5 @@ def recovering(domain):
 
 
 def poll_interval(domain, normal=5.0):
-    return max(normal, request_interval(domain) * 2)
+    minimum = RECOVERY_POLL_SECONDS if recovering(domain) else 0.0
+    return max(normal, request_interval(domain) * 2, minimum)
