@@ -1,5 +1,6 @@
 """Public product facts only. Never execute page scripts or infer stock from prices."""
 from __future__ import annotations
+from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import json
 import re
@@ -324,6 +325,9 @@ def candidate(data, url, settings, extractor):
         if len(games) == 1
         else settings.get("game") if not games else None
     )
+
+    if registered_title(title):
+        game = registered_identity({"title": title, "product_type": data.get("product_type")})
 
     if not game or (
         settings.get("game")
