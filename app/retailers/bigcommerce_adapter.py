@@ -9,6 +9,7 @@ No auth guessing, cart mutation, checkout automation, CAPTCHA/queue bypass.
 """
 
 from __future__ import annotations
+from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import asyncio
 import html as html_lib
@@ -185,6 +186,8 @@ def is_non_tcg_merchandise(title):
 
 
 def classify_game(title):
+    if registered_title(title):
+        return registered_identity({"title": title})
     if has_mtg_identity(title):
         return classify_mtg(title)
 
@@ -379,6 +382,8 @@ def product_type(title):
 
 
 def family(title):
+    if registered_title(title):
+        return explicit_family({"title": title})
     t = (
         f" {clean(title).lower()} "
     )
