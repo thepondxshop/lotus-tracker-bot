@@ -18,19 +18,52 @@ from app import shopify_pacing
 from app.shopify_request_evidence import record_response
 from lotus_bot_auth import operator_request_headers
 
-# Only collections that supplied a valid product list are recovery candidates.
-# This is process-local evidence, never guessed handles or cached stock data.
+# Successful feeds, discovered links and explicitly verified public links are
+# recovery candidates. Cached URLs never count as fresh stock observations.
 _WORKING_COLLECTIONS = {}
 _RECOVERY_COLLECTION_CURSOR = {}
+_RECOVERY_COLLECTION_LAST_CHECK = {}
+_RECOVERY_COLLECTION_EMPTY_UNTIL = {}
+_RECOVERY_COLLECTION_PAGES = {}
+RECOVERY_COLLECTION_MAX_PAGES = 20
+# Observed public collection links, not guesses. JSON access is still validated
+# by each request and uses the same domain cooldown/signing rules.
+_RECOVERY_COLLECTION_LINKS = {
+    'mystictcg.com': ((0, 'new-releases', 'New Releases'), (0, 'one-piece', 'One Piece')),
+    'wulfgaming.com': ((0, 'pokemon', 'Pokemon'), (0, 'one-piece-card-game', 'One Piece Card Game')),
+}
 
 
 def _recovery_collection(domain):
-    rows = list(_WORKING_COLLECTIONS.get(domain, {}).values())
+    candidates = {row[1]: row for row in _RECOVERY_COLLECTION_LINKS.get(domain, ())}
+    candidates.update(_WORKING_COLLECTIONS.get(domain, {}))
+    for row in _PRIORITY_COLLECTION_CACHE.get(domain, (0, []))[1]:
+        candidates.setdefault(row[1], row)
+    rows = list(candidates.values())[:24]
     if not rows:
         return []
-    cursor = _RECOVERY_COLLECTION_CURSOR.get(domain, 0)
-    _RECOVERY_COLLECTION_CURSOR[domain] = cursor + 1
-    return [rows[cursor % len(rows)]]
+    now = time.monotonic()
+    ready = [row for row in rows if _RECOVERY_COLLECTION_EMPTY_UNTIL.get((domain,row[1]),0) <= now]
+    # If every feed was empty, retain one paced check; never burst or hammer
+    # the general endpoint as an immediate fallback.
+    row = min(ready or rows, key=lambda row: _RECOVERY_COLLECTION_LAST_CHECK.get((domain,row[1]),-1))
+    _RECOVERY_COLLECTION_LAST_CHECK[(domain,row[1])] = now
+    return [row]
+
+
+def _record_collection_page(domain, handle, page, count, recovery):
+    key = (domain, handle)
+    if page == 1 and not count:
+        _RECOVERY_COLLECTION_EMPTY_UNTIL[key] = time.monotonic() + 900
+    elif count:
+        _RECOVERY_COLLECTION_EMPTY_UNTIL.pop(key, None)
+    if recovery:
+        # Advance only after processing succeeds. Caps and slice movement never
+        # mean that omitted products are sold out or that coverage is complete.
+        _RECOVERY_COLLECTION_PAGES[key] = page + 1 if count == 250 and page < RECOVERY_COLLECTION_MAX_PAGES else 1
+        print(f'SHOPIFY COLLECTION COVERAGE | Store={domain} | Collection={handle} | '
+              f'Page={page} | Products={count} | NextPage={_RECOVERY_COLLECTION_PAGES[key]} | '
+              f'PageCapReached={page == RECOVERY_COLLECTION_MAX_PAGES and count == 250} | Version=1.0.6-C17')
 
 from app.tcg_identity import (
     DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
@@ -47,7 +80,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C16 (retains A2.1 identity + MTG 1.0.0)
+# Component Version 1.0.6-C17 (retains A2.1 identity + MTG 1.0.0)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -2094,12 +2127,12 @@ class ShopifyAdapter:
                                         and isinstance(data.get("products"), list)
                                         and self.domain not in _OPERATOR_SIGNED_ACCESS_CONFIRMED):
                                     _OPERATOR_SIGNED_ACCESS_CONFIRMED.add(self.domain)
-                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C16")
+                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C17")
                                 if (signature_headers and not operator_signed and isinstance(data, dict)
                                         and isinstance(data.get("products"), list)
                                         and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
                                     _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
-                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C16")
+                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C17")
                                 shopify_pacing.succeeded(self.domain)
                                 return data
                             except Exception as error:
@@ -2412,8 +2445,8 @@ class ShopifyAdapter:
             delivered_keys = set()
             # Keep the strongest release collection hot; rotate the remaining
             # slot without increasing the two-collection request budget.
-            # After the domain cooldown, revisit ONE collection already proven
-            # usable. Do not permanently strand recovery on the failing head.
+            # After the domain cooldown, check ONE collection from known links.
+            # Do not permanently strand recovery on an empty or failing head.
             # No discovery requests or fallback requests in this recovery pass.
             priority_collections = (_recovery_collection(self.domain) if recovery
                                     else await self._discover_priority_collections(session))
@@ -2422,7 +2455,7 @@ class ShopifyAdapter:
             if recovery_collection:
                 self.diagnostics['priority_collections'] = 1
                 print(f"SHOPIFY RECOVERY COVERAGE | Store={self.domain} | "
-                      f"Mode=KNOWN_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C16")
+                      f"Mode=ROTATING_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C17")
             if on_batch is not None and priority_collections:
                 hot = next((row for row in priority_collections if any(term in
                     (row[1] + " " + row[2]).lower() for term in
@@ -2451,7 +2484,9 @@ class ShopifyAdapter:
                       f"Store={self.domain} | Collection={handle} | "
                       f"RevisitSeconds={round(collection_started-previous_check,3) if previous_check is not None else None}")
 
-                for page in range(1, (1 if recovery else MAX_COLLECTION_PAGES) + 1):
+                recovery_page = _RECOVERY_COLLECTION_PAGES.get(membership_key, 1)
+                pages = range(recovery_page, recovery_page + 1) if recovery else range(1, MAX_COLLECTION_PAGES + 1)
+                for page in pages:
                     try:
                         data = await self._get_json(
                             session,
@@ -2465,6 +2500,8 @@ class ShopifyAdapter:
                     except ShopifyHTTPError as error:
                         if error.status == 404:
                             _WORKING_COLLECTIONS.get(self.domain, {}).pop(handle, None)
+                            _RECOVERY_COLLECTION_PAGES.pop(membership_key, None)
+                            _RECOVERY_COLLECTION_EMPTY_UNTIL[membership_key] = time.monotonic() + 3600
                         raise
                     if (not isinstance(data, dict) or not isinstance(data.get('products'), list)
                             or any(not isinstance(p, dict) for p in data['products'])):
@@ -2483,6 +2520,7 @@ class ShopifyAdapter:
                     self.diagnostics["collection_products_seen"] += len(page_products)
 
                     if not page_products:
+                        _record_collection_page(self.domain, handle, page, 0, recovery_collection and on_batch is not None)
                         break
 
                     prepared = []
@@ -2493,7 +2531,7 @@ class ShopifyAdapter:
                         key = _product_dedupe_key(product)
                         if key:
                             current_members.add(key)
-                            if previous_members is not None and key not in previous_members:
+                            if previous_members is not None and key not in previous_members and not (recovery_collection and page > 1):
                                 _append_new_collection_membership(product, handle)
                                 self.diagnostics["new_collection_memberships"] += 1
                         prepared.append(product)
@@ -2508,6 +2546,7 @@ class ShopifyAdapter:
                             await on_batch(fresh[offset:offset+100], source_label)
                         delivered_keys.update(_product_dedupe_key(p) for p in fresh)
 
+                    _record_collection_page(self.domain, handle, page, len(page_products), recovery_collection and on_batch is not None)
                     if len(page_products) < 250:
                         break
                     if page == MAX_COLLECTION_PAGES:
