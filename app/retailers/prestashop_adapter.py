@@ -17,6 +17,7 @@ Safety:
 """
 
 from __future__ import annotations
+from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import asyncio
 import html as html_lib
@@ -1262,6 +1263,8 @@ def classify_game(
     url="",
 ):
 
+    if registered_title(title):
+        return registered_identity({"title": title})
     if has_mtg_identity(title):
         return classify_mtg(title)
 
@@ -1614,6 +1617,8 @@ def product_type(title):
 
 def product_family(title):
 
+    if registered_title(title):
+        return explicit_family({"title": title})
     text = (
         f" {clean(title).lower()} "
     )
