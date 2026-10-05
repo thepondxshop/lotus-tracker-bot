@@ -1,3 +1,4 @@
+from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 import asyncio
 import json
 import re
@@ -463,6 +464,8 @@ def is_discovery_candidate(url):
 
 
 def classify_game(title):
+    if registered_title(title):
+        return registered_identity({"title": title})
     if has_mtg_identity(title):
         return classify_mtg(title)
 
@@ -640,6 +643,8 @@ def infer_product_type(title):
 
 
 def classify_product_family(title):
+    if registered_title(title):
+        return explicit_family({"title": title})
     text = clean_text(title).lower()
 
     if any(term in text for term in JP_TERMS):
