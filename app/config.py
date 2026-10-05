@@ -22,6 +22,11 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
+    "Jurassic Park TCG": os.getenv("ROLE_JURASSIC_PARK"),
+    "Godzilla TCG": os.getenv("ROLE_GODZILLA"),
+    "Wuthering Waves": os.getenv("ROLE_WUTHERING_WAVES"),
+    "Union Arena": os.getenv("ROLE_UNION_ARENA"),
+
     "Cataclysm Arcade": os.getenv("ROLE_CATACLYSM_ARCADE"),
 
     "MTG": os.getenv("ROLE_MTG"),
@@ -145,6 +150,11 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+    ("Jurassic Park TCG", "🃏", "Jurassic Park TCG alerts"),
+    ("Godzilla TCG", "🃏", "Godzilla TCG alerts"),
+    ("Wuthering Waves", "🃏", "Wuthering Waves alerts"),
+    ("Union Arena", "🃏", "Union Arena alerts"),
+
     ("Cataclysm Arcade", "🚇", "Cataclysm Arcade alerts"),
 
     ("MTG", "🧙", "Magic: The Gathering alerts"),
