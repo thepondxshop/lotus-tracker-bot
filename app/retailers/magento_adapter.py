@@ -16,6 +16,7 @@ Safety:
 """
 
 from __future__ import annotations
+from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import asyncio
 import json
@@ -60,6 +61,7 @@ GRAPHQL_RETRY_DELAY = 0.75
 # strict title classification, so a broad Magento search match is not accepted
 # merely because it appeared in a response.
 DEFAULT_SEARCH_TERMS = (
+    "Jurassic Park TCG", "Godzilla Card Game", "Wuthering Waves TCG", "Union Arena",
     # Keep discovery searches broad. Some Magento search configurations treat
     # multi-word searches as strict AND queries even though a single game name
     # returns the correct catalog. Every result is still passed through Lotus's
@@ -189,6 +191,8 @@ def _availability_from_item(item: dict[str, Any]) -> tuple[bool, bool, str]:
 
 
 def _is_supported_tcg_product(title: str) -> bool:
+    if registered_title(title):
+        return registered_identity({"title": title}) is not None
     if has_mtg_identity(title):
         return classify_mtg(title) == "MTG"
     lowered = clean_text(title).lower()
