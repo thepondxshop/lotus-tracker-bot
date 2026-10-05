@@ -19,6 +19,7 @@ Safety:
 """
 
 from __future__ import annotations
+from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import asyncio
 import math
@@ -59,6 +60,7 @@ MAX_SEARCH_PAGES_PER_QUERY = 2
 MAX_PRODUCTS = 1500
 
 TCG_SEARCH_QUERIES = (
+    "Jurassic Park TCG", "Godzilla Card Game", "Wuthering Waves TCG", "Union Arena",
     "Pokemon TCG",
     "Pokémon TCG",
     "One Piece",
@@ -428,6 +430,9 @@ def strong_card_listing_structure(title):
 
 
 def classify_game_with_taxonomy(title, taxonomy_terms):
+    if registered_title(title):
+        game = registered_identity({"title": title, "tags": taxonomy_terms})
+        return game, "TITLE_AND_CARD_STRUCTURE" if game else "INSUFFICIENT_CARD_EVIDENCE"
     if has_mtg_identity(taxonomy_terms) and not has_mtg_identity(title):
         if classify_mtg(title, tags=taxonomy_terms):
             return "MTG", "TAXONOMY_PLUS_PRODUCT_STRUCTURE"
@@ -442,6 +447,8 @@ def classify_game_with_taxonomy(title, taxonomy_terms):
 
 
 def classify_game(title):
+    if registered_title(title):
+        return registered_identity({"title": title})
     if has_mtg_identity(title):
         return classify_mtg(title)
 
@@ -603,6 +610,8 @@ def infer_product_type(title):
 
 
 def classify_product_family(title, product=None):
+    if registered_title(title):
+        return explicit_family({"title": title})
     pieces = [clean_text(title)]
 
     # Family detection may use public product metadata, but never currency.
