@@ -1,3 +1,4 @@
+from app.registered_games import registered_title, registered_identity, explicit_family as registered_family, GAMES as REGISTERED_GAMES
 import asyncio
 import json
 import re
@@ -480,6 +481,8 @@ def is_non_tcg_merchandise(
 
 def classify_game(product):
     """Explicit title evidence wins; unknown TCGs never borrow a set-code role."""
+    if registered_title(product.get("title")):
+        return registered_identity(product)
     if is_non_tcg_merchandise(product):
         return None
     identity = title_identity(product.get("title"))
@@ -3018,7 +3021,9 @@ class ShopifyAdapter:
             )
         )
 
-        if game in DISCOVERY_GAMES:
+        if game in REGISTERED_GAMES:
+            product_family = registered_family(family_probe)
+        elif game in DISCOVERY_GAMES:
             product_family = explicit_discovery_family(family_probe)
 
         purchase_limit = (
