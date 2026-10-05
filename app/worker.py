@@ -1,4 +1,5 @@
 from app.regional_routes import route_decision, routing_status
+from app.registered_games import registered_title, registered_identity, GAMES as REGISTERED_GAMES
 import asyncio
 import hashlib
 import json
@@ -135,6 +136,12 @@ DEFAULT_FAMILY_PREFERENCES = {
 # =========================================================
 
 def validate_event_game(event):
+    if registered_title(event.get("product_name")):
+        return registered_identity({
+            "title": event.get("product_name"),
+            "product_type": event.get("product_type"),
+            "tags": "TCG" if event.get("game") in REGISTERED_GAMES else "",
+        }) == event.get("game") and event.get("game") in REGISTERED_GAMES
     explicit = title_identity(event.get("product_name"))
     assigned = event.get("game")
     # A generic TCG title is not a conflict with independently established
@@ -990,7 +997,7 @@ async def build_event_embed(event):
             inline=False,
         )
 
-    if game in DISCOVERY_GAMES:
+    if game in DISCOVERY_GAMES and game not in REGISTERED_GAMES:
         language = event.get("language") or "Unknown"
         embed.add_field(
             name="🔎 TCG Discovery",
@@ -1395,7 +1402,7 @@ async def route_event_to_discord(
     discovered = discovery_identity({
         "title": event.get("product_name"), "product_type": event.get("product_type"),
     })
-    if discovered and (title_identity(event.get("product_name")) == JURASSIC_TCG
+    if discovered and not registered_title(event.get("product_name")) and (title_identity(event.get("product_name")) == JURASSIC_TCG
                        or has_named_tcg_title(event.get("product_name"))):
         previous_game = event.get("game")
         if previous_game != discovered:
