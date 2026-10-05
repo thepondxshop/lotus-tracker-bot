@@ -39,7 +39,7 @@ def _recovery_collection(domain):
     candidates.update(_WORKING_COLLECTIONS.get(domain, {}))
     for row in _PRIORITY_COLLECTION_CACHE.get(domain, (0, []))[1]:
         candidates.setdefault(row[1], row)
-    rows = list(candidates.values())[:24]
+    rows = [row for row in candidates.values() if _valid_collection_handle(row[1])][:24]
     if not rows:
         return []
     now = time.monotonic()
@@ -1876,34 +1876,52 @@ def _product_dedupe_key(product):
 
 
 def _xml_locations(xml_text):
+    """Read sitemap page locations, never nested image/video locations."""
     if not xml_text:
         return []
     try:
         root = ET.fromstring(xml_text)
     except Exception:
         return []
+    namespace = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
+    prefix = namespace if str(root.tag).startswith(namespace) else ''
+    if root.tag not in (prefix + 'urlset', prefix + 'sitemapindex'):
+        return []
+    record_tag = prefix + ('url' if root.tag == prefix + 'urlset' else 'sitemap')
     locations = []
-    for element in root.iter():
-        if str(element.tag).lower().endswith("loc") and element.text:
-            value = str(element.text).strip()
-            if value:
-                locations.append(value)
+    for record in root:
+        if record.tag != record_tag:
+            continue
+        for element in record:
+            if element.tag == prefix + 'loc' and element.text:
+                value = element.text.strip()
+                if value and value not in locations:
+                    locations.append(value)
     return locations
 
 
-def _collection_handle_from_url(url):
+def _valid_collection_handle(handle):
+    return bool(re.fullmatch(r'[a-z0-9][a-z0-9_-]*', str(handle or ''), re.I))
+
+
+def _collection_handle_from_url(url, expected_domain=None):
     try:
-        path = urlparse(str(url or "")).path
+        parsed = urlparse(str(url or ""))
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+            return None
+        if expected_domain and normalize_shopify_domain(parsed.hostname) != normalize_shopify_domain(expected_domain):
+            return None
+        path = parsed.path
     except Exception:
         return None
-    marker = "/collections/"
-    if marker not in path:
-        return None
-    handle = path.split(marker, 1)[1].strip("/").split("/", 1)[0]
-    return handle or None
+    match = re.fullmatch(r'/(?:[a-z]{2}(?:-[a-z]{2})?/)?collections/([^/]+)/?', path, re.I)
+    handle = match.group(1) if match else None
+    return handle if _valid_collection_handle(handle) else None
 
 
 def _collection_score(handle, title=""):
+    if not _valid_collection_handle(handle):
+        return 0
     from app.event_listing_filter import is_event_listing, normalized
     if normalized(handle) in {"events", "event", "tournaments", "tournament", "event calendar", "event tickets"} or is_event_listing(title, url=handle):
         return 0
@@ -2347,7 +2365,7 @@ class ShopifyAdapter:
                 continue
             self.diagnostics["collection_sitemaps_checked"] += 1
             for location in _xml_locations(xml_text):
-                handle = _collection_handle_from_url(location)
+                handle = _collection_handle_from_url(location, self.domain)
                 if handle:
                     self.diagnostics["collections_seen"] += 1
                     add_candidate(handle, handle.replace("-", " "))
