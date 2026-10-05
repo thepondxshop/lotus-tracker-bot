@@ -4,6 +4,7 @@ import time
 
 from datetime import datetime, timezone, timedelta
 from app import shopify_pacing
+from app.price_quality import suspected_preorder_placeholder
 
 from sqlalchemy import (
     func,
@@ -72,7 +73,7 @@ from app.store_health import (
 # =========================================================
 # LOTUS SHOPIFY MONITOR
 # PonDeX Trackers
-# Component Version 1.0.6-C17 (optional operator signing; retains C12 backoff)
+# Component Version 1.0.6-C18 (price quality; retains collection recovery)
 # Step 6K-2C4 — Independent Shopify Store Scheduling
 #
 # Strict structured TCG classification
@@ -2313,6 +2314,15 @@ async def _process_shopify_product_batch(store, adapter, native_currency, raw_pr
                 ]
             )
 
+            # Quarantine a legacy placeholder baseline too, so its later
+            # replacement by a real preorder price is not a price-increase alert.
+            if suspected_preorder_placeholder(
+                old_price, old_currency, item.get("product_category"),
+                old_stock, old_product_state,
+            ):
+                old_price = None
+                store_product.price = None
+
             old_variant_id = (
                 normalize_variant_id(
                     store_product.variant_id
@@ -3799,7 +3809,7 @@ async def _run_scheduled_store(store_id):
 async def run_shopify_monitor():
     global _SCHEDULER_HEARTBEAT
     MONITOR_STATUS["running"] = True
-    print("Lotus Shopify Monitor 1.0.6-C17 started. Independent stores; adaptive recovery; max concurrent scans=4.")
+    print("Lotus Shopify Monitor 1.0.6-C18 started. Independent stores; adaptive recovery; max concurrent scans=4.")
     tasks = {}
     health_task = None
     last_health_probe = 0.0
@@ -3868,7 +3878,7 @@ def get_shopify_monitor_status():
                    recovery_mode=shopify_pacing.recovering(domain))
         runtime.append(row)
     data.update({
-        'component_version': '1.0.6-C17',
+        'component_version': '1.0.6-C18',
         'alert_update_version': '1.0.6-A1',
         'scheduler_heartbeat_age_seconds': round(now-_SCHEDULER_HEARTBEAT, 1) if _SCHEDULER_HEARTBEAT is not None else None,
         'store_runtime': runtime,
