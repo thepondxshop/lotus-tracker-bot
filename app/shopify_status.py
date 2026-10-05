@@ -38,6 +38,11 @@ def build_shopify_status(data, worker_online, page=1):
     if stale:
         out.description += f'\n⚠️ {stale}/{len(rows)} stores lack a TCG observation within 5 minutes.'
         out.colour = 0xE6A23C
+        stale_rows = [r for r in rows if observation_age(r) is None or observation_age(r) > 300]
+        stale_rows.sort(key=lambda r: observation_age(r) if observation_age(r) is not None else float('inf'), reverse=True)
+        out.description += '\nCheck first: ' + ', '.join(
+            safe(f"#{r['store_id']} {r.get('store', 'Unknown')}", 65) for r in stale_rows[:3]
+        )
     for row in rows[(page-1)*PAGE_SIZE:page*PAGE_SIZE]:
         phase = row.get('phase', 'UNKNOWN')
         if (row.get('overdue_seconds') or 0) > 30:
@@ -53,13 +58,14 @@ def build_shopify_status(data, worker_online, page=1):
         value += f"Cooldown remaining: {row['cooldown_seconds']}s\n"
         value += f"Request spacing: {row['request_interval_seconds']:.2f}s • Recovery: {'Yes' if row['recovery_mode'] else 'No'}\n"
         value += f"Last attempt finished: {row.get('last_finished_at') or 'Not yet'}\n"
-        value += f"Last scan without rate limiting: {row.get('last_success_at') or 'Not yet'}\n"
+        value += f"Last full scan success: {row.get('last_success_at') or 'Not yet'}\n"
         value += f"Last TCG observation: {row.get('last_observation_at') or 'Not yet'}\n"
         if row.get('last_error'):
-            value += 'Error: ' + safe(row['last_error'], 90) + '\n'
+            label = 'Coverage: ' if row.get('outcome') == 'PARTIAL_COVERAGE' else 'Error: '
+            value += label + safe(row['last_error'], 90) + '\n'
         evidence = row.get('last_rate_limit') or {}
         if evidence:
-            value += 'Last HTTP 429: ' + safe(evidence.get('purpose', 'Unknown'), 80) + '\n'
+            value += 'Most recent HTTP 429: ' + safe(evidence.get('purpose', 'Unknown'), 80) + '\n'
             value += '429 time: ' + safe(evidence.get('at', 'Unknown'), 40)
         out.add_field(name=safe(f"#{row['store_id']} • {row.get('store', 'Loading store')}", 80), value=value[:680], inline=False)
     if not rows:
@@ -73,7 +79,7 @@ def build_shopify_status(data, worker_online, page=1):
     out.add_field(name='Latest stored scan results', value=
         f"Products seen: {data.get('products_seen', 0)} • Events: {data.get('events_created', 0)} • Flickers: {data.get('flickers_detected', 0)}\n"
         'Results may be from different times; compare each store’s observation time above.', inline=False)
-    out.set_footer(text=f"Page {page}/{pages} • Shopify {data.get('component_version', 'unknown')} • Status UI P1\nAll times UTC • Waiting is not a failure. Buttons expire after 10 minutes of inactivity or a restart.")
+    out.set_footer(text=f"Page {page}/{pages} • Shopify {data.get('component_version', 'unknown')} • Status UI P2\nAll times UTC • Partial coverage is not a full catalog scan. Buttons expire after 10 minutes of inactivity or a restart.")
     return out
 
 
