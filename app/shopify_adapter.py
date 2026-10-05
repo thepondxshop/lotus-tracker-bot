@@ -16,6 +16,7 @@ from urllib.parse import (
 import aiohttp
 from app import shopify_pacing
 from app.shopify_request_evidence import record_response
+from app.price_quality import suspected_preorder_placeholder
 from lotus_bot_auth import operator_request_headers
 
 # Successful feeds, discovered links and explicitly verified public links are
@@ -63,7 +64,7 @@ def _record_collection_page(domain, handle, page, count, recovery):
         _RECOVERY_COLLECTION_PAGES[key] = page + 1 if count == 250 and page < RECOVERY_COLLECTION_MAX_PAGES else 1
         print(f'SHOPIFY COLLECTION COVERAGE | Store={domain} | Collection={handle} | '
               f'Page={page} | Products={count} | NextPage={_RECOVERY_COLLECTION_PAGES[key]} | '
-              f'PageCapReached={page == RECOVERY_COLLECTION_MAX_PAGES and count == 250} | Version=1.0.6-C17')
+              f'PageCapReached={page == RECOVERY_COLLECTION_MAX_PAGES and count == 250} | Version=1.0.6-C18')
 
 from app.tcg_identity import (
     DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
@@ -80,7 +81,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C17 (retains A2.1 identity + MTG 1.0.0)
+# Component Version 1.0.6-C18 (retains collection recovery and signed access)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -818,6 +819,9 @@ def infer_additional_sealed_format(title):
     if any(keyword in text for keyword in ACCESSORY_KEYWORDS):
         return None
     patterns = (
+        (r"\bbuild\s*(?:and|&)\s*battle\b", "Build & Battle"),
+        (r"\belite\s+trainer\b", "Elite Trainer Box"),
+        (r"\b\d+\s+sleeved\s+(?:booster\s+)?bundle\b", "Sleeved Booster Bundle"),
         (r"\bbooster\s+pack\s+display\b", "Booster Box"),
         (r"\bbooster\s*\(\s*24\s*ct\s+display\s*\)", "Booster Box"),
         (r"\bevent\s+kit\b", "Event Kit"),
@@ -1777,7 +1781,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C14"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C18"
 _STORE_CURRENCY_CACHE = {}
 _CURRENCY_REFRESH_NOT_BEFORE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
@@ -2145,12 +2149,12 @@ class ShopifyAdapter:
                                         and isinstance(data.get("products"), list)
                                         and self.domain not in _OPERATOR_SIGNED_ACCESS_CONFIRMED):
                                     _OPERATOR_SIGNED_ACCESS_CONFIRMED.add(self.domain)
-                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C17")
+                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C18")
                                 if (signature_headers and not operator_signed and isinstance(data, dict)
                                         and isinstance(data.get("products"), list)
                                         and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
                                     _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
-                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C17")
+                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C18")
                                 shopify_pacing.succeeded(self.domain)
                                 return data
                             except Exception as error:
@@ -2473,7 +2477,7 @@ class ShopifyAdapter:
             if recovery_collection:
                 self.diagnostics['priority_collections'] = 1
                 print(f"SHOPIFY RECOVERY COVERAGE | Store={self.domain} | "
-                      f"Mode=ROTATING_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C17")
+                      f"Mode=ROTATING_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C18")
             if on_batch is not None and priority_collections:
                 hot = next((row for row in priority_collections if any(term in
                     (row[1] + " " + row[2]).lower() for term in
@@ -3090,6 +3094,19 @@ class ShopifyAdapter:
                 "PAGE_LIVE"
             )
 
+        reported_price = price
+        price_quality = "REPORTED" if price is not None else "UNKNOWN"
+        if suspected_preorder_placeholder(
+            price, self.currency, product_category, available, product_state
+        ):
+            price = None
+            price_quality = "SUSPECTED_PREORDER_PLACEHOLDER"
+            print(
+                f"SHOPIFY PRICE QUARANTINED | Store={self.domain} | "
+                f"ProductID={product.get('id')} | ReportedPrice={reported_price} | "
+                f"Currency={self.currency} | Reason={price_quality}", flush=True
+            )
+
         if game:
 
             classification_reason = "structured_game_match"
@@ -3149,6 +3166,9 @@ class ShopifyAdapter:
 
             "price":
                 price,
+
+            "reported_price": reported_price,
+            "price_quality": price_quality,
 
             "currency":
                 self.currency,
