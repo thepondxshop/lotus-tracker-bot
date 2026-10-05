@@ -28,6 +28,7 @@ Design:
 """
 
 from __future__ import annotations
+from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import asyncio
 import html as html_lib
@@ -408,6 +409,8 @@ def same_store_host(domain: str, url: str) -> bool:
 
 
 def classify_game(title: str) -> str | None:
+    if registered_title(title):
+        return registered_identity({"title": title})
     if has_mtg_identity(title):
         return classify_mtg(title)
 
@@ -507,6 +510,8 @@ def infer_product_type(title: str) -> str:
 
 
 def classify_product_family(title: str) -> str:
+    if registered_title(title):
+        return explicit_family({"title": title})
     lowered = clean_text(title).lower()
     if any(term in lowered for term in JP_TERMS):
         return "JP"
