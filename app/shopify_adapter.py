@@ -817,6 +817,11 @@ def infer_additional_sealed_format(title):
     text = normalize_text(title)
     if any(keyword in text for keyword in ACCESSORY_KEYWORDS):
         return None
+    if registered_identity({'title': title}) == 'Horo Beat':
+        if re.search(r'スタートデッキ|\bstart\s+deck\b', text):
+            return "Starter Deck"
+        if '拡張パック' in text:
+            return "Booster Box" if re.search(r'\bbox\b|ボックス', text) else "Booster Pack"
     patterns = (
         (r"\bbuild\s*(?:and|&)\s*battle\b", "Build & Battle"),
         (r"\belite\s+trainer\b", "Elite Trainer Box"),
@@ -1146,6 +1151,8 @@ def infer_product_category(
     # SEALED
     # =====================================================
 
+    if registered_identity({'title': title}) == 'Horo Beat' and 'カードスリーブ' in title_text:
+        return "ACCESSORY"
     if infer_additional_sealed_format(title):
         return "SEALED"
 
