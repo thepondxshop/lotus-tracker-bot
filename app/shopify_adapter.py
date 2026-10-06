@@ -1,3 +1,4 @@
+from app import collection_priority
 from app.registered_games import registered_title, registered_identity, explicit_family as registered_family, GAMES as REGISTERED_GAMES
 import asyncio
 import json
@@ -44,13 +45,8 @@ def _recovery_collection(domain):
     rows = [row for row in candidates.values() if _valid_collection_handle(row[1])][:24]
     if not rows:
         return []
-    now = time.monotonic()
-    ready = [row for row in rows if _RECOVERY_COLLECTION_EMPTY_UNTIL.get((domain,row[1]),0) <= now]
-    # If every feed was empty, retain one paced check; never burst or hammer
-    # the general endpoint as an immediate fallback.
-    row = min(ready or rows, key=lambda row: _RECOVERY_COLLECTION_LAST_CHECK.get((domain,row[1]),-1))
-    _RECOVERY_COLLECTION_LAST_CHECK[(domain,row[1])] = now
-    return [row]
+    return collection_priority.choose(domain, rows, _RECOVERY_COLLECTION_LAST_CHECK,
+                                      _RECOVERY_COLLECTION_EMPTY_UNTIL, time.monotonic())
 
 
 def _record_collection_page(domain, handle, page, count, recovery):
@@ -65,7 +61,7 @@ def _record_collection_page(domain, handle, page, count, recovery):
         _RECOVERY_COLLECTION_PAGES[key] = page + 1 if count == 250 and page < RECOVERY_COLLECTION_MAX_PAGES else 1
         print(f'SHOPIFY COLLECTION COVERAGE | Store={domain} | Collection={handle} | '
               f'Page={page} | Products={count} | NextPage={_RECOVERY_COLLECTION_PAGES[key]} | '
-              f'PageCapReached={page == RECOVERY_COLLECTION_MAX_PAGES and count == 250} | Version=1.0.6-C18')
+              f'PageCapReached={page == RECOVERY_COLLECTION_MAX_PAGES and count == 250} | Version=1.0.6-C19')
 
 from app.tcg_identity import (
     DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
@@ -82,7 +78,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C18 (retains collection recovery and signed access)
+# Component Version 1.0.6-C19 (retains collection recovery and signed access)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -829,6 +825,9 @@ def infer_additional_sealed_format(title):
         (r"\bbooster\s*\(\s*24\s*ct\s+display\s*\)", "Booster Box"),
         (r"\bevent\s+kit\b", "Event Kit"),
         (r"\bshowdown\s+decks?\b", "Showdown Deck"),
+        (r"\b(?:pokemon|pokémon)\b.*\b(?:league\s+)?battle\s+deck\b", "Battle Deck"),
+        (r"\b(?:pokemon|pokémon)\b.*\bdeck\s+crafter[’']?s\s+collection\b", "Collection Box"),
+        (r"\b(?:pokemon|pokémon)\b.*\bfigure\s+collection\b", "Collection Box"),
         (r"\bchampion\s+deck\b", "Champion Deck"),
         (r"\bstarter\s*\(\s*st[-\s]?\d{1,2}\s*\)", "Starter Deck"),
     )
@@ -1784,7 +1783,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C18"
+SHOPIFY_COMPONENT_VERSION = "1.0.6-C19"
 _STORE_CURRENCY_CACHE = {}
 _CURRENCY_REFRESH_NOT_BEFORE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
@@ -2152,12 +2151,12 @@ class ShopifyAdapter:
                                         and isinstance(data.get("products"), list)
                                         and self.domain not in _OPERATOR_SIGNED_ACCESS_CONFIRMED):
                                     _OPERATOR_SIGNED_ACCESS_CONFIRMED.add(self.domain)
-                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C18")
+                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C19")
                                 if (signature_headers and not operator_signed and isinstance(data, dict)
                                         and isinstance(data.get("products"), list)
                                         and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
                                     _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
-                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C18")
+                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C19")
                                 shopify_pacing.succeeded(self.domain)
                                 return data
                             except Exception as error:
@@ -2476,11 +2475,11 @@ class ShopifyAdapter:
             priority_collections = (_recovery_collection(self.domain) if recovery
                                     else await self._discover_priority_collections(session))
             recovery_collection = bool(recovery and priority_collections)
-            self.diagnostics['limited_coverage'] = recovery_collection
+            self.diagnostics['limited_coverage'] = bool(recovery and (recovery_collection or self.domain in collection_priority.WAITING))
             if recovery_collection:
                 self.diagnostics['priority_collections'] = 1
                 print(f"SHOPIFY RECOVERY COVERAGE | Store={self.domain} | "
-                      f"Mode=ROTATING_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C18")
+                      f"Mode=ROTATING_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C19")
             if on_batch is not None and priority_collections:
                 hot = next((row for row in priority_collections if any(term in
                     (row[1] + " " + row[2]).lower() for term in
@@ -2545,6 +2544,7 @@ class ShopifyAdapter:
                     self.diagnostics["collection_products_seen"] += len(page_products)
 
                     if not page_products:
+                        collection_priority.record(self.domain, handle, page, 0)
                         _record_collection_page(self.domain, handle, page, 0, recovery_collection and on_batch is not None)
                         break
 
@@ -2571,7 +2571,12 @@ class ShopifyAdapter:
                             await on_batch(fresh[offset:offset+100], source_label)
                         delivered_keys.update(_product_dedupe_key(p) for p in fresh)
 
+                    from app.event_listing_filter import raw_event_listing
+                    tcg_count = sum(bool(classify_game(p)) and not raw_event_listing(p) for p in page_products)
+                    collection_priority.record(self.domain, handle, page, tcg_count)
                     _record_collection_page(self.domain, handle, page, len(page_products), recovery_collection and on_batch is not None)
+                    if page == 1 and not tcg_count:
+                        _RECOVERY_COLLECTION_EMPTY_UNTIL[membership_key] = time.monotonic() + 900
                     if len(page_products) < 250:
                         break
                     if page == MAX_COLLECTION_PAGES:
@@ -2663,7 +2668,7 @@ class ShopifyAdapter:
 
             if recovery:
                 # Recovery checks the small head and preserves the deep cursor.
-                run_general = not recovery_collection
+                run_general = not self.diagnostics['limited_coverage']
                 cursor = 1
             page_limit = 25 if recovery else 250
             general_pages = 0
