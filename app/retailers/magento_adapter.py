@@ -62,6 +62,7 @@ GRAPHQL_RETRY_DELAY = 0.75
 # merely because it appeared in a response.
 DEFAULT_SEARCH_TERMS = (
     "Jurassic Park TCG", "Godzilla Card Game", "Wuthering Waves TCG", "Union Arena",
+    "Horo Beat", "Holo Beat", "ホロビート",
     # Keep discovery searches broad. Some Magento search configurations treat
     # multi-word searches as strict AND queries even though a single game name
     # returns the correct catalog. Every result is still passed through Lotus's
