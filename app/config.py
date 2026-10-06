@@ -150,9 +150,9 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
-    ("Jurassic Park TCG", "🃏", "Jurassic Park TCG alerts"),
-    ("Godzilla TCG", "🃏", "Godzilla TCG alerts"),
-    ("Wuthering Waves", "🃏", "Wuthering Waves alerts"),
+    ("Jurassic Park TCG", "🦖", "Jurassic Park TCG alerts"),
+    ("Godzilla TCG", "👾", "Godzilla TCG alerts"),
+    ("Wuthering Waves", "🧜‍♀️", "Wuthering Waves alerts"),
     ("Union Arena", "🃏", "Union Arena alerts"),
 
     ("Cataclysm Arcade", "🚇", "Cataclysm Arcade alerts"),
