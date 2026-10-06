@@ -1,4 +1,5 @@
 from app.regional_routes import route_decision, routing_status
+from app.operations_status import start_operations_status, worker_heartbeat, record_worker_error
 from app.registered_games import registered_title, registered_identity, GAMES as REGISTERED_GAMES
 import asyncio
 import hashlib
@@ -1714,12 +1715,14 @@ async def run_event_worker(bot):
 
     print("LOTUS REGIONAL CONFIG | " + json.dumps(routing_status()), flush=True)
     start_tcg_discovery_notifier(bot)
+    start_operations_status(bot)
 
     from app.event_queue import PRIORITY_ENABLED, LOOKAHEAD, MAX_PRIORITY_BURST
     print(f"LOTUS QUEUE MODE | PriorityEnabled={PRIORITY_ENABLED} | "
           f"Lookahead={LOOKAHEAD} | PriorityBurst={MAX_PRIORITY_BURST}", flush=True)
 
     while not bot.is_closed():
+        worker_heartbeat()
         try:
             if not await check_redis():
                 await init_redis()
@@ -1751,6 +1754,7 @@ async def run_event_worker(bot):
                 )
 
             except asyncio.TimeoutError:
+                record_worker_error('DISPATCH_TIMEOUT')
                 await preserve_failed_event(
                     event,
                     (
@@ -1773,6 +1777,7 @@ async def run_event_worker(bot):
                 raise
 
             except Exception as error:
+                record_worker_error('DISPATCH_ERROR')
                 await preserve_failed_event(
                     event,
                     (
@@ -1795,6 +1800,7 @@ async def run_event_worker(bot):
             raise
 
         except Exception as error:
+            record_worker_error('WORKER_ERROR')
             print(
                 (
                     "EVENT WORKER ERROR | "
