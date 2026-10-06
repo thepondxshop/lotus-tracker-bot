@@ -1,13 +1,16 @@
-"""GAMES1: explicit card-game identity; no region/language assumptions."""
+"""GAMES2: explicit card-game identity; no region/language assumptions."""
 import re
 import unicodedata
 
-GAMES = frozenset({'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
+VERSION = 'GAMES2'
+
+GAMES = frozenset({'Horo Beat', 'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
 PATTERNS = (
     ('Jurassic Park TCG', r'\bjurassic park\b|쥬라기공원|쥬라기 공원'),
     ('Godzilla TCG', r'\bgodzilla\b|ゴジラ'),
     ('Wuthering Waves', r'\bwuthering waves\b|\bwuwa\b|鳴潮|鸣潮|명조'),
     ('Union Arena', r'\bunion arena\b|ユニオンアリーナ'),
+    ('Horo Beat', r'\b(?:horo|holo)\s*beat\b|ホロビート'),
 )
 
 def text(value):
@@ -34,18 +37,20 @@ def registered_identity(product):
                  r'keychain|acrylic|board game|video game|proxy|proxies|fan translation|'
                  r'translated cards|digital|online code|code card)\b', title):
         return None
+    if 'Horo Beat' in matches and re.search(r'\b(?:manga|comic|comics|book)\b|漫画|コミック', title):
+        return None
     evidence = title + ' ' + text(product.get('product_type')) + ' ' + text(product.get('tags'))
-    physical = re.search(r'\b(?:boosters?|starter decks?|structure decks?|display box|'
+    physical = re.search(r'\b(?:boosters?|starter decks?|start decks?|structure decks?|display box|'
                          r'single card|singles|promo card|deck set|booster box|booster pack)\b|'
-                         r'ブースター|スタートデッキ|スターターデッキ|補充包|补充包|부스터', evidence)
+                         r'拡張パック|ブースター|スタートデッキ|スターターデッキ|補充包|补充包|부스터', evidence)
     explicit_tcg = re.search(r'\b(?:tcg|ccg|card game|trading card game)\b|'
                              r'カードゲーム|トレーディングカード|集换式|集換式', evidence)
-    accessory = re.search(r'\b(?:playmat|play mat|sleeves|deck box|binder)\b', title)
+    accessory = re.search(r'\b(?:playmat|play mat|sleeves|deck box|binder)\b|カードスリーブ', title)
     game = next(iter(matches))
     # Union Arena is itself a specific card-game name. The other franchise
     # names require an explicit TCG label, Battle/Showdown identity or card-game
     # title in the native language. Bare BP01/SD01 never identifies a game.
-    specific = (game == 'Union Arena' or explicit_tcg or
+    specific = (game in {'Union Arena', 'Horo Beat'} or explicit_tcg or
                 (game == 'Wuthering Waves' and re.search(r'\bbattle\b|\bshowdown\b|対決|对决|對決', evidence)))
     return game if specific and (physical or (accessory and explicit_tcg)) else None
 
@@ -69,4 +74,11 @@ def explicit_family(product):
     if product.get('game') == 'Wuthering Waves' or re.search(PATTERNS[2][1], value):
         # No verified English retail edition yet; English copy is not evidence.
         matches.discard('GLOBAL_STANDARD')
+    if product.get('game') == 'Horo Beat' or re.search(PATTERNS[4][1], value):
+        # Official JP launch products only. An English storefront is not an English edition.
+        # Explicit conflicting language information must not be overwritten.
+        if 'GLOBAL_STANDARD' in matches:
+            return 'UNKNOWN'
+        if not matches and re.search(r'\bhb\s*(?:bp\s*01|sd\s*0[12])\b', value):
+            return 'JP'
     return next(iter(matches)) if len(matches) == 1 else 'UNKNOWN'
