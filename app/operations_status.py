@@ -6,6 +6,7 @@ import os
 import time
 
 import discord
+from app.registered_games import VERSION as GAME_REGISTRY_VERSION
 
 VERSION = 'OPS1'
 CHANNELS = {
@@ -127,7 +128,7 @@ async def run(bot):
             stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
             if not announced:
                 announced = await publisher.publish('development',
-                    f'**Lotus process started**\nShopify {data.get("component_version", "unknown")} • GAMES1 • {VERSION}\n'
+                    f'**Lotus process started**\nShopify {data.get("component_version", "unknown")} • {GAME_REGISTRY_VERSION} • {VERSION}\n'
                     f'{stamp}\nMarketplace and shipping channels are reserved; their data pipelines are not enabled.', edit=False)
                 # Missing/denied channels must not retry on every health cycle.
                 announced = announced or not channel_id('development') or 'development' in publisher.denied
