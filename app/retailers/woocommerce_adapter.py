@@ -61,6 +61,7 @@ MAX_PRODUCTS = 1500
 
 TCG_SEARCH_QUERIES = (
     "Jurassic Park TCG", "Godzilla Card Game", "Wuthering Waves TCG", "Union Arena",
+    "Horo Beat", "Holo Beat", "ホロビート",
     "Pokemon TCG",
     "Pokémon TCG",
     "One Piece",
