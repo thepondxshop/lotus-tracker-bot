@@ -22,6 +22,7 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
+    "Horo Beat": os.getenv("ROLE_HORO_BEAT"),
     "Jurassic Park TCG": os.getenv("ROLE_JURASSIC_PARK"),
     "Godzilla TCG": os.getenv("ROLE_GODZILLA"),
     "Wuthering Waves": os.getenv("ROLE_WUTHERING_WAVES"),
@@ -150,6 +151,7 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+    ("Horo Beat", "👻", "Horo Beat Japanese TCG alerts"),
     ("Jurassic Park TCG", "🦖", "Jurassic Park TCG alerts"),
     ("Godzilla TCG", "👾", "Godzilla TCG alerts"),
     ("Wuthering Waves", "🧜‍♀️", "Wuthering Waves alerts"),
