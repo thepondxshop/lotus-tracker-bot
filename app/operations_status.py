@@ -1,4 +1,4 @@
-"""OPS1: bounded Discord summaries; no retailer requests or raw error forwarding."""
+"""OPS2: timestamped Discord summaries; no retailer requests or raw error forwarding."""
 import asyncio
 from collections import Counter
 from datetime import datetime, timezone
@@ -8,7 +8,7 @@ import time
 import discord
 from app.registered_games import VERSION as GAME_REGISTRY_VERSION
 
-VERSION = 'OPS1'
+VERSION = 'OPS2'
 CHANNELS = {
     'status': 'CHANNEL_BOT_STATUS',
     'health': 'CHANNEL_MONITOR_HEALTH',
@@ -81,13 +81,37 @@ def health_text(data):
     return text
 
 
+def recent_throttles(data, now=None):
+    """Examples only: last response per store cannot attribute every interval count."""
+    now = now or datetime.now(timezone.utc)
+    rows = []
+    for row in data.get('store_runtime') or []:
+        evidence = row.get('last_rate_limit') or {}
+        try:
+            at = datetime.fromisoformat(evidence.get('at') or '')
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            age = (now-at).total_seconds()
+        except (ValueError, TypeError):
+            continue
+        if 0 <= age <= 900:
+            rows.append((at, row, evidence))
+    rows.sort(key=lambda x: x[0], reverse=True)
+    if not rows:
+        return 'No recent per-store 429 details available in this snapshot.'
+    lines = ['Recent affected stores (latest response per store; up to 5):']
+    for _, row, evidence in rows[:5]:
+        lines.append(f"• #{row.get('store_id')} {safe(row.get('store', 'Unknown'))}: {safe(evidence.get('purpose', 'Unknown request'))}")
+    return '\n'.join(lines)
+
+
 class Publisher:
     def __init__(self, bot):
         self.bot = bot
         self.messages = {}
         self.denied = set()
 
-    async def publish(self, kind, content, *, edit=True):
+    async def publish(self, kind, content, *, edit=False):
         cid = channel_id(kind)
         if not cid or kind in self.denied:
             return False
@@ -115,7 +139,7 @@ async def run(bot):
     from app.shopify_monitor import get_shopify_monitor_status
     await bot.wait_until_ready()
     publisher = Publisher(bot)
-    last_status = last_errors = -float('inf')
+    last_status = last_health = last_errors = -float('inf')
     baseline = None
     announced = False
     while not bot.is_closed():
@@ -138,9 +162,11 @@ async def run(bot):
                 await publisher.publish('status', f'**Lotus bot status**\nDiscord connection: Ready\n'
                     f'Event worker: {worker}\nShopify scheduler: {snapshot(data)["scheduler"]}\n'
                     f'Shopify {data.get("component_version", "unknown")} • {VERSION}\n'
-                    f'Updated {stamp}\nProcess health does not guarantee retailer access or alert delivery.')
+                    f'Snapshot {stamp}\nProcess health does not guarantee retailer access or alert delivery.')
                 last_status = now
-            await publisher.publish('health', health_text(data) + f'\nUpdated {stamp}')
+            if now-last_health >= 300:
+                await publisher.publish('health', health_text(data) + f'\nSnapshot {stamp}')
+                last_health = now
             totals = {'HTTP_429':int(data.get('rate_limit_responses') or 0),
                       'OTHER_SCAN_FAILURES':int(data.get('stores_failed') or 0), **dict(_errors)}
             if baseline is None:
@@ -151,7 +177,7 @@ async def run(bot):
                 if any(delta.values()):
                     ok = await publisher.publish('errors', '**Lotus error summary — last reporting interval**\n' +
                         '\n'.join(f'{k}: {v}' for k,v in delta.items() if v) +
-                        f'\n{stamp}\nHTTP 429 means throttling, not a crash. Details remain in Railway logs.', edit=False)
+                        f'\n{stamp}\n' + recent_throttles(data) + '\nHTTP 429 means throttling; it can delay detection. Counts are responses, not missed alerts. Details remain in Railway logs.', edit=False)
                     if ok:
                         baseline = totals
                 else:
