@@ -1,4 +1,5 @@
 """Render live scheduler state separately from process-lifetime counters."""
+from app.display_time import new_york_time
 import discord
 import asyncio
 from datetime import datetime, timezone
@@ -54,19 +55,19 @@ def build_shopify_status(data, worker_online, page=1):
         if age is None or age > 300:
             value += '⚠️ TCG observation: ' + ('Not recorded' if age is None else f'{int(age//60)} minutes old') + '\n'
         if row.get('wait_seconds') is not None:
-            value += f"Next attempt in: {row['wait_seconds']}s • {row.get('next_attempt_at')}\n"
+            value += f"Next attempt in: {row['wait_seconds']}s • {new_york_time(row.get('next_attempt_at'))}\n"
         value += f"Cooldown remaining: {row['cooldown_seconds']}s\n"
         value += f"Request spacing: {row['request_interval_seconds']:.2f}s • Recovery: {'Yes' if row['recovery_mode'] else 'No'}\n"
-        value += f"Last attempt finished: {row.get('last_finished_at') or 'Not yet'}\n"
-        value += f"Last full scan success: {row.get('last_success_at') or 'Not yet'}\n"
-        value += f"Last TCG observation: {row.get('last_observation_at') or 'Not yet'}\n"
+        value += f"Last attempt finished: {new_york_time(row.get('last_finished_at'))}\n"
+        value += f"Last full scan success: {new_york_time(row.get('last_success_at'))}\n"
+        value += f"Last TCG observation: {new_york_time(row.get('last_observation_at'))}\n"
         if row.get('last_error'):
             label = 'Coverage: ' if row.get('outcome') == 'PARTIAL_COVERAGE' else 'Error: '
             value += label + safe(row['last_error'], 90) + '\n'
         evidence = row.get('last_rate_limit') or {}
         if evidence:
             value += 'Most recent HTTP 429: ' + safe(evidence.get('purpose', 'Unknown'), 80) + '\n'
-            value += '429 time: ' + safe(evidence.get('at', 'Unknown'), 40)
+            value += '429 time: ' + new_york_time(evidence.get('at'), missing='Unknown')
         out.add_field(name=safe(f"#{row['store_id']} • {row.get('store', 'Loading store')}", 80), value=value[:680], inline=False)
     if not rows:
         out.add_field(name='Store workers', value='No per-store state recorded yet. Check scheduler heartbeat and Railway logs.', inline=False)
@@ -79,7 +80,7 @@ def build_shopify_status(data, worker_online, page=1):
     out.add_field(name='Latest stored scan results', value=
         f"Products seen: {data.get('products_seen', 0)} • Events: {data.get('events_created', 0)} • Flickers: {data.get('flickers_detected', 0)}\n"
         'Results may be from different times; compare each store’s observation time above.', inline=False)
-    out.set_footer(text=f"Page {page}/{pages} • Shopify {data.get('component_version', 'unknown')} • Status UI P2\nAll times UTC • Partial coverage is not a full catalog scan. Buttons expire after 10 minutes of inactivity or a restart.")
+    out.set_footer(text=f"Page {page}/{pages} • Shopify {data.get('component_version', 'unknown')} • Status UI P2-NY1\nTimes: New York (EST/EDT) • Partial coverage is not a full catalog scan. Buttons expire after 10 minutes of inactivity or a restart.")
     return out
 
 
