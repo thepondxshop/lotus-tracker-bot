@@ -32,6 +32,21 @@ RECOVERY_COLLECTION_MAX_PAGES = 20
 # Observed public collection links, not guesses. JSON access is still validated
 # by each request and uses the same domain cooldown/signing rules.
 _RECOVERY_COLLECTION_LINKS = {
+    'thecollectionrealm.com': ((0, 'pokemon-delta-reign', 'Pokemon Delta Reign'), (0, 'pre-order', 'Pre Order')),
+    'phantomich.com': ((0, 'pokemon', 'Pokemon'),),
+    'wargamesusa.com': ((0, 'trading-card-games-pokemon-magic-one-piece-more-war-games-usa', 'Trading Card Games Pokemon Magic One Piece More War Games Usa'),),
+    'guubuu.com': ((0, 'pokemon-sealed', 'Pokemon Sealed'),),
+    'jwwcards.com': ((0, 'tcgs', 'Tcgs'),),
+    'vgmx.com': ((0, 'pokemon-preorders', 'Pokemon Preorders'),),
+    'monstercardcorner.co.uk': ((0, 'pokemon', 'Pokemon'),),
+    'manyrealms.com': ((0, 'tcg-pre-orders', 'Tcg Pre Orders'),),
+    'ripnshiparena.com': ((0, 'pre-order', 'Pre Order'),),
+    'shop.shopofmagic.com': ((0, 'pokemon-30th-anniversary-collection-1', 'Pokemon 30Th Anniversary Collection 1'),),
+    'fenrisgaming.myshopify.com': ((0, 'magic-the-gathering', 'Magic The Gathering'),),
+    'mcgillicuddystoyshop.ie': ((0, 'trading-card-games', 'Trading Card Games'),),
+    'tanukigamesatx.com': ((0, 'all-trading-card-games', 'All Trading Card Games'),),
+    'jumpichiban.com': ((0, 'newest-card-games', 'Newest Card Games'), (0, 'pokemon-series', 'Pokemon Series')),
+
     'mystictcg.com': ((0, 'new-releases', 'New Releases'), (0, 'one-piece', 'One Piece')),
     'wulfgaming.com': ((0, 'pokemon', 'Pokemon'), (0, 'one-piece-card-game', 'One Piece Card Game')),
 }
