@@ -14,7 +14,7 @@ from app.tcg_discovery_admin import (
     start_tcg_discovery_notifier,
 )
 
-from app.alert_summary import build_notification_chunks
+from app.alert_summary import build_notification_chunks, timestamp_ping
 from app.tcg_identity import (
     DISCOVERY_GAMES, NEW_TCG, JURASSIC_TCG, discovery_identity, title_identity,
     has_named_tcg_title,
@@ -1542,7 +1542,7 @@ async def route_event_to_discord(
         try:
             message = (
                 await channel.send(
-                    content=notification_chunks[0][0],
+                    content=timestamp_ping(notification_chunks[0][0]),
                     embed=embed,
                     allowed_mentions=(
                         discord.AllowedMentions(
@@ -1588,7 +1588,7 @@ async def route_event_to_discord(
     for content, recipient_ids in notification_chunks[1:]:
         try:
             await channel.send(
-                content=content,
+                content=timestamp_ping(content),
                 allowed_mentions=discord.AllowedMentions(
                     roles=False,
                     users=[discord.Object(id=user_id) for user_id in recipient_ids],
