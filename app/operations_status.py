@@ -5,10 +5,11 @@ from datetime import datetime, timezone
 import os
 import time
 
+from app.display_time import new_york_now
 import discord
 from app.registered_games import VERSION as GAME_REGISTRY_VERSION
 
-VERSION = 'OPS2'
+VERSION = 'OPS2-NY1'
 CHANNELS = {
     'status': 'CHANNEL_BOT_STATUS',
     'health': 'CHANNEL_MONITOR_HEALTH',
@@ -149,7 +150,7 @@ async def run(bot):
                 continue
             now = time.monotonic()
             data = get_shopify_monitor_status()
-            stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+            stamp = new_york_now()
             if not announced:
                 announced = await publisher.publish('development',
                     f'**Lotus process started**\nShopify {data.get("component_version", "unknown")} • {GAME_REGISTRY_VERSION} • {VERSION}\n'
