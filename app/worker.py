@@ -1,3 +1,4 @@
+from app.display_time import new_york_now
 from app.regional_routes import route_decision, routing_status
 from app.operations_status import start_operations_status, worker_heartbeat, record_worker_error
 from app.registered_games import registered_title, registered_identity, GAMES as REGISTERED_GAMES
@@ -1128,6 +1129,8 @@ async def build_event_embed(event):
         footer_parts.append(
             "USD conversion approximate"
         )
+
+    footer_parts.append('Alert prepared: ' + new_york_now())
 
     embed.set_footer(
         text=" • ".join(
