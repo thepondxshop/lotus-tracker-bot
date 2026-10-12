@@ -9,6 +9,7 @@ No auth guessing, cart mutation, checkout automation, CAPTCHA/queue bypass.
 """
 
 from __future__ import annotations
+from app.retailers import plaza_support
 from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import asyncio
@@ -26,7 +27,7 @@ from app.event_listing_filter import is_event_listing
 from app.retailer_adapter import RetailerAdapter, RetailerProduct, normalize_price
 from app.retailer_registry import retailer_adapter
 
-VERSION = "1.0.9"
+VERSION = "1.0.9-ASIA1"
 USER_AGENT = "LotusTracker/1.0.4 (PonDeX Trackers; public retailer monitor)"
 DEFAULT_TIMEOUT = 15
 DEFAULT_REQUEST_DELAY = 0.65
@@ -88,7 +89,7 @@ GAME_TERMS = {
 }
 SEALED = (
     "booster box","booster display","booster pack","booster bundle","elite trainer box",
-    "starter deck","battle deck","battle arena deck","high class deck","structure deck",
+    "starter deck","start deck","battle deck","battle arena deck","high class deck","structure deck",
     "build & battle","build and battle","classic trading card game",
     "collection box","collection set",
     "special collection","premium collection","figure collection","v box","vstar box",
@@ -316,7 +317,7 @@ def product_type(title):
         ),
         (
             (
-                "starter deck",
+                "starter deck", "start deck",
             ),
             "Starter Deck",
         ),
@@ -595,6 +596,8 @@ def product_schema(text, expected_url=None):
                 ]
             )
 
+    if not products and expected_url and plaza_support.host(expected_url):
+        return plaza_support.schema(text, expected_url)
     if expected_url:
         matched = [x for x in products if schema_matches_url(x, expected_url)]
         if len(matched) == 1:
@@ -1029,8 +1032,8 @@ class BigCommerceAdapter(
     ):
         self.diagnostics = {
             "adapter_version": VERSION,
-            "discovery_profile": "SCG_SEALED_CATALOG" if self.uses_catalog_delta else "GENERIC_SITEMAP",
-            "discovery_scope": "SUPPORTED_SEALED_PRODUCTS" if self.uses_catalog_delta else "GENERIC_PRODUCTS",
+            "discovery_profile": "SCG_SEALED_CATALOG" if self.uses_catalog_delta else ("PLAZA_TCG_CATEGORIES" if plaza_support.host(self.base_url) else "GENERIC_SITEMAP"),
+            "discovery_scope": "SUPPORTED_SEALED_PRODUCTS" if self.uses_catalog_delta else ("PARTIAL_TCG_CATEGORIES" if plaza_support.host(self.base_url) else "GENERIC_PRODUCTS"),
             "rejection_reasons": {},
 
             "pages_checked":
@@ -1243,6 +1246,8 @@ class BigCommerceAdapter(
         self,
         session,
     ):
+        if plaza_support.host(self.base_url):
+            return await plaza_support.discover(self, session)
         if self.uses_catalog_delta:
             return await self._discover_starcity(session)
         queue = [
@@ -1908,6 +1913,8 @@ class BigCommerceAdapter(
             )
         )
 
+        if schema.get('_lotus_microdata') and known:
+            source = 'HTML_MICRODATA_OFFER_AVAILABILITY'
         if not known:
 
             self.diagnostics[
@@ -1919,6 +1926,10 @@ class BigCommerceAdapter(
                 title
             )
         )
+
+        # Merchant region and English website UI do not establish card language.
+        if plaza_support.host(url) and fam == "GLOBAL_STANDARD" and not re.search(r"\benglish\b", title, re.I):
+            fam = "UNKNOWN"
 
         image = (
             parse_image(
@@ -2002,7 +2013,7 @@ class BigCommerceAdapter(
                 ),
 
             "structured_data":
-                "JSON_LD_PRODUCT",
+                "HTML_MICRODATA_PRODUCT" if schema.get("_lotus_microdata") else "JSON_LD_PRODUCT",
         }
 
         self.diagnostics[
