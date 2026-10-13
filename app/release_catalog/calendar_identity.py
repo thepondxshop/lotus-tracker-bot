@@ -22,7 +22,7 @@ def product_key(row):
         normalized = re.sub(r'^azuki\s+(?:tcg\s+)?', '', title)
         normalized = re.sub(r'\bseries\s*0?2\b|\bazk\s*0?2\b', ' ', normalized)
         normalized = re.sub(r'\b24\s*(?:ct|count)\b', ' ', normalized)
-        normalized = re.sub(r'\bbooster\s+(?:pack\s+)?display\b', 'booster box', normalized)
+        normalized = re.sub(r'\bbooster\s+(?:pack\s+)?display(?:\s+box)?\b', 'booster box', normalized)
         normalized = ' '.join(normalized.split())
         if words(row.get('set_code')) in ('', 'azk 2', 'azk 02', 'azk2', 'azk02'):
             if normalized == 'fractured domains relic hunter box':
@@ -77,7 +77,30 @@ def consolidate(entries):
         if not key or not entry.get('period'):
             result.append(entry); continue
         buckets.setdefault((entry.get('guild_id'), key), []).append(entry)
-    for group in buckets.values():
+    # One conflicting language/date must not prevent duplicate pairs in the
+    # other editions from consolidating. Unknown fields cannot bridge ambiguity.
+    groups = []
+    for bucket in buckets.values():
+        by_period = {}
+        for e in bucket:
+            p = e['period']
+            key = tuple(p.get(k) for k in ('start', 'end', 'precision', 'anchor', 'tba')) + (p.get('scope', 'PRODUCT'),)
+            by_period.setdefault(key, []).append(e)
+        for candidates in by_period.values():
+            known = [{scoped_edition(e, field) for e in candidates} - {''}
+                     for field in ('region', 'language')]
+            known.append({configurations(e) for e in candidates} - {''})
+            compatible = {}
+            for e in candidates:
+                values = [scoped_edition(e, 'region'), scoped_edition(e, 'language'), configurations(e)]
+                if any(not value and len(options) > 1 for value, options in zip(values, known)):
+                    groups.append([e])
+                    continue
+                resolved = tuple(value or (next(iter(options)) if len(options) == 1 else '')
+                                 for value, options in zip(values, known))
+                compatible.setdefault(resolved, []).append(e)
+            groups.extend(compatible.values())
+    for group in groups:
         # Conflicting known editions or periods are deliberately left separate.
         scopes = [{scoped_edition(e, k) for e in group} - {''} for k in ('region', 'language')]
         scopes.append({configurations(e) for e in group} - {''})
