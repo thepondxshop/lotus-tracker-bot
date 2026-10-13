@@ -1949,7 +1949,7 @@ def _collection_handle_from_url(url, expected_domain=None):
 
 
 def _collection_score(handle, title=""):
-    if not _valid_collection_handle(handle):
+    if not _valid_collection_handle(handle) or not collection_priority.tcg_candidate(handle, title):
         return 0
     from app.event_listing_filter import is_event_listing, normalized
     if normalized(handle) in {"events", "event", "tournaments", "tournament", "event calendar", "event tickets"} or is_event_listing(title, url=handle):
