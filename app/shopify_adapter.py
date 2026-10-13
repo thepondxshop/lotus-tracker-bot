@@ -1,3 +1,4 @@
+from app.store_currency_fallback import currency_for_store
 from app import collection_priority
 from app.registered_games import registered_title, registered_identity, explicit_family as registered_family, GAMES as REGISTERED_GAMES
 import asyncio
@@ -2079,7 +2080,7 @@ class ShopifyAdapter:
         self.domain = normalize_shopify_domain(domain)
         self.region = (region or "US").upper()
         self.base_url = f"https://{self.domain}"
-        self.currency = REGION_CURRENCY.get(self.region, "USD")
+        self.currency = currency_for_store(self.domain, REGION_CURRENCY.get(self.region, "USD"))
         self.diagnostics = {
             "requests_attempted": 0,
             "http_200": 0,
