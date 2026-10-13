@@ -3,6 +3,7 @@ import asyncio
 import contextvars
 import json
 import time
+import math
 from app.display_time import new_york_time
 
 _state = contextvars.ContextVar('lotus_dispatch_state', default=None)
@@ -16,9 +17,19 @@ def mark_phase(name, **details):
 
 def primary_confirmed(message, event):
     """Record Discord's timestamp immediately, even if later mention/save work times out."""
+    state = _state.get()
+    dispatch_seconds = round(time.monotonic() - state['dispatch_started'], 3) if state else None
+    enqueued = event.get('_lotus_enqueued_at')
+    posted = message.created_at.timestamp()
+    enqueue_seconds = (round(posted - enqueued, 3) if isinstance(enqueued, (int, float))
+                       and not isinstance(enqueued, bool) and math.isfinite(enqueued)
+                       and 0 < enqueued <= posted else None)
     mark_phase('RECIPIENT_CHUNKS', primary_message_id=str(message.id))
     print('LOTUS PRIMARY DELIVERED | ' + json.dumps({
         'message_id': str(message.id), 'store': event.get('store_name'),
+        'channel_id': str(message.channel.id),
+        'dispatch_to_primary_seconds': dispatch_seconds,
+        'enqueue_to_primary_seconds': enqueue_seconds,
         'product_url': event.get('product_url'),
         'discord_created_at': message.created_at.isoformat(),
         'discord_created_at_new_york': new_york_time(message.created_at),
@@ -27,7 +38,7 @@ def primary_confirmed(message, event):
 
 
 async def traced_dispatch(awaitable, event, *, timeout):
-    state = {'phase':'START', 'phase_started':time.monotonic(), 'primary_message_id':None}
+    state = {'dispatch_started':time.monotonic(), 'phase':'START', 'phase_started':time.monotonic(), 'primary_message_id':None}
     token = _state.set(state)
     try:
         return await asyncio.wait_for(awaitable, timeout=timeout)
