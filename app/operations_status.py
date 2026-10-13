@@ -9,7 +9,9 @@ from app.display_time import new_york_now
 import discord
 from app.registered_games import VERSION as GAME_REGISTRY_VERSION
 
-VERSION = 'OPS2-NY1'
+VERSION = 'OPS3-NY1'
+STATUS_INTERVAL_SECONDS = 1800
+HEALTH_INTERVAL_SECONDS = 600
 CHANNELS = {
     'status': 'CHANNEL_BOT_STATUS',
     'health': 'CHANNEL_MONITOR_HEALTH',
@@ -157,7 +159,7 @@ async def run(bot):
                     f'{stamp}\nMarketplace and shipping channels are reserved; their data pipelines are not enabled.', edit=False)
                 # Missing/denied channels must not retry on every health cycle.
                 announced = announced or not channel_id('development') or 'development' in publisher.denied
-            if now-last_status >= 600:
+            if now-last_status >= STATUS_INTERVAL_SECONDS:
                 worker_age = None if _worker_heartbeat is None else max(0,now-_worker_heartbeat)
                 worker = 'Responsive' if worker_age is not None and worker_age < 90 else 'Heartbeat delayed / unknown'
                 await publisher.publish('status', f'**Lotus bot status**\nDiscord connection: Ready\n'
@@ -165,7 +167,7 @@ async def run(bot):
                     f'Shopify {data.get("component_version", "unknown")} • {VERSION}\n'
                     f'Snapshot {stamp}\nProcess health does not guarantee retailer access or alert delivery.')
                 last_status = now
-            if now-last_health >= 300:
+            if now-last_health >= HEALTH_INTERVAL_SECONDS:
                 await publisher.publish('health', health_text(data) + f'\nSnapshot {stamp}')
                 last_health = now
             totals = {'HTTP_429':int(data.get('rate_limit_responses') or 0),
