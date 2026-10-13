@@ -7122,6 +7122,9 @@ async def addshopifystore(
             )
         )
 
+        from app.store_signing_status import onboarding_note
+        signing_note = onboarding_note(store.domain)
+
         await interaction.followup.send(
 
             (
@@ -7131,6 +7134,7 @@ async def addshopifystore(
                 f"`{store.domain}`\n"
 
                 f"Region: `{store.region}`"
+                + signing_note
             ),
 
             ephemeral=True,
