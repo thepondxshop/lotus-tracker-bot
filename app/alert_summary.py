@@ -5,7 +5,7 @@ import unicodedata
 
 VERSION = "1.0.6-A1"
 SUMMARY_LIMIT = 360
-CONTENT_LIMIT = 1900  # Reserve space for the send-attempt timestamp.
+CONTENT_LIMIT = 1900  # Keep notification text below Discord limits.
 
 LABELS = {
     "DISCOVERED": "📡 NEW LISTING", "PAGE_LIVE": "🔵 PAGE LIVE",
@@ -89,12 +89,7 @@ Unknown catalog strings can never add recipients to allowed_mentions.
 
 
 def timestamp_ping(content):
-    """Stamp each send attempt; never claim this is the retailer stock-change time."""
-    from app.display_time import new_york_now
-    first, separator, rest = content.partition("\n")
-    result = first + "\n🕒 Sending: " + new_york_now()
-    if separator:
-        result += "\n" + rest
-    if _content_size(result) > 2000:
-        raise ValueError("Timestamped ping exceeds Discord content limit")
-    return result
+    """Compatibility entry point: clean notification text; time stays in the embed footer."""
+    if _content_size(content) > 2000:
+        raise ValueError("Ping exceeds Discord content limit")
+    return content
