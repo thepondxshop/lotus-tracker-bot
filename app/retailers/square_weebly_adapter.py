@@ -431,7 +431,7 @@ def is_product_url(url):
     parsed = urlparse(url)
     return (
         re.search(
-            r"/product/[^/]+/\d+/?$",
+            r"/product/[^/]+/(?:\d+|[A-Z0-9]{20,32})/?$",
             parsed.path,
             re.IGNORECASE,
         )
@@ -1558,7 +1558,7 @@ def parse_product_id_from_url(url):
     parsed = urlparse(url)
 
     match = re.search(
-        r"/product/[^/]+/(\d+)",
+        r"/product/[^/]+/(\d+|[A-Z0-9]{20,32})(?:/|$)",
         parsed.path,
         re.IGNORECASE,
     )
