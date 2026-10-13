@@ -17,6 +17,7 @@ Safety:
 """
 
 from __future__ import annotations
+from app.retailers.category_pagination import next_category_page, rotating_selection
 from app.registered_games import registered_title, registered_identity, explicit_family, GAMES as REGISTERED_GAMES
 
 import asyncio
@@ -3294,6 +3295,15 @@ class PrestaShopAdapter(
                 page_url
             )
 
+            # Category pagination is not a canonical product URL: keep its
+            # page parameter, inside the existing discovery-page budget.
+            if looks_like_tcg_discovery_url(effective_url) and not looks_like_product_url(effective_url):
+                next_page = next_category_page(text, effective_url)
+                if next_page and next_page not in visited and next_page not in queued:
+                    queue.insert(0, (next_page, depth))
+                    queued.add(next_page)
+                    print(f"PRESTASHOP NEXT CATEGORY | Store={self.store_name} | URL={next_page} | Version=ASIA2")
+
             for link in extract_links(
 
                 text,
@@ -3419,9 +3429,7 @@ class PrestaShopAdapter(
             ),
         )
 
-        selected = ranked[
-            :self.max_product_pages
-        ]
+        selected = rotating_selection(self.domain, ranked, self.max_product_pages)
 
         self.diagnostics[
             "product_urls_discovered"
