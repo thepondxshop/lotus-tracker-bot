@@ -1,3 +1,4 @@
+from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
 from app.display_time import new_york_now
 from app.regional_routes import route_decision, routing_status
 from app.operations_status import start_operations_status, worker_heartbeat, record_worker_error
@@ -874,11 +875,11 @@ async def build_event_embed(event):
 
         if currency != "USD":
             converted_usd = (
-                await convert_currency(
+                await optional_conversion(convert_currency(
                     price,
                     currency,
                     "USD",
-                )
+                ))
             )
 
             if converted_usd is not None:
@@ -1454,6 +1455,7 @@ async def route_event_to_discord(
 
         return False
 
+    mark_phase('DEDUPE')
     if await should_suppress_duplicate(
         event
     ):
@@ -1514,6 +1516,7 @@ async def route_event_to_discord(
     game = event.get("game")
     minimum_tier = access.get("minimum_tier", "Free")
 
+    mark_phase('MEMBER_ELIGIBILITY')
     eligible_members = await get_eligible_members(
         guild,
         event,
@@ -1522,6 +1525,7 @@ async def route_event_to_discord(
     )
     notification_chunks = build_notification_chunks(event, eligible_members)
 
+    mark_phase('EMBED_PREPARATION')
     embed, affiliate_used = (
         await build_event_embed(
             event
@@ -1540,6 +1544,7 @@ async def route_event_to_discord(
         4,
     ):
         try:
+            mark_phase('PRIMARY_SEND')
             message = (
                 await channel.send(
                     content=timestamp_ping(notification_chunks[0][0]),
@@ -1584,6 +1589,7 @@ async def route_event_to_discord(
     if message is None:
         return False
 
+    primary_confirmed(message, event)
     # Every recipient gets product context; post the product embed only once.
     for content, recipient_ids in notification_chunks[1:]:
         try:
@@ -1617,6 +1623,7 @@ async def route_event_to_discord(
           f"Selection={event.get('_lotus_queue_selection', 'UNKNOWN')} | "
           f"ProductURL={event.get('product_url')}")
     persistence_started = time.monotonic()
+    mark_phase('DELIVERY_PERSISTENCE')
     await save_alert_delivery(
         product_url=event.get("product_url"),
         store_name=event.get("store_name"),
@@ -1748,11 +1755,8 @@ async def run_event_worker(bot):
                   f"QueueDepthAtPop={event.get('_lotus_queue_depth_at_pop')} | "
                   f"ProductURL={event.get('product_url')}")
             try:
-                await asyncio.wait_for(
-                    route_event_to_discord(
-                        bot,
-                        event,
-                    ),
+                await traced_dispatch(
+                    route_event_to_discord(bot, event), event,
                     timeout=EVENT_DISPATCH_TIMEOUT_SECONDS,
                 )
 
