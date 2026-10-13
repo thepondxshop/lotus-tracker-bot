@@ -264,6 +264,8 @@ JP_MARKERS = [
 KR_MARKERS = [
 
     "korean version",
+    "korean ver.",
+    "korean ver)",
     "korean edition",
     "korean booster",
     "korean booster box",
