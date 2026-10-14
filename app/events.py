@@ -49,6 +49,7 @@ class ProductEvent:
     # PRICING
     # =====================================================
     price: float | None = None
+    reference_evidence: dict | None = None
     old_price: float | None = None
     currency: str = "USD"
 
