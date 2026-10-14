@@ -22,6 +22,7 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
+    "Harry Potter TCG — Kakawow": os.getenv("ROLE_HARRY_POTTER"),
     "Horo Beat": os.getenv("ROLE_HORO_BEAT"),
     "Jurassic Park TCG": os.getenv("ROLE_JURASSIC_PARK"),
     "Godzilla TCG": os.getenv("ROLE_GODZILLA"),
@@ -151,6 +152,7 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+    ("Harry Potter TCG — Kakawow", "🪄", "Kakawow Harry Potter TCG alerts"),
     ("Horo Beat", "👻", "Horo Beat Japanese TCG alerts"),
     ("Jurassic Park TCG", "🦖", "Jurassic Park TCG alerts"),
     ("Godzilla TCG", "👾", "Godzilla TCG alerts"),
