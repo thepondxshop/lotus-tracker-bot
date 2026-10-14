@@ -20,7 +20,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from app.marketplaces.ebay import EbayPreview
+from app.marketplaces.ebay import EbayPreview, AccessFailure
 
 PATH = '/ebay/account-deletion'
 HEALTH_PATH = '/ebay/health'
@@ -31,7 +31,9 @@ class ConfigurationError(ValueError):
     pass
 
 class VerificationUnavailable(Exception):
-    pass
+    def __init__(self, phase='UNKNOWN', status=None, reason='UNAVAILABLE'):
+        self.phase, self.status, self.reason = phase, status, reason
+        super().__init__('eBay verification unavailable')
 
 
 def strict_json(raw):
@@ -165,7 +167,7 @@ class PublicKeys:
                 return cached[1]
             # Avoid unauthenticated requests exhausting eBay's key-fetch quota.
             if now < self.next_fetch or self.session is None:
-                raise VerificationUnavailable()
+                raise VerificationUnavailable('LOCAL', reason='KEY_FETCH_COOLDOWN_OR_NOT_STARTED')
             self.next_fetch = now + 2
             try:
                 token = await self.auth.token(self.session)
@@ -174,18 +176,28 @@ class PublicKeys:
                         allow_redirects=False) as response:
                     if response.status != 200:
                         self.next_fetch = now + 30
-                        raise VerificationUnavailable()
+                        raise VerificationUnavailable('PUBLIC_KEY', response.status, 'HTTP_ERROR')
                     body = bytearray()
                     async for chunk in response.content.iter_chunked(4096):
                         body.extend(chunk)
                         if len(body) > LIMIT:
-                            raise VerificationUnavailable()
+                            raise VerificationUnavailable('PUBLIC_KEY', response.status, 'RESPONSE_TOO_LARGE')
                     record = strict_json(body)
                     if not isinstance(record, dict) or not all(k in record for k in ('key', 'algorithm', 'digest')):
-                        raise VerificationUnavailable()
+                        raise VerificationUnavailable('PUBLIC_KEY', response.status, 'INVALID_KEY_RESPONSE')
+            except AccessFailure as error:
+                self.next_fetch = now + 30
+                raise VerificationUnavailable('AUTH', error.result.get('http_status'),
+                    error.result.get('state', 'AUTH_FAILED')) from None
+            except VerificationUnavailable:
+                self.next_fetch = now + 30
+                raise
+            except asyncio.TimeoutError:
+                self.next_fetch = now + 30
+                raise VerificationUnavailable('NETWORK', reason='TIMEOUT') from None
             except Exception:
                 self.next_fetch = now + 30
-                raise VerificationUnavailable() from None
+                raise VerificationUnavailable('NETWORK_OR_RESPONSE', reason='REQUEST_FAILED') from None
             self.cache = {k: v for k, v in self.cache.items() if v[0] > now}
             if len(self.cache) >= 32:
                 self.cache.pop(next(iter(self.cache)))
@@ -247,8 +259,12 @@ def install(app, settings=None, key_provider=None):
         try:
             record = await asyncio.wait_for(provider.get(header['kid']), timeout=8)
             verify_payload(raw, document, header, signature, record)
-        except (VerificationUnavailable, asyncio.TimeoutError):
-            print('LOTUS EBAY NOTIFICATION | Result=KEY_LOOKUP_UNAVAILABLE', flush=True)
+        except (VerificationUnavailable, asyncio.TimeoutError) as error:
+            # Only controlled diagnostic fields: never exceptions, bodies or tokens.
+            detail = {'phase': getattr(error, 'phase', 'TOTAL_TIMEOUT'),
+                      'http_status': getattr(error, 'status', None),
+                      'reason': getattr(error, 'reason', 'TIMEOUT')}
+            print('LOTUS EBAY NOTIFICATION | Result=KEY_LOOKUP_UNAVAILABLE | ' + json.dumps(detail), flush=True)
             return web.Response(status=503, headers={'Retry-After': '30'})
         except (ValueError, TypeError, UnicodeError, InvalidSignature):
             return web.Response(status=412)
