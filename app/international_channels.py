@@ -2,6 +2,8 @@
 import os
 
 DESTINATIONS = {
+    'ebay_auction': ('CHANNEL_EBAY_AUCTIONS', 'Premium'),
+    'buyee_auction': ('CHANNEL_BUYEE_AUCTIONS', 'Premium+'),
     'forwarders': ('CHANNEL_FORWARDER_OPPORTUNITIES', None),
     'landed_cost': ('CHANNEL_LANDED_COST_DEALS', None),
     'ebay': ('CHANNEL_EBAY_INTELLIGENCE', 'Premium'),
