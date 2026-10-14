@@ -985,6 +985,7 @@ def make_product_event(
     )
 
     return ProductEvent(
+        reference_evidence=deal_fields.get("reference_evidence"),
 
         event_type=(
             event_type
@@ -1462,7 +1463,7 @@ async def get_deal_data(
             )
         )
 
-        return (
+        analysis = (
             await analyze_price_history(
 
                 session,
@@ -1490,6 +1491,15 @@ async def get_deal_data(
                 ),
             )
         )
+
+        if analysis is not None and reference_price is not None:
+            analysis.reference_evidence = {
+                'amount': reference_price.amount, 'currency': reference_price.currency,
+                'source': reference_price.source, 'confidence': reference_price.confidence,
+                'kind': reference_price.kind, 'scope': reference_price.scope_type,
+                'region': reference_price.region, 'family': reference_price.product_family,
+            }
+        return analysis
 
     except Exception as error:
 
