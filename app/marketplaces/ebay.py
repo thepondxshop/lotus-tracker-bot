@@ -121,7 +121,7 @@ class EbayPreview:
                                 'filter': 'buyingOptions:{FIXED_PRICE}'}, allow_redirects=False) as response:
                     data = await response_json(response, 'SEARCH')
                 result = normalize_search(data, self.environment)
-                return {**base, **result, 'state': 'SEARCH_RESPONSE_VALIDATED', 'http_status': 200,
+                return {**base, **{k: v for k, v in result.items() if k != 'candidates'}, 'candidate_details_retained': False, 'state': 'SEARCH_RESPONSE_VALIDATED', 'http_status': 200,
                         'production_access_verified': self.environment == 'production'}
         except AccessFailure as error:
             return {**base, **error.result}
