@@ -1,3 +1,4 @@
+from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination
 from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
 from app.display_time import new_york_now
 from app.regional_routes import route_decision, routing_status
@@ -259,6 +260,9 @@ def validate_event_game(event):
 # =========================================================
 
 def determine_alert_route(event):
+    if event.get('event_type') in PRICE_EVENTS:
+        if classify_price(event) not in {'DEAL', 'PRICE_DROP'}:
+            return None
     event_type = (
         event.get("event_type")
         or ""
@@ -1131,6 +1135,12 @@ async def build_event_embed(event):
             "USD conversion approximate"
         )
 
+    if event.get('event_type') in PRICE_EVENTS and classify_price(event) == 'DEAL':
+        ref = event['reference_evidence']
+        embed.add_field(name='Deal comparison', value=(
+            f"At least 10% below exact-product MSRP: {ref['amount']} {ref['currency']}\n"
+            f"Source: {ref['source']}\nItem-price comparison; shipping/tax not included."), inline=False)
+
     footer_parts.append('Alert prepared: ' + new_york_now())
 
     embed.set_footer(
@@ -1479,6 +1489,13 @@ async def route_event_to_discord(
     )
 
     destination = route_decision(event, alert_type, access["minimum_tier"])
+    if event.get('event_type') in PRICE_EVENTS:
+        price_route = price_destination(event)
+        destination = {**price_route, 'reason': 'PRICE1', 'version': 'PRICE1'}
+        if not price_route['channel_id']:
+            print('LOTUS PRICE ROUTE BLOCKED | ' + json.dumps(price_route), flush=True)
+            return False
+
     regional_id = destination["channel_id"]
     channel_id = regional_id or channel_id
     print("LOTUS ALERT ROUTE | " + json.dumps({
