@@ -1,3 +1,4 @@
+from app.merchandise_guard import building_product
 from app.store_currency_fallback import currency_for_store
 from app import collection_priority
 from app.registered_games import registered_title, registered_identity, explicit_family as registered_family, GAMES as REGISTERED_GAMES
@@ -470,6 +471,8 @@ NON_TCG_MERCHANDISE_PATTERNS = (
 def is_non_tcg_merchandise(
     product,
 ):
+    if building_product(product.get("title"), product.get("product_type")):
+        return True
 
     text = (
         build_classification_text(
@@ -493,6 +496,8 @@ def is_non_tcg_merchandise(
 
 def classify_game(product):
     """Explicit title evidence wins; unknown TCGs never borrow a set-code role."""
+    if building_product(product.get("title"), product.get("product_type")):
+        return None
     if registered_title(product.get("title")):
         return registered_identity(product)
     if is_non_tcg_merchandise(product):
