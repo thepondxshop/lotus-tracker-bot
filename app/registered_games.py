@@ -1,16 +1,17 @@
-"""GAMES2: explicit card-game identity; no region/language assumptions."""
+"""GAMES3: explicit card-game identity; no region/language assumptions."""
 import re
 import unicodedata
 
-VERSION = 'GAMES2'
+VERSION = 'GAMES3'
 
-GAMES = frozenset({'Horo Beat', 'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
+GAMES = frozenset({'Harry Potter TCG — Kakawow', 'Horo Beat', 'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
 PATTERNS = (
     ('Jurassic Park TCG', r'\bjurassic park\b|쥬라기공원|쥬라기 공원'),
     ('Godzilla TCG', r'\bgodzilla\b|ゴジラ'),
     ('Wuthering Waves', r'\bwuthering waves\b|\bwuwa\b|鳴潮|鸣潮|명조'),
     ('Union Arena', r'\bunion arena\b|ユニオンアリーナ'),
     ('Horo Beat', r'\b(?:horo|holo)\s*beat\b|ホロビート'),
+    ('Harry Potter TCG — Kakawow', r'\bharry potter\b|哈利[· ]?波特'),
 )
 
 def text(value):
@@ -39,6 +40,15 @@ def registered_identity(product):
         return None
     if 'Horo Beat' in matches and re.search(r'\b(?:manga|comic|comics|book)\b|漫画|コミック', title):
         return None
+    if 'Harry Potter TCG — Kakawow' in matches:
+        # Publisher + explicit game identity avoids vintage WotC and non-game cards.
+        publisher = title + ' ' + text(product.get('vendor'))
+        if not re.search(r'\bkakawow\b|卡卡沃', publisher):
+            return None
+        if not re.search(r'\b(?:tcg|trading card game|card game)\b|集换式|集換式', title):
+            return None
+        if re.search(r'\b(?:wizards|wotc|2001|2002|aura|phantom|gem|25th anniversary)\b', title):
+            return None
     evidence = title + ' ' + text(product.get('product_type')) + ' ' + text(product.get('tags'))
     physical = re.search(r'\b(?:boosters?|starter decks?|start decks?|structure decks?|display box|'
                          r'single card|singles|promo card|deck set|booster box|booster pack)\b|'
