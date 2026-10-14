@@ -158,7 +158,7 @@ def operator_request_headers(url, store_domain):
 
 def create_app():
     from aiohttp import web
-    app = web.Application(client_max_size=4096)
+    app = web.Application(client_max_size=16384)
     try:
         signer = Signer.from_env()
     except BotAuthConfigError as error:
@@ -185,6 +185,8 @@ def create_app():
             'key_directory': DIRECTORY_PATH,
         })
 
+    from app.marketplaces.ebay_notifications import install as install_ebay_notifications
+    install_ebay_notifications(app)
     app.router.add_get('/health', health)
     app.router.add_get(DIRECTORY_PATH, directory)
     app.router.add_get('/', profile)
