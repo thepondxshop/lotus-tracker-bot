@@ -82,6 +82,8 @@ def serialize_product_event(
         # PRICE DATA
         # =================================================
 
+        "reference_evidence": getattr(event, "reference_evidence", None),
+
         "price":
             event.price,
 
