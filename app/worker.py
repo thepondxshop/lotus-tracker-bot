@@ -1,3 +1,4 @@
+from app.merchandise_guard import building_product
 from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination
 from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
 from app.display_time import new_york_now
@@ -1401,6 +1402,10 @@ async def route_event_to_discord(
     bot,
     event,
 ):
+    if building_product(event.get('product_name'), event.get('product_type')):
+        print('LOTUS TCG EVENT SUPPRESSED | Reason=BUILDING_PRODUCT | '
+              f"Store={event.get('store_name')} | ProductURL={event.get('product_url')}")
+        return False
     from app.event_listing_filter import is_event_listing
     if is_event_listing(event.get('product_name') or event.get('title'),
                         event.get('product_type'), event.get('product_url')):
