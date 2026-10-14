@@ -29,6 +29,7 @@ from app.models import (
 @dataclass
 class DealIntelligence:
 
+    reference_evidence: dict | None = None
     window_days: int = 30
 
     # =====================================================
@@ -111,6 +112,7 @@ class DealIntelligence:
     ):
 
         return {
+            "reference_evidence": self.reference_evidence,
 
             "price_window_days":
                 self.window_days,
