@@ -1,5 +1,5 @@
 from app.merchandise_guard import building_product
-from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination
+from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price
 from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
 from app.display_time import new_york_now
 from app.regional_routes import route_decision, routing_status
@@ -1496,6 +1496,9 @@ async def route_event_to_discord(
     destination = route_decision(event, alert_type, access["minimum_tier"])
     if event.get('event_type') in PRICE_EVENTS:
         price_route = price_destination(event)
+        print('LOTUS PRICE DECISION | ' + json.dumps({**explain_price(event),
+            'store': event.get('store_name'), 'product_url': event.get('product_url'),
+            'destination_variable': price_route.get('variable')}), flush=True)
         destination = {**price_route, 'reason': 'PRICE1', 'version': 'PRICE1'}
         if not price_route['channel_id']:
             print('LOTUS PRICE ROUTE BLOCKED | ' + json.dumps(price_route), flush=True)
