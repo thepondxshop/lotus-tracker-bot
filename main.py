@@ -1,4 +1,6 @@
 import asyncio
+from app.version import VERSION as BOT_VERSION, build_id
+print(f"LOTUS BOT RELEASE | Version={BOT_VERSION} | Commit={build_id()}", flush=True)
 
 # Release automation entry marker: confirms this complete main.py is running.
 print(f"LOTUS RELEASE AUTOMATION ENTRY | Build=RELEASE-INGESTION-1.1.0 | Entry={__file__}", flush=True)
@@ -1245,7 +1247,7 @@ async def on_ready():
     )
 
     print(
-        "Version: 1.0.6"
+        f"Version: {BOT_VERSION}"
     )
 
     print(
@@ -1287,7 +1289,7 @@ async def ping(
             f"Latency: "
             f"`{round(bot.latency * 1000)}ms`\n"
 
-            "**Version:** `1.0.6`"
+            f"**Version:** `{BOT_VERSION}`"
         ),
 
         ephemeral=True,
@@ -3312,7 +3314,7 @@ async def eventstatus(
 
             "**Auto Platform Fingerprinting:** \u2705\n\n"
 
-            "**Engine Version:** `1.0.6`"
+            f"**Engine Version:** `{BOT_VERSION}`"
         ),
     )
 
@@ -4657,7 +4659,7 @@ async def majorpipeline(
         )
         if row.get("last_error"):
             embed.add_field(name="Last Note / Error", value=f"`{str(row.get('last_error'))[:950]}`", inline=False)
-        embed.set_footer(text="Lotus Major Retailer Pipeline • 6K-2C • v1.0.6")
+        embed.set_footer(text=f"Lotus Major Retailer Pipeline • 6K-2C • v{BOT_VERSION}")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
@@ -4929,7 +4931,7 @@ async def majorrun(
         ),
         inline=False,
     )
-    embed.set_footer(text="Lotus Major Retailer Pipeline • 6K-2C • v1.0.6")
+    embed.set_footer(text=f"Lotus Major Retailer Pipeline • 6K-2C • v{BOT_VERSION}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -9110,7 +9112,7 @@ async def testalert(
                 f"Route: "
                 f"`{alert_type}`\n"
 
-                "Version: `1.0.6`"
+                f"Version: `{BOT_VERSION}`"
             ),
         )
     )
@@ -9326,7 +9328,7 @@ async def status(
             f"**Redis Queue:** "
             f"`{queue}`\n\n"
 
-            "**Version:** `1.0.6`"
+            f"**Version:** `{BOT_VERSION}`"
         ),
     )
 
@@ -9415,6 +9417,8 @@ from app.release_catalog.commands import register_release_catalog_commands
 from app.release_catalog.ingestion_runner import start_release_ingestion, stop_release_ingestion
 
 register_release_catalog_commands(bot)
+from app.release_announcements import register_release_announcements
+register_release_announcements(bot)
 
 from app.x_monitor import register_x_monitor_commands, start_x_monitor, stop_x_monitor
 register_x_monitor_commands(bot)
