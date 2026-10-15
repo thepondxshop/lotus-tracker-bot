@@ -1,8 +1,6 @@
-"""EBAY-NOTIFY1: verified deletion receiver for MARKET2's stateless preview.
-
-No request payloads, user identifiers, signatures or tokens are persisted/logged.
-This is NOT a deletion implementation for future saved listings/Discord alerts.
-A different retention mode fails closed until its erasure handler is implemented.
+"""EBAY-NOTIFY3: verified receiver with durable pilot deletion queue.
+Raw identifiers, notification bodies and credentials are never logged.
+LIVE_REVIEWED retains keyed suppression hashes; the bot cleans up Discord.
 """
 import asyncio
 import base64
@@ -67,11 +65,13 @@ class Settings:
             raise ConfigurationError('Set EBAY_DELETION_ENDPOINT to the exact public HTTPS callback URL')
         if not re.fullmatch(r'[A-Za-z0-9_-]{32,80}', token):
             raise ConfigurationError('Set a 32-80 character EBAY_DELETION_VERIFICATION_TOKEN')
-        if mode != MODE:
+        if mode not in {MODE, 'LIVE_REVIEWED'}:
             raise ConfigurationError('Saved eBay data requires an erasure integration; only PREVIEW_ONLY is implemented')
         if not (os.getenv('EBAY_PRODUCTION_CLIENT_ID', '').strip()
                 and os.getenv('EBAY_PRODUCTION_CLIENT_SECRET', '').strip()):
             raise ConfigurationError('Production client ID and secret must also be set on this identity service')
+        if (mode == 'LIVE_REVIEWED' or os.getenv('EBAY_DATABASE_URL') or os.getenv('EBAY_RETENTION_HMAC_KEY')) and (not os.getenv('EBAY_DATABASE_URL') or len(os.getenv('EBAY_RETENTION_HMAC_KEY','')) < 32):
+            raise ConfigurationError('Shared retention database and key required')
         return cls(endpoint, token, mode)
 
     def challenge(self, code):
@@ -214,17 +214,44 @@ def install(app, settings=None, key_provider=None):
         except (ValueError, TypeError):
             problem = 'CONFIGURATION_REQUIRED'
     provider = key_provider or PublicKeys()
+    retention = None
+    if settings is not None and (settings.mode == 'LIVE_REVIEWED' or os.getenv('EBAY_DATABASE_URL')):
+        from app.marketplaces.ebay_live_store import Store
+        retention = Store()
     if settings is not None:
         async def lifecycle(_app):
             await provider.start()
-            yield
-            await provider.close()
+            heartbeat_task = None
+            async def heartbeat():
+                while True:
+                    try:
+                        if retention.pool is None:
+                            await retention.start()
+                        await retention.heartbeat(settings.mode)
+                    except Exception:
+                        print('LOTUS EBAY RETENTION | State=HEARTBEAT_FAILED', flush=True)
+                    await asyncio.sleep(30)
+            try:
+                if retention:
+                    # Keep identity signing/directory routes available if DB is down.
+                    heartbeat_task = asyncio.create_task(heartbeat())
+                yield
+            finally:
+                if heartbeat_task:
+                    heartbeat_task.cancel()
+                    try: await heartbeat_task
+                    except asyncio.CancelledError: pass
+                if retention:
+                    try:
+                        if retention.pool: await retention.heartbeat('STOPPED')
+                    finally: await retention.close()
+                await provider.close()
         app.cleanup_ctx.append(lifecycle)
-    print('LOTUS EBAY NOTIFICATIONS | State=' + ('READY_PREVIEW_ONLY' if settings else problem), flush=True)
+    print('LOTUS EBAY NOTIFICATIONS | State=' + (('READY_'+settings.mode) if settings else problem), flush=True)
 
     async def health(request):
-        return web.json_response({'version': 'EBAY-NOTIFY1', 'configured': settings is not None,
-            'mode': MODE, 'live_marketplace_alerts': False,
+        return web.json_response({'version': 'EBAY-NOTIFY3', 'configured': settings is not None,
+            'mode': settings.mode if settings else MODE, 'live_marketplace_alerts': False,
             'signature_validation': 'ECDSA_EBAY_PUBLIC_KEY',
             'production_access_verified': False}, status=200 if settings else 503)
 
@@ -268,6 +295,14 @@ def install(app, settings=None, key_provider=None):
             return web.Response(status=503, headers={'Retry-After': '30'})
         except (ValueError, TypeError, UnicodeError, InvalidSignature):
             return web.Response(status=412)
+        if retention is not None:
+            try:
+                await asyncio.wait_for(retention.receive_deletion(document['notification']['data']), timeout=6)
+            except Exception:
+                print('LOTUS EBAY NOTIFICATION | Result=DELETION_QUEUE_UNAVAILABLE', flush=True)
+                return web.Response(status=503, headers={'Retry-After':'30'})
+            print('LOTUS EBAY NOTIFICATION | Result=VERIFIED_DELETION_QUEUED | Mode='+settings.mode, flush=True)
+            return web.Response(status=202)
         # MARKET2 performs no persistence and sends no marketplace Discord posts.
         # Discard authenticated identifiers without retaining a receipt containing
         # user data. Repeated notifications are naturally idempotent. A future
@@ -280,3 +315,4 @@ def install(app, settings=None, key_provider=None):
     app.router.add_get(HEALTH_PATH, health)
     app.router.add_get(PATH, challenge)
     app.router.add_post(PATH, notification)
+
