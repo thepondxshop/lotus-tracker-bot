@@ -52,3 +52,35 @@ def destination(event, environ=None):
         variable='CHANNEL_GLOBAL_PRICE_DROPS' if global_store else 'CHANNEL_PRICE_DROPS'
     raw=str(env.get(variable,'')).strip()
     return {'classification':result,'variable':variable,'channel_id':int(raw) if re.fullmatch(r'[0-9]+',raw) and int(raw)>0 else None}
+
+
+
+def explanation(event):
+    """Explain routing without treating a historical store price as market value."""
+    result = classify(event)
+    reasons = []
+    current, previous = amount(event.get('price')), amount(event.get('old_price'))
+    historical_drop = str((previous-current)*100/previous) if current and previous else None
+    if result == 'PRICE_DROP':
+        if event.get('in_stock') is not True:
+            reasons.append('STOCK_NOT_CONFIRMED')
+        r = event.get('reference_evidence')
+        if not isinstance(r, dict):
+            reasons.append('NO_REFERENCE_EVIDENCE')
+        else:
+            if r.get('scope') != 'EXACT_PRODUCT': reasons.append('REFERENCE_NOT_EXACT_PRODUCT')
+            if r.get('confidence') != 'HIGH': reasons.append('REFERENCE_NOT_HIGH_CONFIDENCE')
+            if r.get('kind') != 'MSRP': reasons.append('REFERENCE_NOT_MSRP')
+            if not r.get('source'): reasons.append('REFERENCE_SOURCE_MISSING')
+            if r.get('currency') != event.get('currency'): reasons.append('REFERENCE_CURRENCY_MISMATCH')
+            family = event.get('product_family')
+            if not family or family == 'UNKNOWN' or r.get('family') != family: reasons.append('REFERENCE_FAMILY_UNKNOWN_OR_MISMATCH')
+            region = str(event.get('region') or '').upper()
+            rr = str(r.get('region') or '').upper()
+            if rr != region and not (rr == 'GLOBAL' and family == 'GLOBAL_STANDARD'): reasons.append('REFERENCE_REGION_MISMATCH')
+            if amount(r.get('amount')) is None: reasons.append('REFERENCE_AMOUNT_INVALID')
+        ref = reference(event)
+        if ref is not None and current > ref * Decimal('0.90'):
+            reasons.append('LESS_THAN_TEN_PERCENT_BELOW_REFERENCE')
+    return {'classification':result,'historical_drop_percent':historical_drop,
+            'deal_blockers':reasons,'reference_basis':'EXACT_PRODUCT_MSRP'}
