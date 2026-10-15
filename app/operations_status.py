@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import os
 import time
 
+from app.version import VERSION as BOT_VERSION, build_id
 from app.display_time import new_york_now
 import discord
 from app.registered_games import VERSION as GAME_REGISTRY_VERSION
@@ -155,14 +156,14 @@ async def run(bot):
             stamp = new_york_now()
             if not announced:
                 announced = await publisher.publish('development',
-                    f'**Lotus process started**\nShopify {data.get("component_version", "unknown")} • {GAME_REGISTRY_VERSION} • {VERSION}\n'
-                    f'{stamp}\nMarketplace and shipping channels are reserved; their data pipelines are not enabled.', edit=False)
+                    f'**Lotus v{BOT_VERSION} process started**\nShopify {data.get("component_version", "unknown")} • {GAME_REGISTRY_VERSION} • {VERSION}\n'
+                    f'{stamp}\nMarketplace readiness is reported separately by lotus_ebay_live_check.py.', edit=False)
                 # Missing/denied channels must not retry on every health cycle.
                 announced = announced or not channel_id('development') or 'development' in publisher.denied
             if now-last_status >= STATUS_INTERVAL_SECONDS:
                 worker_age = None if _worker_heartbeat is None else max(0,now-_worker_heartbeat)
                 worker = 'Responsive' if worker_age is not None and worker_age < 90 else 'Heartbeat delayed / unknown'
-                await publisher.publish('status', f'**Lotus bot status**\nDiscord connection: Ready\n'
+                await publisher.publish('status', f'**Lotus bot status — v{BOT_VERSION}**\nDiscord connection: Ready\n'
                     f'Event worker: {worker}\nShopify scheduler: {snapshot(data)["scheduler"]}\n'
                     f'Shopify {data.get("component_version", "unknown")} • {VERSION}\n'
                     f'Snapshot {stamp}\nProcess health does not guarantee retailer access or alert delivery.')
