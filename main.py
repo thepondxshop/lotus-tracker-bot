@@ -1199,6 +1199,9 @@ class LotusTrackerBot(
         if self.database_ready:
             self.release_ingestion_task = start_release_ingestion(self)
 
+        from app.marketplaces.ebay_live import start as start_ebay_live
+        start_ebay_live(self)
+
         start_x_monitor(self)
 
         synced = (
@@ -1210,6 +1213,8 @@ class LotusTrackerBot(
         )
 
     async def close(self):
+        from app.marketplaces.ebay_live import stop as stop_ebay_live
+        await stop_ebay_live(self)
         await stop_x_monitor(self)
         await stop_release_ingestion(self)
         await super().close()
@@ -9427,3 +9432,4 @@ if not DISCORD_TOKEN:
 bot.run(
     DISCORD_TOKEN
 )
+
