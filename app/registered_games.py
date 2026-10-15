@@ -1,10 +1,10 @@
-"""GAMES3: explicit card-game identity; no region/language assumptions."""
+"""GAMES4: explicit card-game identity; no region/language assumptions."""
 import re
 import unicodedata
 
-VERSION = 'GAMES3'
+VERSION = 'GAMES4'
 
-GAMES = frozenset({'Harry Potter TCG — Kakawow', 'Horo Beat', 'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
+GAMES = frozenset({'Final Fantasy TCG', 'CookieRun: Braverse', 'Harry Potter TCG — Kakawow', 'Horo Beat', 'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
 PATTERNS = (
     ('Jurassic Park TCG', r'\bjurassic park\b|쥬라기공원|쥬라기 공원'),
     ('Godzilla TCG', r'\bgodzilla\b|ゴジラ'),
@@ -12,6 +12,8 @@ PATTERNS = (
     ('Union Arena', r'\bunion arena\b|ユニオンアリーナ'),
     ('Horo Beat', r'\b(?:horo|holo)\s*beat\b|ホロビート'),
     ('Harry Potter TCG — Kakawow', r'\bharry potter\b|哈利[· ]?波特'),
+    ('Final Fantasy TCG', r'\bfinal fantasy\b|\bfftcg\b|ファイナルファンタジー'),
+    ('CookieRun: Braverse', r'\bcookie\s*run\b|\bbraverse\b|쿠키런|クッキーラン'),
 )
 
 def text(value):
@@ -60,7 +62,9 @@ def registered_identity(product):
     # Union Arena is itself a specific card-game name. The other franchise
     # names require an explicit TCG label, Battle/Showdown identity or card-game
     # title in the native language. Bare BP01/SD01 never identifies a game.
-    specific = (game in {'Union Arena', 'Horo Beat'} or explicit_tcg or
+    specific = (game in {'Union Arena', 'Horo Beat'} or
+                (game == 'CookieRun: Braverse' and re.search(r'\bbraverse\b|브레이버스|ブレイバース', evidence)) or
+                (game == 'Final Fantasy TCG' and re.search(r'\bfftcg\b', evidence)) or explicit_tcg or
                 (game == 'Wuthering Waves' and re.search(r'\bbattle\b|\bshowdown\b|対決|对决|對決', evidence)))
     return game if specific and (physical or (accessory and explicit_tcg)) else None
 
