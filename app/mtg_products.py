@@ -3,7 +3,7 @@ import re
 import unicodedata
 from app.event_listing_filter import is_event_listing
 
-VERSION = "1.0.0"
+VERSION = "1.0.1-MTG2"
 GAME = "MTG"
 
 
@@ -44,6 +44,14 @@ def mtg_product_details(title, raw_type=None, tags=None):
         return None
     if is_event_listing(title, raw_type):
         return None
+    # Specific sealed multi-product titles outrank stale retailer single tags.
+    # A card from one of these sets is still a single when its title says so.
+    title_text = text(title)
+    if not re.search(r"\b(?:single card|tcg single|individual card|singles|promo card|from)\b", title_text):
+        if re.search(r"\bset\s+of\s+[2-9]\d*\s+scene\s+boxes\b", title_text):
+            return "SEALED", "Scene Box Set"
+        if re.search(r"\bset\s+of\s+[2-9]\d*\s+commander\s+decks\b", title_text):
+            return "SEALED", "Commander Deck Set"
     accessories = (
         (r"\b(?:card\s+)?sleeves?\b", "Sleeves"),
         (r"\bplay\s*mat\b", "Playmat"),
@@ -66,6 +74,7 @@ def mtg_product_details(title, raw_type=None, tags=None):
     if re.search(r"\bcase\b", text(title)):
         return "SEALED", "Case"
     formats = (
+        (r"\bscene\s+box(?:es)?\b", "Scene Box"),
         (r"\bcommander\s+decks?\b", "Commander Deck"),
         (r"\b(?:pre\s*release|prerelease)\s+(?:kit|pack|box)\b", "Prerelease Kit"),
         (r"\b(?:starter\s+(?:kit|deck)|beginner\s+box)\b", "Starter Kit"),
