@@ -4,7 +4,7 @@ import os
 # =========================================================
 # LOTUS CONFIGURATION
 # PonDeX Trackers
-# Version 1.0.6-MTG1
+# Bot release 1.0.6 • Game registry GAMES4
 # =========================================================
 
 
@@ -22,6 +22,8 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
+    "Final Fantasy TCG": os.getenv("ROLE_FINAL_FANTASY"),
+    "CookieRun: Braverse": os.getenv("ROLE_COOKIE_RUN"),
     "Harry Potter TCG — Kakawow": os.getenv("ROLE_HARRY_POTTER"),
     "Horo Beat": os.getenv("ROLE_HORO_BEAT"),
     "Jurassic Park TCG": os.getenv("ROLE_JURASSIC_PARK"),
@@ -152,6 +154,8 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+    ("Final Fantasy TCG", "⚔️", "Final Fantasy Trading Card Game alerts"),
+    ("CookieRun: Braverse", "🍪", "CookieRun Braverse TCG alerts"),
     ("Harry Potter TCG — Kakawow", "🪄", "Kakawow Harry Potter TCG alerts"),
     ("Horo Beat", "👻", "Horo Beat Japanese TCG alerts"),
     ("Jurassic Park TCG", "🦖", "Jurassic Park TCG alerts"),
