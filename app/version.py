@@ -1,9 +1,10 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.2.2'
+VERSION = '1.2.3'
 RELEASE_KIND = 'patch'  # patch, regular, major
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
+    'eBay detail requests now include PRODUCT catalog data and inspect catalog GTINs.',
     'eBay identity checks now read explicit UPC/EAN/GTIN item specifics as well as the main GTIN field.',
     'Diagnostics distinguish missing, invalid, conflicting and mismatched product identifiers.',
     'Product, seller and deal checks remain enforced; the revised policy requires fresh shadow validation.',
