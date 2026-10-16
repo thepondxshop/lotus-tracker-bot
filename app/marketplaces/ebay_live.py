@@ -114,7 +114,7 @@ async def publish(bot, store, item, result, epoch):
             embed.description = ('**'+result['game']+'**\n'
                 f"Item / next bid: **${result['price']}**\nShipping: {shipping}\n"
                 f"Reviewed sold item average: **${float(result['comparison_amount']):.2f}** "
-                f"({result['comparison_samples']} listing observations, last 14 days)\n"
+                f"({result.get('comparison_label', str(result['comparison_samples'])+' listing observations, last 14 days')})\n"
                 f"**{float(result['discount_percent']):.1f}% below item-price average**\n"
                 'Before shipping, tax and import charges. This is not a delivered-cost discount. '
                 'Comparison prices were manually reviewed; no vault exemption assumed.')
