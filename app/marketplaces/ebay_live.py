@@ -252,6 +252,11 @@ async def loop(bot, store, leader, mode):
                             if item.get('itemId') != iid:
                                 reasons['ITEM_ID_MISMATCH']+=1; continue
                             result = assess(item,target)
+                            if result.get('reason', '').startswith('GTIN_'):
+                                log('IDENTITY_CHECK', target=target['id'], auction=auction,
+                                    reason=result['reason'], expected_gtin=result['expected_gtin'],
+                                    observed_gtins=result['observed_gtins'],
+                                    identifier_sources=result['identifier_sources'])
                             if result['eligible']:
                                 if mode == 'SHADOW':
                                     await allowed_channel(bot, int(os.getenv(result['destination_variable'], '0')))
