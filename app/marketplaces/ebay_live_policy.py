@@ -58,6 +58,14 @@ def gtin_status(item, target):
     """Match explicit identifiers only; never infer a GTIN from a search or title."""
     expected = str(target['gtin']).lstrip('0')
     fields = [('gtin', item.get('gtin'))]
+    product = item.get('product') or {}
+    catalog_codes = product.get('gtins') if isinstance(product, dict) else None
+    if catalog_codes is not None:
+        if isinstance(catalog_codes, list):
+            fields.extend(('product.gtins', code) for code in catalog_codes)
+        else:
+            # A malformed catalog value cannot silently become identity evidence.
+            fields.append(('product.gtins', 'invalid catalog GTIN array'))
     for aspect in item.get('localizedAspects') or []:
         if isinstance(aspect, dict) and folded(aspect.get('name')) in {'upc', 'ean', 'gtin', 'gtin-12', 'gtin-13', 'gtin-14'}:
             fields.append(('aspect:' + folded(aspect['name']), aspect.get('value')))
@@ -85,7 +93,8 @@ def gtin_status(item, target):
     else:
         reason = 'GTIN_MATCH'
     return {'reason': reason, 'expected_gtin': str(target['gtin']),
-            'observed_gtins': sorted(codes), 'identifier_sources': sorted(sources)}
+            'observed_gtins': sorted(codes), 'identifier_sources': sorted(sources),
+            'product_container_present': isinstance(item.get('product'), dict)}
 
 
 def assess(item, target, now=None):
