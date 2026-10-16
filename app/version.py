@@ -1,13 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.2.0'
-RELEASE_KIND = 'regular'  # patch, regular, major
+VERSION = '1.2.1'
+RELEASE_KIND = 'patch'  # patch, regular, major
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Added an eBay pilot setup tool and reviewed sold-record CSV importer.',
-    'Added item-only deal comparisons with shipping and taxes shown separately.',
-    'Added shadow diagnostics and reviewed-configuration gates for fixed-price and auction delivery.',
-    'Live alerts require qualifying sales evidence and successful shadow checks; automatic sold-data collection is not enabled.',
+    'Added reviewed aggregate sold-price snapshots to the eBay pilot.',
+    'Weighted comparisons preserve units sold, reporting window and evidence expiration.',
+    'Aggregate and individual-sale evidence are kept separate to prevent double counting.',
+    'Automatic sold-data retrieval remains unavailable; live alerts still require shadow review.',
 )
 
 def build_id():
