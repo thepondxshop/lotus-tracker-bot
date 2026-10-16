@@ -55,6 +55,7 @@ def main():
     parser.add_argument('--targets',default=os.getenv('EBAY_TARGETS_FILE','ebay-targets.json'))
     action=parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--init-151',action='store_true')
+    action.add_argument('--apply-151-snapshot',action='store_true')
     action.add_argument('--csv-template',metavar='PATH')
     action.add_argument('--import-sold',metavar='CSV')
     action.add_argument('--status',action='store_true')
@@ -72,12 +73,24 @@ def main():
         if any(t['id']==PRESET['id'] for t in rows): print('Existing target preserved.');return
         rows.append(PRESET);save(path,rows)
         print('Added one reviewed product identity. Sold benchmark absent; alerts remain blocked.');return
+    if args.apply_151_snapshot:
+        if not args.confirm_reviewed: parser.error('--confirm-reviewed required for the reviewed screenshot snapshot')
+        target=next((t for t in rows if t['id']==args.target),None)
+        if not target: parser.error('Run --init-151 first')
+        from app.marketplaces.ebay_snapshot import apply_151_snapshot
+        try:
+            apply_151_snapshot(target)
+            report=comparison(target)
+            if not report['ready']: parser.error(report['reason']+'; no changes saved')
+        except ValueError as error: parser.error(str(error)+'; no changes saved')
+        save(path,rows)
     if args.export:
         print(json.dumps(rows,indent=2));return
     if args.add_sale:
         if not args.confirm_reviewed: parser.error('--confirm-reviewed required; verify exact product and actual sold amount first')
         target=next((t for t in rows if t['id']==args.target),None)
         if not target or target.get('comparison_mode')!='ITEM_ONLY': parser.error('Initialize the item-only target first')
+        if 'aggregate_snapshot' in target: parser.error('Aggregate snapshot is active; individual-sale entry is blocked to prevent overlapping evidence')
         print('Review: one sealed English 151 Booster Bundle, six packs. No lots, hidden offers or asking prices.')
         row={k:input(label).strip() for k,label in (
             ('listing_id','eBay listing number: '),
@@ -96,6 +109,7 @@ def main():
         if not args.confirm_reviewed: parser.error('--confirm-reviewed required after inspecting the original sales evidence')
         target=next((t for t in rows if t['id']==args.target),None)
         if not target or target.get('comparison_mode')!='ITEM_ONLY': parser.error('Initialize an item-only target first')
+        if 'aggregate_snapshot' in target: parser.error('Aggregate snapshot is active; CSV sale imports are blocked to prevent overlapping evidence')
         records={r['record_key']:r for r in target.get('sold_records',[])}
         # Validate the entire input before writing anything.
         if Path(args.import_sold).stat().st_size>1048576: parser.error('CSV too large')
