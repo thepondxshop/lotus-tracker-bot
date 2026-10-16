@@ -1,1 +1,43 @@
-[]
+[
+  {
+    "id": "pokemon-151-bundle-en",
+    "reviewed": true,
+    "game": "Pokemon",
+    "gtin": "820650853210",
+    "condition_id": "1000",
+    "quantity": 1,
+    "required_terms": [
+      "151",
+      "booster bundle"
+    ],
+    "excluded_terms": [
+      "single pack",
+      "empty",
+      "repack",
+      "break spot",
+      "display case",
+      "lot of",
+      "japanese",
+      "korean",
+      "chinese"
+    ],
+    "aspects": {
+      "Language": "English",
+      "Configuration": "Box"
+    },
+    "currency": "USD",
+    "comparison_mode": "ITEM_ONLY",
+    "sold_records": [
+      {
+        "identity_key": "1138ac42c25aaa37093d494e5cb2c53079c631de27ec91fa7ec5c3db676ef046",
+        "record_key": "aac10e5d78577b941604af81370ea6c0a224428edcf132f5aad15e45decd1e56",
+        "sold_at": "2026-10-15T11:40:01-07:00",
+        "item_price": "140",
+        "source_kind": "EBAY_SOLD_LISTING",
+        "price_kind": "SOLD_AUCTION",
+        "reviewed": true
+      }
+    ],
+    "identity_source": "https://shop.thirdeyecomics.com/products/pokemon-tcg-scarlet-violet-151-booster-bundle"
+  }
+]
