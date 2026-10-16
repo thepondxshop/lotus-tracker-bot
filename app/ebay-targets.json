@@ -27,17 +27,79 @@
     },
     "currency": "USD",
     "comparison_mode": "ITEM_ONLY",
-    "sold_records": [
-      {
-        "identity_key": "1138ac42c25aaa37093d494e5cb2c53079c631de27ec91fa7ec5c3db676ef046",
-        "record_key": "aac10e5d78577b941604af81370ea6c0a224428edcf132f5aad15e45decd1e56",
-        "sold_at": "2026-10-15T11:40:01-07:00",
-        "item_price": "140",
-        "source_kind": "EBAY_SOLD_LISTING",
-        "price_kind": "SOLD_AUCTION",
-        "reviewed": true
-      }
-    ],
-    "identity_source": "https://shop.thirdeyecomics.com/products/pokemon-tcg-scarlet-violet-151-booster-bundle"
+    "sold_records": [],
+    "identity_source": "https://shop.thirdeyecomics.com/products/pokemon-tcg-scarlet-violet-151-booster-bundle",
+    "aggregate_snapshot": {
+      "schema": "PRODUCT_RESEARCH_AGGREGATE1",
+      "snapshot_id": "pokemon151-visible-20261015",
+      "source_kind": "EBAY_PRODUCT_RESEARCH",
+      "source_scope": "VISIBLE_ROWS_ONLY",
+      "evidence_file": "Screenshot 2026-10-15 223956.png",
+      "period_label": "LAST_7_DAYS",
+      "captured_at": "2026-10-15T22:40:05-04:00",
+      "window_start_bound": "2026-10-08T00:00:00-04:00",
+      "window_end_bound": "2026-10-15T22:40:05-04:00",
+      "window_precision": "CONSERVATIVE_BOUND_USER_CONFIRMED_LAST_7_DAYS",
+      "currency": "USD",
+      "cost_basis": "ITEM_ONLY",
+      "rows": [
+        {
+          "row_key": "visible-01",
+          "units": 19,
+          "item_sales": "2185.63"
+        },
+        {
+          "row_key": "visible-02",
+          "units": 28,
+          "item_sales": "3400.00"
+        },
+        {
+          "row_key": "visible-03",
+          "units": 9,
+          "item_sales": "1220.00"
+        },
+        {
+          "row_key": "visible-04",
+          "units": 4,
+          "item_sales": "437.80"
+        },
+        {
+          "row_key": "visible-05",
+          "units": 4,
+          "item_sales": "465.66"
+        },
+        {
+          "row_key": "visible-06",
+          "units": 2,
+          "item_sales": "289.32"
+        },
+        {
+          "row_key": "visible-08",
+          "units": 2,
+          "item_sales": "300.00"
+        },
+        {
+          "row_key": "visible-09",
+          "units": 2,
+          "item_sales": "216.00"
+        },
+        {
+          "row_key": "visible-10",
+          "units": 3,
+          "item_sales": "299.97"
+        }
+      ],
+      "excluded_rows": [
+        {
+          "row_key": "visible-07",
+          "reason": "TWO_BUNDLE_LOT",
+          "units": 2,
+          "item_sales": "679.98"
+        }
+      ],
+      "reviewed": true,
+      "exact_match": true,
+      "identity_key": "1138ac42c25aaa37093d494e5cb2c53079c631de27ec91fa7ec5c3db676ef046"
+    }
   }
 ]
