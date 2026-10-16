@@ -1,14 +1,15 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 RELEASE_KIND = 'regular'  # patch, regular, major
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Added Final Fantasy TCG and CookieRun: Braverse game preferences and recognition.',
-    'Corrected classification of MTG scene-box sets and commander-deck sets.',
-    'Added diagnostic explanations for price-drop versus deal routing.',
-    'Added versioned release announcements with duplicate-send protection.',
+    'Added an eBay pilot setup tool and reviewed sold-record CSV importer.',
+    'Added item-only deal comparisons with shipping and taxes shown separately.',
+    'Added shadow diagnostics and reviewed-configuration gates for fixed-price and auction delivery.',
+    'Live alerts require qualifying sales evidence and successful shadow checks; automatic sold-data collection is not enabled.',
 )
+
 def build_id():
     return os.getenv('RAILWAY_GIT_COMMIT_SHA', 'unknown')[:12]
 def announcement():
