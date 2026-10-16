@@ -1,4 +1,4 @@
-"""EBAY-LIVE1: bounded reviewed-target pilot, integrated into the existing bot.
+"""EBAY-LIVE2: bounded reviewed-target pilot, integrated into the existing bot.
 Default OFF. SHADOW performs searches without publishing or saving listings.
 """
 import asyncio
@@ -16,10 +16,12 @@ import aiohttp
 from app.marketplaces.ebay import EbayPreview, response_json, AccessFailure
 from app.marketplaces.ebay_live_policy import load_targets, assess
 from app.marketplaces.ebay_live_store import Store, WORKER_LOCK
+from app.marketplaces.ebay_evidence import config_hash
+from app.marketplaces import ebay_shadow
 
 
 def log(state, **fields):
-    print('LOTUS EBAY MONITOR | '+json.dumps({'version':'EBAY-LIVE1','state':state, **fields}), flush=True)
+    print('LOTUS EBAY MONITOR | '+json.dumps({'version':'EBAY-LIVE2','state':state, **fields}), flush=True)
 
 
 async def allowed_channel(bot, channel_id):
@@ -106,13 +108,24 @@ async def publish(bot, store, item, result, epoch):
             return 'CANCELLED_BEFORE_SEND'
         label = 'Auction ending soon' if result['auction'] else 'eBay deal'
         embed = discord.Embed(title=label+' • '+result['title'], url=result['url'], color=0x25A080, timestamp=now)
-        embed.description = ('**'+result['game']+'**\n'
-            f"Item / next bid: **${result['price']}**\nShipping: ${result['shipping']}\n"
-            f"Estimated total: **${result['current_total']}**\n"
-            f"Reviewed sold comparison: **${result['comparison_amount']}**\n"
-            f"At least 10% below the comparison at this check.\n"
-            f"Cost scenario: US ZIP {result['destination_zip']}; tax {float(result['tax_rate'])*100:g}%. "
-            'Your checkout total may differ. No vault exemption assumed.')
+        if result.get('comparison_basis') == 'ITEM_ONLY':
+            shipping = ('Not quoted — calculated at checkout' if result['shipping'] is None
+                        else '$'+result['shipping']+' API quote; confirm for your destination')
+            embed.description = ('**'+result['game']+'**\n'
+                f"Item / next bid: **${result['price']}**\nShipping: {shipping}\n"
+                f"Reviewed sold item average: **${float(result['comparison_amount']):.2f}** "
+                f"({result['comparison_samples']} listing observations, last 14 days)\n"
+                f"**{float(result['discount_percent']):.1f}% below item-price average**\n"
+                'Before shipping, tax and import charges. This is not a delivered-cost discount. '
+                'Comparison prices were manually reviewed; no vault exemption assumed.')
+        else:
+            embed.description = ('**'+result['game']+'**\n'
+                f"Item / next bid: **${result['price']}**\nShipping: ${result['shipping']}\n"
+                f"Estimated total: **${result['current_total']}**\n"
+                f"Reviewed sold comparison: **${result['comparison_amount']}**\n"
+                f"At least 10% below the comparison at this check.\n"
+                f"Cost scenario: US ZIP {result['destination_zip']}; tax {float(result['tax_rate'])*100:g}%. "
+                'Your checkout total may differ. No vault exemption assumed.')
         if result['auction']:
             embed.add_field(name='Auction', value=f"Ends <t:{int(end.timestamp())}:R>\nMaximum item bid for the 10% target: **${result['maximum_item_bid']}**\nBids can change; winning is not guaranteed.", inline=False)
         embed.add_field(name='Observed • New York', value=observed.astimezone(ZoneInfo('America/New_York')).strftime('%b %d, %Y %I:%M:%S %p %Z'), inline=False)
@@ -134,11 +147,20 @@ class Browse:
         if not await self.store.budget():
             raise AccessFailure('LOCAL_HOURLY_REQUEST_BUDGET', 'SEARCH')
         token = await self.auth.token(self.session)
-        headers={'Authorization':'Bearer '+token, 'X-EBAY-C-MARKETPLACE-ID':'EBAY_US',
-                 'X-EBAY-C-ENDUSERCTX':'contextualLocation=country%3DUS%2Czip%3D'+target['destination_zip']}
+        headers={'Authorization':'Bearer '+token, 'X-EBAY-C-MARKETPLACE-ID':'EBAY_US'}
+        if target.get('comparison_mode') != 'ITEM_ONLY':
+            headers['X-EBAY-C-ENDUSERCTX']='contextualLocation=country%3DUS%2Czip%3D'+target['destination_zip']
         async with self.session.get('https://api.ebay.com/buy/browse/v1/'+path,
                 params=params, headers=headers, allow_redirects=False) as response:
             return await response_json(response, 'BROWSE')
+
+
+async def live_gate(store, fingerprint, target_id, auction):
+    if os.getenv('EBAY_APPROVED_TARGETS_SHA256','') != fingerprint:
+        return 'LIVE_REVIEW_HASH_REQUIRED'
+    if not await ebay_shadow.ready(store,fingerprint,target_id,auction):
+        return 'SHADOW_EVIDENCE_REQUIRED'
+    return None
 
 
 async def run(bot):
@@ -166,6 +188,7 @@ async def run_once(bot):
     store = Store()
     await store.start()
     try:
+        await ebay_shadow.ensure(store)
         async with store.pool.acquire() as leader:
             if not await leader.fetchval('SELECT pg_try_advisory_lock($1)', WORKER_LOCK):
                 log('OTHER_WORKER_ACTIVE'); return
@@ -201,6 +224,7 @@ async def loop(bot, store, leader, mode):
                     log('IDENTITY_RETENTION_NOT_READY')
                 else:
                     targets = load_targets(os.getenv('EBAY_TARGETS_FILE','ebay-targets.json'))
+                    fingerprint = config_hash(targets)
                     if not targets:
                         log('NO_REVIEWED_TARGETS')
                     else:
@@ -229,10 +253,21 @@ async def loop(bot, store, leader, mode):
                                 reasons['ITEM_ID_MISMATCH']+=1; continue
                             result = assess(item,target)
                             if result['eligible']:
-                                state = await publish(bot,store,item,result,epoch) if mode=='LIVE' else 'SHADOW_ELIGIBLE'
+                                if mode == 'SHADOW':
+                                    await allowed_channel(bot, int(os.getenv(result['destination_variable'], '0')))
+                                    state = 'SHADOW_ELIGIBLE'
+                                    log('SHADOW_PRICE_CHECK', target=target['id'], auction=auction,
+                                        price=result['price'], shipping=result['shipping'],
+                                        comparison=result['comparison_amount'], basis=result.get('comparison_basis','LEGACY_TOTAL'),
+                                        maximum_item_bid=result.get('maximum_item_bid'))
+                                else:
+                                    blocked = await live_gate(store,fingerprint,target['id'],auction)
+                                    state = blocked or await publish(bot,store,item,result,epoch)
                                 reasons[state] += 1
                             else:
                                 reasons[result['reason']] += 1
+                            if mode == 'SHADOW':
+                                await ebay_shadow.record(store,fingerprint,target['id'],auction,result['eligible'])
                         log('CYCLE_COMPLETE', mode=mode, target=target['id'], auction=auction, search_results=len(rows), details_checked=len(selected), counts=dict(reasons))
             except AccessFailure as error:
                 result = error.result
