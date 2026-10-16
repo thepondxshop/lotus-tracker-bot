@@ -1,13 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.2.1'
+VERSION = '1.2.2'
 RELEASE_KIND = 'patch'  # patch, regular, major
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Added reviewed aggregate sold-price snapshots to the eBay pilot.',
-    'Weighted comparisons preserve units sold, reporting window and evidence expiration.',
-    'Aggregate and individual-sale evidence are kept separate to prevent double counting.',
-    'Automatic sold-data retrieval remains unavailable; live alerts still require shadow review.',
+    'eBay identity checks now read explicit UPC/EAN/GTIN item specifics as well as the main GTIN field.',
+    'Diagnostics distinguish missing, invalid, conflicting and mismatched product identifiers.',
+    'Product, seller and deal checks remain enforced; the revised policy requires fresh shadow validation.',
+    'Automatic sold-data retrieval remains unavailable.',
 )
 
 def build_id():
