@@ -1,0 +1,96 @@
+[
+  {
+    "name": "The Collection Realm",
+    "domain": "thecollectionrealm.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "pre-order",
+    "already_monitored": false
+  },
+  {
+    "name": "Phantomich",
+    "domain": "phantomich.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "pokemon",
+    "already_monitored": false
+  },
+  {
+    "name": "War Games USA",
+    "domain": "www.wargamesusa.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "trading-card-games-pokemon-magic-one-piece-more-war-games-usa",
+    "already_monitored": false
+  },
+  {
+    "name": "GuuBuu",
+    "domain": "guubuu.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "pokemon-sealed",
+    "already_monitored": false
+  },
+  {
+    "name": "JWW Cards",
+    "domain": "jwwcards.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "tcgs",
+    "already_monitored": false
+  },
+  {
+    "name": "Flipside Gaming",
+    "domain": "flipsidegaming.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "pre-orders",
+    "already_monitored": true
+  },
+  {
+    "name": "VGMX",
+    "domain": "vgmx.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "pokemon-preorders",
+    "already_monitored": false
+  },
+  {
+    "name": "Monster Card Corner",
+    "domain": "monstercardcorner.co.uk",
+    "region": "GB",
+    "platform": "shopify",
+    "collection": "pokemon",
+    "already_monitored": false
+  },
+  {
+    "name": "Many Realms",
+    "domain": "manyrealms.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "tcg-pre-orders",
+    "already_monitored": false
+  },
+  {
+    "name": "Rip N Ship Arena",
+    "domain": "www.ripnshiparena.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "pre-order",
+    "already_monitored": false
+  },
+  {
+    "name": "Little Shop of Magic",
+    "domain": "shop.shopofmagic.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "pokemon-30th-anniversary-collection-1",
+    "already_monitored": false
+  },
+  {
+    "name": "Fenris Gaming",
+    "domain": "fenrisgaming.myshopify.com",
+    "region": "US",
+    "platform": "shopify",
+    "collection": "magic-the-gathering",
+    "already_monitored": false
