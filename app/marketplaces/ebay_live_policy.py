@@ -54,6 +54,40 @@ def folded(s):
     return re.sub(r'\s+', ' ', str(s).casefold()).strip()
 
 
+def gtin_status(item, target):
+    """Match explicit identifiers only; never infer a GTIN from a search or title."""
+    expected = str(target['gtin']).lstrip('0')
+    fields = [('gtin', item.get('gtin'))]
+    for aspect in item.get('localizedAspects') or []:
+        if isinstance(aspect, dict) and folded(aspect.get('name')) in {'upc', 'ean', 'gtin', 'gtin-12', 'gtin-13', 'gtin-14'}:
+            fields.append(('aspect:' + folded(aspect['name']), aspect.get('value')))
+    codes, sources = set(), set()
+    malformed = False
+    placeholders = {'', 'none', 'n/a', 'na', 'does not apply', 'not applicable', 'unknown'}
+    for source, value in fields:
+        if value is None or folded(value) in placeholders:
+            continue
+        # Allow formatting spaces/hyphens, not arbitrary embedded numbers or lists.
+        normalized = re.sub(r'[\s-]', '', str(value))
+        if not re.fullmatch(r'[0-9]{8}|[0-9]{12,14}', normalized) or not normalized.strip('0'):
+            malformed = True
+            continue
+        codes.add(normalized.lstrip('0'))
+        sources.add(source)
+    if len(codes) > 1:
+        reason = 'GTIN_CONFLICT'
+    elif malformed:
+        reason = 'GTIN_INVALID'
+    elif not codes:
+        reason = 'GTIN_MISSING'
+    elif expected not in codes:
+        reason = 'GTIN_MISMATCH'
+    else:
+        reason = 'GTIN_MATCH'
+    return {'reason': reason, 'expected_gtin': str(target['gtin']),
+            'observed_gtins': sorted(codes), 'identifier_sources': sorted(sources)}
+
+
 def assess(item, target, now=None):
     now = now or datetime.now(timezone.utc)
     def block(reason): return {'eligible': False, 'reason': reason}
@@ -64,8 +98,9 @@ def assess(item, target, now=None):
     blocked = ['empty box', 'box only', 'digital code', 'proxy', 'replica', 'repack', 'mystery', 'break spot'] + target.get('excluded_terms', [])
     if any(folded(x) in title for x in blocked):
         return block('EXCLUDED_PRODUCT')
-    if str(item.get('gtin', '')).lstrip('0') != str(target['gtin']).lstrip('0'):
-        return block('GTIN_MISMATCH')
+    identity = gtin_status(item, target)
+    if identity['reason'] != 'GTIN_MATCH':
+        return dict(eligible=False, **identity)
     if str(item.get('conditionId')) != target['condition_id']:
         return block('CONDITION_MISMATCH')
     aspects = {folded(a.get('name')): folded(a.get('value')) for a in item.get('localizedAspects', []) if isinstance(a, dict)}
