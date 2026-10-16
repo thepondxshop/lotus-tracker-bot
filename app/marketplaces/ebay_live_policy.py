@@ -1,4 +1,4 @@
-"""EBAY-LIVE1: strict reviewed-target matching. No network or publication."""
+"""EBAY-LIVE2: strict reviewed-target matching. No network or publication."""
 import json
 import re
 from datetime import datetime, timezone
@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 from app.marketplaces.opportunity import evaluate, number, timestamp
+from app.marketplaces.ebay_evidence import evaluate_item_only
 
 
 def load_targets(path):
@@ -33,11 +34,15 @@ def load_targets(path):
                 or not all(isinstance(x, str) and x for x in t.get('excluded_terms', []))
                 or t.get('quantity') != 1 or isinstance(t.get('quantity'), bool)):
             raise ValueError('Target needs reviewed identity, GTIN, condition, terms, aspects and quantity=1')
-        if t.get('currency') != 'USD' or not re.fullmatch(r'\d{5}', str(t.get('destination_zip', ''))):
-            raise ValueError('Pilot requires USD and an explicit US delivery ZIP')
-        rate = number(t.get('tax_rate'))
-        if rate is None or rate > 1 or t.get('costs_reviewed') is not True:
-            raise ValueError('Reviewed destination tax rate required')
+        if t.get('comparison_mode') == 'ITEM_ONLY':
+            if t.get('currency') != 'USD' or not isinstance(t.get('sold_records', []), list):
+                raise ValueError('Item-only pilot requires USD and a sold-record list')
+        else:
+            if t.get('currency') != 'USD' or not re.fullmatch(r'\d{5}', str(t.get('destination_zip', ''))):
+                raise ValueError('Legacy target requires USD and an explicit US delivery ZIP')
+            rate = number(t.get('tax_rate'))
+            if rate is None or rate > 1 or t.get('costs_reviewed') is not True:
+                raise ValueError('Reviewed destination tax rate required')
         ref = t.get('comparison', {})
         # No fake default market values; missing/expired evidence remains blocked.
         if not isinstance(ref, dict):
@@ -68,7 +73,7 @@ def assess(item, target, now=None):
         return block('ASPECT_MISMATCH')
     if item.get('itemGroupType') or item.get('itemGroupHref') or item.get('itemGroupId'):
         return block('VARIATION_GROUP')
-    if str(item.get('lotSize', '1')) != '1':
+    if (str(item.get('lotSize', '1')) != '1' or re.search(r'\b(?:lot|set|case) of [2-9]\d*\b|\b[2-9]\d*\s*[x×]\s*|\b[2-9]\d*\s+booster bundles?\b', title)):
         return block('MULTI_UNIT_LOT')
     if item.get('itemLocation', {}).get('country') != 'US':
         return block('IMPORT_COSTS_NOT_SUPPORTED_IN_PILOT')
@@ -99,26 +104,30 @@ def assess(item, target, now=None):
         value = number(cost.get('value'))
         if shipping.get('shippingCostType') == 'FIXED' and cost.get('currency') == target['currency'] and value is not None:
             quotes.append(value)
-    if not quotes:
-        return block('SHIPPING_UNKNOWN')
-    shipping = min(quotes)
-    ref = target.get('comparison') or {}
-    if ref.get('cost_basis') != 'ITEM_PLUS_SHIPPING_AND_DESTINATION_TAX' or ref.get('destination_zip') != target['destination_zip']:
-        return block('COMPARISON_COST_BASIS_MISMATCH')
-    row = {'marketplace': 'ebay', 'auction': auction, 'currency': target['currency'],
-           'price': price.get('value'), 'minimum_next_bid': price.get('value'),
-           'ends_at': item.get('itemEndDate'), 'observed_at': now.isoformat(), 'comparison': ref,
-           'purchase_costs': {'fixed': str(shipping * (1 + number(target['tax_rate']))),
-               'tax_rate': target['tax_rate'], 'verified': True, 'complete': True,
-               'currency': target['currency'], 'mode': 'SHIP_HOME'}}
-    result = evaluate(row, now)
+    if target.get('comparison_mode') == 'ITEM_ONLY':
+        shipping = min(quotes) if quotes else None
+        result = evaluate_item_only(price.get('value'), target, auction, now)
+    else:
+        if not quotes:
+            return block('SHIPPING_UNKNOWN')
+        shipping = min(quotes)
+        ref = target.get('comparison') or {}
+        if ref.get('cost_basis') != 'ITEM_PLUS_SHIPPING_AND_DESTINATION_TAX' or ref.get('destination_zip') != target['destination_zip']:
+            return block('COMPARISON_COST_BASIS_MISMATCH')
+        row = {'marketplace': 'ebay', 'auction': auction, 'currency': target['currency'],
+               'price': price.get('value'), 'minimum_next_bid': price.get('value'),
+               'ends_at': item.get('itemEndDate'), 'observed_at': now.isoformat(), 'comparison': ref,
+               'purchase_costs': {'fixed': str(shipping * (1 + number(target['tax_rate']))),
+                   'tax_rate': target['tax_rate'], 'verified': True, 'complete': True,
+                   'currency': target['currency'], 'mode': 'SHIP_HOME'}}
+        result = evaluate(row, now)
     if not result['eligible']:
         return result
     url = urlsplit(str(item.get('itemWebUrl', '')))
     if url.scheme != 'https' or url.hostname not in {'www.ebay.com', 'ebay.com'} or url.username or url.password:
         return block('INVALID_LISTING_URL')
     result.update(title=str(item['title'])[:230], url=item['itemWebUrl'], auction=auction,
-                  price=str(price['value']), shipping=str(shipping), tax_rate=target['tax_rate'],
-                  destination_zip=target['destination_zip'], ends_at=item.get('itemEndDate'),
+                  price=str(price['value']), shipping=str(shipping) if shipping is not None else None, tax_rate=target.get('tax_rate'),
+                  destination_zip=target.get('destination_zip'), ends_at=item.get('itemEndDate'),
                   observed_at=now.isoformat(), game=target['game'], currency=target['currency'])
     return result
