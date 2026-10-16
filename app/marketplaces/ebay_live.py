@@ -14,7 +14,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 import aiohttp
 from app.marketplaces.ebay import EbayPreview, response_json, AccessFailure
-from app.marketplaces.ebay_live_policy import load_targets, assess
+from app.marketplaces.ebay_live_policy import load_targets, assess, gtin_status
 from app.marketplaces.ebay_live_store import Store, WORKER_LOCK
 from app.marketplaces.ebay_evidence import config_hash
 from app.marketplaces import ebay_shadow
@@ -248,15 +248,14 @@ async def loop(bot, store, leader, mode):
                             if not isinstance(iid,str) or len(iid)>200:
                                 reasons['INVALID_ITEM_ID']+=1; continue
                             await asyncio.sleep(1)
-                            item = await api.get('item/'+quote(iid,safe=''), {}, target)
+                            item = await api.get('item/'+quote(iid,safe=''), {'fieldgroups': 'PRODUCT'}, target)
                             if item.get('itemId') != iid:
                                 reasons['ITEM_ID_MISMATCH']+=1; continue
                             result = assess(item,target)
-                            if result.get('reason', '').startswith('GTIN_'):
-                                log('IDENTITY_CHECK', target=target['id'], auction=auction,
-                                    reason=result['reason'], expected_gtin=result['expected_gtin'],
-                                    observed_gtins=result['observed_gtins'],
-                                    identifier_sources=result['identifier_sources'])
+                            identity = gtin_status(item, target)
+                            log('IDENTITY_CHECK', target=target['id'], auction=auction,
+                                fieldgroups='PRODUCT', assessment_reason=result.get('reason', 'ELIGIBLE'),
+                                **identity)
                             if result['eligible']:
                                 if mode == 'SHADOW':
                                     await allowed_channel(bot, int(os.getenv(result['destination_variable'], '0')))
