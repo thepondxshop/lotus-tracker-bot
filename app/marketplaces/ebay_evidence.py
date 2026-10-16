@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from app.marketplaces.opportunity import number, timestamp
 
-POLICY = 'EBAY-LIVE2-ITEM-ONLY'
+POLICY = 'EBAY-LIVE2-ITEM-ONLY-AGG1'
 
 def identity_key(target):
     fields={k:target[k] for k in ('gtin','condition_id','aspects','quantity','currency')}
@@ -44,6 +44,9 @@ def evidence_record(row, target, now=None):
 
 def comparison(target, now=None):
     now = now or datetime.now(timezone.utc)
+    if 'aggregate_snapshot' in target:
+        from app.marketplaces.ebay_snapshot import snapshot_comparison
+        return snapshot_comparison(target['aggregate_snapshot'], identity_key(target), now)
     rows = target.get('sold_records', [])
     if not isinstance(rows,list) or len(rows)>500:
         return {'ready':False,'reason':'INVALID_SOLD_RECORDS','sample_count':0}
@@ -77,6 +80,7 @@ def evaluate_item_only(price, target, auction, now=None):
     return {'eligible':True,'reason':'TEN_PERCENT_BELOW_SOLD_ITEM_PRICE',
             'destination_variable':'CHANNEL_EBAY_AUCTIONS' if auction else 'CHANNEL_EBAY_INTELLIGENCE',
             'comparison_amount':ref['amount'],'comparison_samples':ref['sample_count'],
+            'comparison_label':ref.get('display_label',f"{ref['sample_count']} listing observations, last 14 days"),
             'comparison_basis':'ITEM_ONLY','discount_percent':str((mean-value)/mean*100),
             'maximum_item_bid':ref['threshold'] if auction else None}
 
