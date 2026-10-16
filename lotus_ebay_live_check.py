@@ -1,4 +1,4 @@
-"""EBAY-LIVE1 configuration and isolated PostgreSQL self-test. No Discord sends."""
+"""EBAY-LIVE2 configuration and isolated PostgreSQL self-test. No Discord sends."""
 import argparse
 import asyncio
 import json
@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from app.marketplaces.ebay_live_policy import load_targets
 from app.marketplaces.ebay_live_store import Store, SCHEMA
+from app.marketplaces.ebay_evidence import comparison, config_hash
+from app.marketplaces import ebay_shadow
 
 async def database_test(store):
     # Every assertion uses a new isolated schema and a rolled-back transaction.
@@ -39,6 +41,14 @@ async def database_test(store):
             await test.receive_deletion({'eiasToken':'unmatchable-synthetic'})
             assert await c.fetchval('SELECT unresolved FROM lotus_ebay_control WHERE id=1')
             assert not await test.ready()
+            await ebay_shadow.ensure(test)
+            assert not await ebay_shadow.ready(test,'test-config','test-target',False)
+            await ebay_shadow.record(test,'test-config','test-target',False,False)
+            assert not await ebay_shadow.ready(test,'test-config','test-target',False)
+            await ebay_shadow.record(test,'test-config','test-target',False,True)
+            assert await ebay_shadow.ready(test,'test-config','test-target',False)
+            assert not await ebay_shadow.ready(test,'changed-config','test-target',False)
+            assert not await ebay_shadow.ready(test,'test-config','test-target',True)
             for _ in range(120): assert await test.budget()
             assert not await test.budget()
         finally:
@@ -51,7 +61,7 @@ async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--database-self-test',action='store_true')
     args = parser.parse_args()
-    result = {'version':'EBAY-LIVE1','mode':os.getenv('EBAY_MONITOR_MODE','OFF'),
+    result = {'version':'EBAY-LIVE2','mode':os.getenv('EBAY_MONITOR_MODE','OFF'),
               'alerts_sent':0, 'sold_source_integrated':False,
               'database_configured':bool(os.getenv('EBAY_DATABASE_URL')),
               'retention_key_configured':len(os.getenv('EBAY_RETENTION_HMAC_KEY',''))>=32,
@@ -60,6 +70,8 @@ async def main():
     try:
         targets = load_targets(path)
         result['reviewed_targets'] = len(targets)
+        result['comparison_status'] = [{'target':t['id'], **comparison(t)} for t in targets]
+        result['approved_config_matches'] = bool(targets) and os.getenv('EBAY_APPROVED_TARGETS_SHA256','') == config_hash(targets)
     except Exception as error:
         result.update(reviewed_targets=0, targets_error=type(error).__name__)
     if args.database_self_test:
