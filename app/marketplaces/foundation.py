@@ -2,7 +2,7 @@
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
-MINIMUM_TIERS = {'ebay': 'Premium', 'mercari_us': 'Premium', 'buyee_jp': 'Premium+'}
+MINIMUM_TIERS = {'ebay': 'Premium', 'mercari_us': 'Premium', 'buyee_jp': 'Premium+', 'tcgplayer': 'Premium', 'cardmarket': 'Premium+'}
 COST_COMPONENTS = ('item', 'domestic_shipping', 'international_shipping', 'proxy_fee', 'tax', 'duty')
 
 
