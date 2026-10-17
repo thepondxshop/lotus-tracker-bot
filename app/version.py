@@ -1,14 +1,14 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.2.3'
-RELEASE_KIND = 'patch'  # patch, regular, major
+VERSION = '1.3.0'
+RELEASE_KIND = 'regular'  # patch, regular, major
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'eBay detail requests now include PRODUCT catalog data and inspect catalog GTINs.',
-    'eBay identity checks now read explicit UPC/EAN/GTIN item specifics as well as the main GTIN field.',
-    'Diagnostics distinguish missing, invalid, conflicting and mismatched product identifiers.',
-    'Product, seller and deal checks remain enforced; the revised policy requires fresh shadow validation.',
-    'Automatic sold-data retrieval remains unavailable.',
+    'Retailer deals support reviewed MSRP and sold-market comparisons without requiring a prior price drop.',
+    'Reviewed Shopify products are checked for current-price deals on each observation.',
+    'eBay supports expiring review of individual listings that omit GTINs; other eligibility checks still apply.',
+    'Registered TCGplayer for Premium and Cardmarket for Premium+; their live adapters are not enabled.',
+    'Automatic sold-data retrieval and distributor reference ingestion still require connected evidence sources.',
 )
 
 def build_id():
