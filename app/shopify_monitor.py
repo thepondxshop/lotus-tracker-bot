@@ -3056,6 +3056,19 @@ async def _process_shopify_product_batch(store, adapter, native_currency, raw_pr
 
         await session.commit()
 
+    from app.deal_references import enrich
+    from app.price_policy import classify
+    already = {e.product_url for e in events_to_send}
+    for item in normalized_products:
+        if item.get('url') in already or item.get('available') is not True:
+            continue
+        candidate = make_product_event(event_type=ProductEventType.DEAL,
+            item=item, store=store, in_stock=True)
+        data = enrich(vars(candidate))
+        if classify(data) == 'DEAL':
+            candidate.reference_evidence = data['reference_evidence']
+            events_to_send.append(candidate)
+
     publish_started = time.monotonic()
     for event in events_to_send:
 
