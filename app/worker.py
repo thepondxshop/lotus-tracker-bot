@@ -1,5 +1,5 @@
 from app.merchandise_guard import building_product
-from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price
+from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price, deal_matches, deal_title, deal_dedupe_key
 from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
 from app.display_time import new_york_now
 from app.regional_routes import route_decision, routing_status
@@ -104,6 +104,7 @@ EVENT_TITLES = {
     "STOCK_AVAILABLE": "🟢 IN STOCK",
     "RESTOCK": "🚨 RESTOCK",
     "SOLD_OUT": "🔴 SOLD OUT",
+    "DEAL": "🔥 DEAL",
     "PRICE_DROP": "🔥 PRICE DROP",
     "PRICE_INCREASE": "📈 PRICE INCREASE",
     "PRICE_ERROR": "⚠️ POSSIBLE PRICE ERROR",
@@ -261,7 +262,8 @@ def validate_event_game(event):
 # =========================================================
 
 def determine_alert_route(event):
-    if event.get('event_type') in PRICE_EVENTS:
+    if classify_price(event) == 'DEAL': return 'deal'
+    if event.get('event_type') in PRICE_EVENTS or classify_price(event) == 'DEAL':
         if classify_price(event) not in {'DEAL', 'PRICE_DROP'}:
             return None
     event_type = (
@@ -455,16 +457,20 @@ REALTIME_EVENTS = {
 
 
 async def should_suppress_duplicate(event):
+    is_deal = classify_price(event) == 'DEAL'
     if (
+        not is_deal and
         event.get("event_type")
         in REALTIME_EVENTS
     ):
         return False
 
+    is_deal = classify_price(event) == 'DEAL'
+    if is_deal: event = dict(event, event_type='DEAL')
     redis_client = get_redis()
 
     if redis_client is None:
-        return False
+        return is_deal
 
     identity = "|".join(
         [
@@ -520,8 +526,7 @@ async def should_suppress_duplicate(event):
     try:
         result = await redis_client.set(
             (
-                "lotus:dedupe:"
-                + digest
+                deal_dedupe_key(event) if is_deal else "lotus:dedupe:" + digest
             ),
             "1",
             nx=True,
@@ -539,7 +544,7 @@ async def should_suppress_duplicate(event):
             )
         )
 
-        return False
+        return is_deal
 
 
 # =========================================================
@@ -1136,11 +1141,13 @@ async def build_event_embed(event):
             "USD conversion approximate"
         )
 
-    if event.get('event_type') in PRICE_EVENTS and classify_price(event) == 'DEAL':
-        ref = event['reference_evidence']
-        embed.add_field(name='Deal comparison', value=(
-            f"At least 10% below exact-product MSRP: {ref['amount']} {ref['currency']}\n"
-            f"Source: {ref['source']}\nItem-price comparison; shipping/tax not included."), inline=False)
+    if classify_price(event) == 'DEAL':
+        embed.title = deal_title(event)
+        for ref in deal_matches(event):
+            label = 'MSRP' if ref['kind'] == 'MSRP' else 'sold-market benchmark'
+            embed.add_field(name='Below ' + label, value=(
+                f"Reference: {ref['amount']} {ref['currency']}\nSource: {ref['source']}\n"
+                "Item price only; shipping/tax excluded."), inline=False)
 
     footer_parts.append('Alert prepared: ' + new_york_now())
 
@@ -1411,7 +1418,8 @@ async def route_event_to_discord(
                         event.get('product_type'), event.get('product_url')):
         print(f"EVENT SUPPRESSED | Reason=EVENT_REGISTRATION | Store={event.get('store_name')} | ProductURL={event.get('product_url')}")
         return False
-    event = dict(event)
+    from app.deal_references import enrich
+    event = enrich(event)
     if (event.get("game") == NEW_TCG
             and title_identity(event.get("product_name")) == FUSION_WORLD_GAME):
         # Repair older queued events before role eligibility and admin review.
@@ -1494,7 +1502,7 @@ async def route_event_to_discord(
     )
 
     destination = route_decision(event, alert_type, access["minimum_tier"])
-    if event.get('event_type') in PRICE_EVENTS:
+    if event.get('event_type') in PRICE_EVENTS or classify_price(event) == 'DEAL':
         price_route = price_destination(event)
         print('LOTUS PRICE DECISION | ' + json.dumps({**explain_price(event),
             'store': event.get('store_name'), 'product_url': event.get('product_url'),
@@ -1549,6 +1557,10 @@ async def route_event_to_discord(
         minimum_tier,
     )
     notification_chunks = build_notification_chunks(event, eligible_members)
+    if classify_price(event) == 'DEAL':
+        old_title = EVENT_TITLES.get(event.get('event_type'), '')
+        notification_chunks = [(content.replace(old_title, deal_title(event), 1) if old_title else deal_title(event) + ' ' + content, ids)
+                               for content, ids in notification_chunks]
 
     mark_phase('EMBED_PREPARATION')
     embed, affiliate_used = (
@@ -1615,6 +1627,13 @@ async def route_event_to_discord(
         return False
 
     primary_confirmed(message, event)
+    if classify_price(event) == 'DEAL':
+        try:
+            redis = get_redis()
+            if redis is not None:
+                await redis.set(deal_dedupe_key(event), 'SENT', ex=86400)
+        except Exception as error:
+            print('LOTUS DEAL DEDUPE SAVE FAILED | Error=' + type(error).__name__, flush=True)
     # Every recipient gets product context; post the product embed only once.
     for content, recipient_ids in notification_chunks[1:]:
         try:
