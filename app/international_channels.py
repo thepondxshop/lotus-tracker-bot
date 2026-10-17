@@ -2,6 +2,8 @@
 import os
 
 DESTINATIONS = {
+    'tcgplayer': ('CHANNEL_TCGPLAYER_INTELLIGENCE', 'Premium'),
+    'cardmarket': ('CHANNEL_CARDMARKET_INTELLIGENCE', 'Premium+'),
     'ebay_auction': ('CHANNEL_EBAY_AUCTIONS', 'Premium'),
     'buyee_auction': ('CHANNEL_BUYEE_AUCTIONS', 'Premium+'),
     'forwarders': ('CHANNEL_FORWARDER_OPPORTUNITIES', None),
