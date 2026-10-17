@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 import os
 import re
 
-PRICE_EVENTS = {'PRICE_DROP', 'PRICE_INCREASE', 'PRICE_ERROR'}
+PRICE_EVENTS = {'PRICE_DROP', 'PRICE_INCREASE', 'PRICE_ERROR', 'DEAL'}
 US = {'US', 'USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'}
 
 def amount(value):
@@ -13,30 +13,65 @@ def amount(value):
         return v if v.is_finite() and 0<v<Decimal("1e15") else None
     except (InvalidOperation, ValueError, TypeError): return None
 
+def qualifying_references(event):
+    from datetime import datetime, timezone
+    r = event.get('reference_evidence')
+    rows = r.get('references', [r]) if isinstance(r, dict) else []
+    result = []
+    for r in rows:
+        if not isinstance(r, dict): continue
+        if r.get('scope') != 'EXACT_PRODUCT' or r.get('confidence') != 'HIGH': continue
+        if r.get('kind') not in {'MSRP', 'MARKET_SOLD'} or not r.get('source'): continue
+        if r.get('currency') != event.get('currency'): continue
+        family = event.get('product_family')
+        if not family or family == 'UNKNOWN' or r.get('family') != family: continue
+        region = str(event.get('region') or '').upper()
+        rr = str(r.get('region') or '').upper()
+        if rr != region and not (rr == 'GLOBAL' and family == 'GLOBAL_STANDARD'): continue
+        if r.get('kind') == 'MARKET_SOLD':
+            try:
+                count = r.get('sample_count')
+                captured = datetime.fromisoformat(r['captured_at'])
+                end = datetime.fromisoformat(r['expires_at'])
+                if (r.get('reviewed') is not True or isinstance(count, bool) or not isinstance(count, int) or count < 5
+                        or captured.tzinfo is None or end.tzinfo is None
+                        or captured > datetime.now(timezone.utc) or not 0 < (end-captured).total_seconds() <= 7*86400): continue
+            except (ValueError, KeyError, TypeError): continue
+        if r.get('expires_at'):
+            try:
+                expires = datetime.fromisoformat(r['expires_at'])
+                if expires.tzinfo is None or expires <= datetime.now(timezone.utc): continue
+            except (ValueError, TypeError): continue
+        if amount(r.get('amount')) is not None: result.append(r)
+    return result
+
 def reference(event):
-    r=event.get('reference_evidence')
-    if not isinstance(r,dict): return None
-    if r.get('scope')!='EXACT_PRODUCT' or r.get('confidence')!='HIGH': return None
-    if r.get('kind')!='MSRP' or not r.get('source'): return None
-    if r.get('currency')!=event.get('currency'): return None
-    family=event.get('product_family')
-    if not family or family=='UNKNOWN' or r.get('family')!=family: return None
-    region=str(event.get('region') or '').upper()
-    ref_region=str(r.get('region') or '').upper()
-    if ref_region!=region and not (ref_region=='GLOBAL' and family=='GLOBAL_STANDARD'): return None
-    return amount(r.get('amount'))
+    rows = qualifying_references(event)
+    return amount(rows[0]['amount']) if rows else None
+
+def deal_matches(event):
+    if event.get('event_type') == 'PRICE_INCREASE' or event.get('in_stock') is not True: return []
+    if event.get('event_type') not in {'DEAL', 'PRICE_DROP', 'PRICE_ERROR', 'RESTOCK', 'STOCK_AVAILABLE', 'DISCOVERED', 'PAGE_LIVE', 'PREORDER_LIVE'}: return []
+    current = amount(event.get('price'))
+    if current is None: return []
+    return [r for r in qualifying_references(event) if current <= amount(r['amount']) * Decimal('0.90')]
+
+def deal_title(event):
+    kinds = {r['kind'] for r in deal_matches(event)}
+    if kinds == {'MSRP', 'MARKET_SOLD'}: return '🔥 BELOW MSRP & MARKET'
+    return '🔥 BELOW MARKET' if 'MARKET_SOLD' in kinds else '🔥 BELOW MSRP'
+
 
 def classify(event):
     if event.get('event_type')=='PRICE_INCREASE': return 'HISTORY_ONLY'
+    if event.get('old_currency') not in (None,event.get('currency')): return 'CURRENCY_CHANGED'
+    if deal_matches(event): return 'DEAL'
     current,previous=amount(event.get('price')),amount(event.get('old_price'))
     if current is None or previous is None or current>=previous: return 'NO_VERIFIED_DECREASE'
     if event.get('old_currency') not in (None,event.get('currency')): return 'CURRENCY_CHANGED'
     # Quantize only for comparing noise, not for changing displayed prices.
     unit=Decimal('1') if event.get('currency') in {'JPY','KRW'} else Decimal('0.01')
     if current.quantize(unit)>=previous.quantize(unit): return 'ROUNDING_ONLY'
-    ref=reference(event)
-    if event.get('in_stock') is True and ref is not None and current<=ref*Decimal('0.90'):
-        return 'DEAL'
     return 'PRICE_DROP'
 
 def destination(event, environ=None):
@@ -56,31 +91,23 @@ def destination(event, environ=None):
 
 
 def explanation(event):
-    """Explain routing without treating a historical store price as market value."""
     result = classify(event)
-    reasons = []
     current, previous = amount(event.get('price')), amount(event.get('old_price'))
-    historical_drop = str((previous-current)*100/previous) if current and previous else None
-    if result == 'PRICE_DROP':
-        if event.get('in_stock') is not True:
-            reasons.append('STOCK_NOT_CONFIRMED')
-        r = event.get('reference_evidence')
-        if not isinstance(r, dict):
-            reasons.append('NO_REFERENCE_EVIDENCE')
-        else:
-            if r.get('scope') != 'EXACT_PRODUCT': reasons.append('REFERENCE_NOT_EXACT_PRODUCT')
-            if r.get('confidence') != 'HIGH': reasons.append('REFERENCE_NOT_HIGH_CONFIDENCE')
-            if r.get('kind') != 'MSRP': reasons.append('REFERENCE_NOT_MSRP')
-            if not r.get('source'): reasons.append('REFERENCE_SOURCE_MISSING')
-            if r.get('currency') != event.get('currency'): reasons.append('REFERENCE_CURRENCY_MISMATCH')
-            family = event.get('product_family')
-            if not family or family == 'UNKNOWN' or r.get('family') != family: reasons.append('REFERENCE_FAMILY_UNKNOWN_OR_MISMATCH')
-            region = str(event.get('region') or '').upper()
-            rr = str(r.get('region') or '').upper()
-            if rr != region and not (rr == 'GLOBAL' and family == 'GLOBAL_STANDARD'): reasons.append('REFERENCE_REGION_MISMATCH')
-            if amount(r.get('amount')) is None: reasons.append('REFERENCE_AMOUNT_INVALID')
-        ref = reference(event)
-        if ref is not None and current > ref * Decimal('0.90'):
+    reasons = []
+    refs = qualifying_references(event)
+    if result != 'DEAL':
+        if event.get('in_stock') is not True: reasons.append('STOCK_NOT_CONFIRMED')
+        if not event.get('reference_evidence'): reasons.append('NO_REFERENCE_EVIDENCE')
+        elif not refs: reasons.append('REFERENCE_INVALID_MISMATCHED_OR_EXPIRED')
+        elif current and not any(current <= amount(r['amount'])*Decimal('0.90') for r in refs):
             reasons.append('LESS_THAN_TEN_PERCENT_BELOW_REFERENCE')
-    return {'classification':result,'historical_drop_percent':historical_drop,
-            'deal_blockers':reasons,'reference_basis':'EXACT_PRODUCT_MSRP'}
+    return {'classification': result, 'historical_drop_percent': str((previous-current)*100/previous) if previous and current else None,
+        'deal_blockers': reasons, 'reference_basis': [r['kind'] for r in refs] or 'NONE',
+        'qualifying_bases': [r['kind'] for r in deal_matches(event)]}
+
+
+def deal_dedupe_key(event):
+    import hashlib
+    import json
+    fields = [str(event.get(k, '')) for k in ('source_type', 'game', 'store_name', 'product_url', 'price', 'currency')]
+    return 'lotus:deal:dedupe:' + hashlib.sha256(json.dumps(fields).encode()).hexdigest()
