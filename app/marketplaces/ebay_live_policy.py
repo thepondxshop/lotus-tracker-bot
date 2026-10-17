@@ -109,7 +109,9 @@ def assess(item, target, now=None):
         return block('EXCLUDED_PRODUCT')
     identity = gtin_status(item, target)
     if identity['reason'] != 'GTIN_MATCH':
-        return dict(eligible=False, **identity)
+        from app.marketplaces.ebay_listing_review import approved
+        if identity['reason'] != 'GTIN_MISSING' or not approved(item, target, now):
+            return dict(eligible=False, **identity)
     if str(item.get('conditionId')) != target['condition_id']:
         return block('CONDITION_MISMATCH')
     aspects = {folded(a.get('name')): folded(a.get('value')) for a in item.get('localizedAspects', []) if isinstance(a, dict)}
