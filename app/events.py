@@ -25,6 +25,7 @@ class ProductEventType(str, Enum):
     RESTOCK = "RESTOCK"
     SOLD_OUT = "SOLD_OUT"
 
+    DEAL = "DEAL"
     PRICE_DROP = "PRICE_DROP"
     PRICE_INCREASE = "PRICE_INCREASE"
     PRICE_ERROR = "PRICE_ERROR"
