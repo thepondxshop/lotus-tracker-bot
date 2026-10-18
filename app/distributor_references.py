@@ -1,3 +1,4 @@
+from app.distributor_units import unit_valid
 """Local evidence cache used by alert code; no network or database calls on dispatch."""
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -17,6 +18,9 @@ def install(rows,retailers=None):
     _CASES=[r for r in rows if r.get('product_type')=='BOOSTER BOX' and isinstance(r.get('case_quantity'),int) and 1<r['case_quantity']<=1000]
     rows=[dict(r,name_key=norm(r['name'])) for r in rows]
     for r in rows:
+        if not unit_valid(r):
+            r['ready']=False
+            r['issues']=list(dict.fromkeys(list(r.get('issues',[]))+['PRICE_UNIT_UNVERIFIED']))
         if packaging(r['name']) is None:
             r['ready']=False
             r['issues']=list(dict.fromkeys(list(r.get('issues',[]))+['PACKAGING_UNVERIFIED']))
@@ -64,6 +68,7 @@ def matched(event,now=None):
     valid=[]
     for r in candidates:
         try:
+            if not unit_valid(r,typ):continue
             if not r['ready'] or datetime.fromisoformat(r['expires_at'])<=now:continue
             # Revalidate persisted rows under current packaging rules.
             if packaging(r['name']) is None:continue
@@ -83,6 +88,7 @@ def matched(event,now=None):
         release_date=r['release_date'],release_date_source=r['source'],release_date_verified=True,
         captured_at=r['captured_at'],expires_at=r['expires_at'],match_method=method,
         source_sku=r['sku'],source_kind=r['source_kind'],product_url=event.get('product_url'))
+    if r.get('unit_evidence') is not None:result['unit_evidence']=dict(r['unit_evidence'])
     if derived:
         common=dict(reviewed=True,source=r['source'],captured_at=r['captured_at'],expires_at=r['expires_at'])
         result.update(product_type='CASE',game=event['game'],product_family=event['product_family'])
