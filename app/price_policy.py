@@ -22,6 +22,7 @@ def qualifying_references(event):
         if not isinstance(r, dict): continue
         if r.get('scope') != 'EXACT_PRODUCT' or r.get('confidence') != 'HIGH': continue
         if r.get('kind') not in {'MSRP', 'MARKET_SOLD'} or not r.get('source'): continue
+        if r.get('kind') == 'MSRP' and str(event.get('product_type', '')).strip().upper() in {'SINGLE', 'SINGLES', 'SINGLE CARD', 'GRADED CARD', 'SLAB'}: continue
         if r.get('currency') != event.get('currency'): continue
         family = event.get('product_family')
         if not family or family == 'UNKNOWN' or r.get('family') != family: continue
@@ -42,6 +43,11 @@ def qualifying_references(event):
                 expires = datetime.fromisoformat(r['expires_at'])
                 if expires.tzinfo is None or expires <= datetime.now(timezone.utc): continue
             except (ValueError, TypeError): continue
+        if r.get('derivation') is not None:
+            from app.case_msrp import calculated_case_amount
+            try:
+                if calculated_case_amount(r) != amount(r.get('amount')): continue
+            except (ValueError, TypeError, ArithmeticError): continue
         if amount(r.get('amount')) is not None: result.append(r)
     return result
 
@@ -49,23 +55,29 @@ def reference(event):
     rows = qualifying_references(event)
     return amount(rows[0]['amount']) if rows else None
 
-def deal_matches(event):
+def alert_matches(event):
     if event.get('event_type') == 'PRICE_INCREASE' or event.get('in_stock') is not True: return []
     if event.get('event_type') not in {'DEAL', 'PRICE_DROP', 'PRICE_ERROR', 'RESTOCK', 'STOCK_AVAILABLE', 'DISCOVERED', 'PAGE_LIVE', 'PREORDER_LIVE'}: return []
     current = amount(event.get('price'))
     if current is None: return []
-    return [r for r in qualifying_references(event) if current <= amount(r['amount']) * Decimal('0.90')]
+    return [r for r in qualifying_references(event) if (current < amount(r['amount']) if r['kind'] == 'MSRP' else current <= amount(r['amount']) * Decimal('0.90'))]
+
+def deal_matches(event):
+    current = amount(event.get('price'))
+    return [r for r in alert_matches(event) if current <= amount(r['amount']) * Decimal('0.90')]
 
 def deal_title(event):
-    kinds = {r['kind'] for r in deal_matches(event)}
-    if kinds == {'MSRP', 'MARKET_SOLD'}: return '🔥 BELOW MSRP & MARKET'
-    return '🔥 BELOW MARKET' if 'MARKET_SOLD' in kinds else '🔥 BELOW MSRP'
+    kinds = {r['kind'] for r in alert_matches(event)}
+    suffix = ' · DEAL' if deal_matches(event) else ''
+    if kinds == {'MSRP', 'MARKET_SOLD'}: return '🔥 BELOW MSRP & MARKET' + suffix
+    return ('🔥 BELOW MARKET' if 'MARKET_SOLD' in kinds else '🔥 BELOW MSRP') + suffix
 
 
 def classify(event):
     if event.get('event_type')=='PRICE_INCREASE': return 'HISTORY_ONLY'
     if event.get('old_currency') not in (None,event.get('currency')): return 'CURRENCY_CHANGED'
     if deal_matches(event): return 'DEAL'
+    if alert_matches(event): return 'BELOW_MSRP'
     current,previous=amount(event.get('price')),amount(event.get('old_price'))
     if current is None or previous is None or current>=previous: return 'NO_VERIFIED_DECREASE'
     if event.get('old_currency') not in (None,event.get('currency')): return 'CURRENCY_CHANGED'
@@ -77,9 +89,9 @@ def classify(event):
 def destination(event, environ=None):
     env=os.environ if environ is None else environ
     result=classify(event)
-    if result not in {'DEAL','PRICE_DROP'}: return {'classification':result,'variable':None,'channel_id':None}
+    if result not in {'DEAL','BELOW_MSRP','PRICE_DROP'}: return {'classification':result,'variable':None,'channel_id':None}
     global_store=str(event.get('region') or '').upper() not in US
-    if result=='DEAL':
+    if result in {'DEAL','BELOW_MSRP'}:
         # Explicit case metadata only; a booster box is not automatically a case.
         is_case=str(event.get('product_type') or '').upper() in {'CASE','SEALED CASE','BOOSTER CASE'}
         variable='CHANNEL_CASE_SEALED_DEALS' if is_case else ('CHANNEL_GLOBAL_DEALS' if global_store else 'CHANNEL_DEALS')
@@ -95,7 +107,7 @@ def explanation(event):
     current, previous = amount(event.get('price')), amount(event.get('old_price'))
     reasons = []
     refs = qualifying_references(event)
-    if result != 'DEAL':
+    if result not in {'DEAL','BELOW_MSRP'}:
         if event.get('in_stock') is not True: reasons.append('STOCK_NOT_CONFIRMED')
         if not event.get('reference_evidence'): reasons.append('NO_REFERENCE_EVIDENCE')
         elif not refs: reasons.append('REFERENCE_INVALID_MISMATCHED_OR_EXPIRED')
@@ -103,7 +115,7 @@ def explanation(event):
             reasons.append('LESS_THAN_TEN_PERCENT_BELOW_REFERENCE')
     return {'classification': result, 'historical_drop_percent': str((previous-current)*100/previous) if previous and current else None,
         'deal_blockers': reasons, 'reference_basis': [r['kind'] for r in refs] or 'NONE',
-        'qualifying_bases': [r['kind'] for r in deal_matches(event)]}
+        'qualifying_bases': [r['kind'] for r in alert_matches(event)], 'is_deal': bool(deal_matches(event))}
 
 
 def deal_dedupe_key(event):
