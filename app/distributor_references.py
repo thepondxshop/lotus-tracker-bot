@@ -15,14 +15,16 @@ COUNTS=Counter()
 def install(rows,retailers=None):
     global _ROWS,_NAMES,_SKUS,_RETAIL,_CASES
     _CASES=[r for r in rows if r.get('product_type')=='BOOSTER BOX' and isinstance(r.get('case_quantity'),int) and 1<r['case_quantity']<=1000]
+    rows=[dict(r,name_key=norm(r['name'])) for r in rows]
+    _CASES=[dict(r,name_key=norm(r['name'])) for r in _CASES]
     _ROWS=list(rows);_NAMES=defaultdict(list);_SKUS=defaultdict(list)
     for r in rows:
         _NAMES[r['name_key']].append(r);_SKUS[r['sku'].upper()].append(r)
     if retailers is not None:_RETAIL={r['product_url']:r for r in retailers}
 
 def type_key(value):
-    value=str(value or '').upper().strip()
-    return {'BOOSTER DISPLAY':'BOOSTER BOX','BOOSTER CASE':'CASE','SEALED CASE':'CASE','ETB':'ELITE TRAINER BOX'}.get(value,value)
+    value=' '.join(re.sub(r'[_-]+',' ',str(value or '')).upper().split())
+    return {'BOOSTER DISPLAY':'BOOSTER BOX','BOOSTER CASE':'CASE','SEALED CASE':'CASE','ETB':'ELITE TRAINER BOX','BOOSTER DISPLAY BOX':'BOOSTER BOX','COLLECTOR BOOSTER BOX':'BOOSTER BOX','PLAY BOOSTER BOX':'BOOSTER BOX','DRAFT BOOSTER BOX':'BOOSTER BOX','SET BOOSTER BOX':'BOOSTER BOX'}.get(value,value)
 
 def game_matches(game,title):
     aliases={'MTG':'magic the gathering','Pokemon':'pokemon','Yu-Gi-Oh!':'yu gi oh',
