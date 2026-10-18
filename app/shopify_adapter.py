@@ -1,3 +1,4 @@
+from app.case_identity import personal_case_format
 from app.merchandise_guard import building_product
 from app.store_currency_fallback import currency_for_store
 from app import collection_priority
@@ -869,6 +870,10 @@ def infer_product_type(
     tags=None,
 ):
 
+    case_format = personal_case_format(title)
+    if case_format:
+        return case_format[0]
+
     mtg = mtg_product_details(title, raw_type, tags)
     if mtg:
         return mtg[1]
@@ -1117,6 +1122,10 @@ def infer_product_category(
     raw_type=None,
     tags=None,
 ):
+
+    case_format = personal_case_format(title)
+    if case_format:
+        return case_format[1]
 
     mtg = mtg_product_details(title, raw_type, tags)
     if mtg:
