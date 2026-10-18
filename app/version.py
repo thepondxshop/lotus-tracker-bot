@@ -1,14 +1,14 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.4.0'
-RELEASE_KIND = 'regular'
+VERSION = '1.4.1'
+RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Public ACD, GTS and PHD MSRP and release-date evidence now refreshes into persistent storage.',
-    'Exact retailer matches feed the existing strict MSRP/30-day market policy; ambiguous packaging and conflicting prices remain blocked.',
-    'Expanded eBay search coverage and added narrow multi-field matching for GTIN-less English 151 bundles.',
-    'New distributor coverage and eBay price diagnostics show remaining data gaps; live activation gates remain in place.',
+    'Seller diagnostics now distinguish missing or invalid feedback from below-minimum feedback.',
+    'English item specifics satisfy the 151 bundle language check without repeating English in the title.',
+    'Distributor matching normalizes packaging labels and preorder/sealed wording; coverage diagnostics expose unmatched examples.',
 )
+
 
 def build_id():
     return os.getenv('RAILWAY_GIT_COMMIT_SHA', 'unknown')[:12]
