@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from app.marketplaces.opportunity import number, timestamp
 
-POLICY = 'EBAY-LIVE2-ITEM-ONLY-AGG1-REVIEW1-LOT1'
+POLICY = 'EBAY-LIVE3-ITEM-ONLY-IDENTITY2-DIST1'
 
 def identity_key(target):
     fields={k:target[k] for k in ('gtin','condition_id','aspects','quantity','currency')}
