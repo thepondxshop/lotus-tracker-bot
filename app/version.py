@@ -1,11 +1,12 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.4.4'
+VERSION = '1.4.5'
 RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Card cases, sleeve sets and collector briefcases no longer route to sealed-case alerts.',
-    'Queued case misclassifications are corrected before pricing and channel routing.',
+    'GTS MSRP requires explicit matching price-unit evidence; generic Each/default prices are blocked.',
+    'Cached and queued GTS references without verified units no longer qualify as below-MSRP deals.',
+    'Repeated identical reference evidence is deduplicated during enrichment.',
 )
 
 
