@@ -6,7 +6,7 @@ from app.price_policy import classify, destination, deal_title, alert_matches, P
 from app.case_msrp import calculated_case_amount
 NOW=datetime.now(timezone.utc)
 def ref(kind='MSRP'):
-    return dict(kind=kind, amount='100', scope='EXACT_PRODUCT', confidence='HIGH',currency='USD',family='GLOBAL_STANDARD',region='US',source='https://example.com/product',reviewed=True,sample_count=10,captured_at=NOW.isoformat(),expires_at=(NOW+timedelta(days=2)).isoformat())
+    return dict(kind=kind, amount='100', scope='EXACT_PRODUCT', confidence='HIGH',currency='USD',family='GLOBAL_STANDARD',region='US',source='https://example.com/product',reviewed=True,sample_count=10,release_date_verified=True,release_date=(NOW-timedelta(days=40)).date().isoformat(),release_date_source='https://example.com/release',captured_at=NOW.isoformat(),expires_at=(NOW+timedelta(days=2)).isoformat())
 def event(price='99.99',kind='MSRP',**kw):
     e=dict(event_type='DEAL',price=price,in_stock=True,currency='USD',region='US',product_family='GLOBAL_STANDARD',product_type='Booster Box',reference_evidence=ref(kind));e.update(kw);return e
 def case():
