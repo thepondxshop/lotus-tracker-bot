@@ -1203,6 +1203,9 @@ class LotusTrackerBot(
 
         from app.marketplaces.ebay_live import start as start_ebay_live
         start_ebay_live(self)
+        if self.database_ready:
+            from app.distributor_sync import start as start_distributor_sync
+            start_distributor_sync(self)
 
         start_x_monitor(self)
 
@@ -1217,6 +1220,8 @@ class LotusTrackerBot(
     async def close(self):
         from app.marketplaces.ebay_live import stop as stop_ebay_live
         await stop_ebay_live(self)
+        from app.distributor_sync import stop as stop_distributor_sync
+        await stop_distributor_sync(self)
         await stop_x_monitor(self)
         await stop_release_ingestion(self)
         await super().close()
