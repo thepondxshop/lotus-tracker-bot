@@ -11,7 +11,7 @@ NEW_TCG = "New TCG — identity unverified"
 JURASSIC_TCG = "Jurassic Park TCG"
 FUSION_WORLD_GAME = "Dragon Ball Fusion World"
 FUSION_WORLD_PATTERN = re.compile(
-    r"\b(?:(?:dragon\s*ball(?:\s+super)?(?:\s+card\s+game)?|dbs(?:cg)?)"
+    r"\b(?:(?:dragon\s*ball(?:\s+super)?(?:\s+(?:card\s+game|tcg|ccg))?|dbs(?:cg)?)"
     r"\s+(?:fusion\s*world|fw)|fusion\s*world\s+(?:tcg|card\s+game))\b"
 )
 DISCOVERY_GAMES = frozenset({NEW_TCG, JURASSIC_TCG})
