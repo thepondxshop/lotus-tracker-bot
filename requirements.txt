@@ -7,3 +7,6 @@ alembic
 
 Pillow>=11.3,<13
 cryptography>=46.0.4,<51
+
+# Local persistence integration tests (production continues to use PostgreSQL).
+aiosqlite>=0.20,<1
