@@ -91,5 +91,7 @@ def enrich(event):
             release = distributor_refs[0]
             refs = [dict(r, release_date=release['release_date'], release_date_source=release['source'],release_date_verified=True)
                     if isinstance(r,dict) and r.get('kind')=='MARKET_SOLD' and not r.get('release_date_verified') else r for r in refs]
-        event['reference_evidence'] = {'references': refs}
+        # Repeated enrichment must not render the same reference twice.
+        unique={json.dumps(r,sort_keys=True,default=str):r for r in refs}
+        event['reference_evidence'] = {'references': list(unique.values())}
     return event
