@@ -7,14 +7,15 @@ _TURNS = {}
 WAITING = set()
 
 
-def tcg_candidate(handle, title=""):
-    # Block explicit unrelated categories, retaining mixed TCG collections.
+def explicit_tcg(handle, title=""):
     probe = re.sub(r"[-_]+", " ", f"{handle} {title}".lower())
-    if re.search(r"\b(?:tcg|ccg|trading cards?|card games?)\b", probe):
-        return True
-    if re.search(r"\b(?:pokemon|pokémon|one piece|riftbound|magic the gathering|mtg|lorcana|union arena|weiss|azuki|horo beat)\b", probe):
-        return True
-    return not re.search(r"\b(?:board games?|warhammer|miniatures?|model kits?|jigsaw puzzles?)\b", probe)
+    return bool(re.search(r"\b(?:tcg|ccg|trading cards?|card games?|pokemon|pokémon|one piece|riftbound|magic the gathering|mtg|lorcana|union arena|weiss|azuki|horo beat|fusion world|dragon ball|final fantasy|cookie run|cookierun|gundam)\b", probe))
+
+
+def tcg_candidate(handle, title=""):
+    probe = re.sub(r"[-_]+", " ", f"{handle} {title}".lower())
+    if explicit_tcg(handle,title):return True
+    return not re.search(r"\b(?:comics?|graphic novels?|manga|dungeons (?:and |& )?dragons|dnd|role playing|rpg|funko|board games?|warhammer|miniatures?|model kits?|jigsaw puzzles?)\b", probe)
 
 
 def record(domain, handle, page, tcg_count):
@@ -38,6 +39,9 @@ def choose(domain, rows, last_check, deferred, now):
     cold = [r for r in ready if r not in hot]
     turn = _TURNS.get(domain, 0)
     pool = cold if cold and (not hot or turn % 3 == 2) else hot or cold
+    # Explore explicit TCG feeds before generic preorder/mixed feeds.
+    focused = [r for r in pool if explicit_tcg(r[1],r[2] if len(r)>2 else '')]
+    pool = focused or pool
     row = min(pool, key=lambda r: last_check.get((domain, r[1]), -1))
     _TURNS[domain] = turn + 1
     key = (domain, row[1])
