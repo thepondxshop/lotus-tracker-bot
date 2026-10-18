@@ -16,6 +16,10 @@ def install(rows,retailers=None):
     global _ROWS,_NAMES,_SKUS,_RETAIL,_CASES
     _CASES=[r for r in rows if r.get('product_type')=='BOOSTER BOX' and isinstance(r.get('case_quantity'),int) and 1<r['case_quantity']<=1000]
     rows=[dict(r,name_key=norm(r['name'])) for r in rows]
+    for r in rows:
+        if packaging(r['name']) is None:
+            r['ready']=False
+            r['issues']=list(dict.fromkeys(list(r.get('issues',[]))+['PACKAGING_UNVERIFIED']))
     _CASES=[dict(r,name_key=norm(r['name'])) for r in _CASES]
     _ROWS=list(rows);_NAMES=defaultdict(list);_SKUS=defaultdict(list)
     for r in rows:
@@ -61,6 +65,8 @@ def matched(event,now=None):
     for r in candidates:
         try:
             if not r['ready'] or datetime.fromisoformat(r['expires_at'])<=now:continue
+            # Revalidate persisted rows under current packaging rules.
+            if packaging(r['name']) is None:continue
             if type_key(r['product_type'])!=typ or not game_matches(event.get('game',''),r['name']):continue
             if datetime.fromisoformat(r['captured_at'])>now:continue
         except (KeyError,TypeError,ValueError):continue
