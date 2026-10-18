@@ -1,12 +1,12 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.3.3'
+VERSION = '1.3.4'
 RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Case product alerts now share the case channel, including discoveries, restocks and price drops.',
-    'Qualifying cases retain Below MSRP and Deal labels in the same channel.',
-    'Sealed products become eligible for sold-market comparisons 30 days after their verified release date; MSRP comparisons remain active.',
+    'Corrected sealed pricing: MSRP applies only before release plus 30 days; thereafter only verified market deals qualify.',
+    'No MSRP fallback after the cutoff when market evidence is unavailable.',
+    'Added explicit reference-window diagnostics and public distributor MSRP extraction checks.',
 )
 
 def build_id():
