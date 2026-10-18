@@ -97,6 +97,52 @@ def gtin_status(item, target):
             'product_container_present': isinstance(item.get('product'), dict)}
 
 
+def lot_status(item, target):
+    """Zero/omitted lot metadata is inconclusive, never proof of a single unit."""
+    raw = item.get('lotSize')
+    if raw is not None:
+        if isinstance(raw, bool) or not re.fullmatch(r'[0-9]+', str(raw)):
+            return 'LOT_SIZE_INVALID'
+        if int(raw) > 1:
+            return 'MULTI_UNIT_LOT'
+    title = folded(item.get('title', ''))
+    count = r'(?:[2-9]|[1-9][0-9]+|two|three|four|five|six|seven|eight|nine|ten)'
+    patterns = [r'\b(?:lot|set|case) of ' + count + r'\b',
+                r'\b' + count + r'\s*[x×]\s*',
+                r'\b(?!151\b)' + count + r'\s+(?:booster\s+)?(?:bundles?|boxes)\b',
+                r'\b(?:bundles?|boxes)\s*[x×]\s*' + count + r'\b']
+    if any(re.search(p, title) for p in patterns):
+        return 'MULTI_UNIT_LOT'
+    if target.get('id') == 'pokemon-151-bundle-en':
+        for a in item.get('localizedAspects') or []:
+            if isinstance(a, dict) and folded(a.get('name')) == 'number of packs':
+                value = folded(a.get('value'))
+                if re.search(r'[x×]', value): return 'MULTI_UNIT_LOT'
+                if value and value not in {'6', 'six', '6 packs', 'six packs'}:
+                    return 'PACK_COUNT_UNVERIFIED'
+    return None
+
+
+def review_diagnostics(item, target, now=None):
+    """Independent observations; price-only eligibility is never permission to send."""
+    from app.marketplaces.ebay_evidence import comparison
+    now = now or datetime.now(timezone.utc)
+    aspects = {folded(a.get('name')): folded(a.get('value'))
+               for a in item.get('localizedAspects') or [] if isinstance(a, dict)}
+    mismatches = [k for k,v in target.get('aspects', {}).items() if aspects.get(folded(k)) != folded(v)]
+    auction = 'AUCTION' in (item.get('buyingOptions') or [])
+    price = item.get('minimumPriceToBid' if auction else 'price') or {}
+    benchmark = comparison(target, now) if target.get('comparison_mode') == 'ITEM_ONLY' else {}
+    price_only = evaluate_item_only(price.get('value'), target, auction, now) if price.get('currency') == target.get('currency') and benchmark else {}
+    return {'identity': gtin_status(item, target), 'lot_blocker': lot_status(item, target),
+            'lot_metadata': 'UNSPECIFIED' if item.get('lotSize') in (None, 0, '0') else 'REPORTED',
+            'aspect_mismatches': mismatches, 'benchmark_ready': benchmark.get('ready', False),
+            'item_price_threshold': benchmark.get('threshold'),
+            'price_only_meets_threshold': price_only.get('eligible', False),
+            'price_only_note': 'Does not validate identity, stock, seller or auction timing',
+            'assessment': assess(item, target, now).get('reason', 'ELIGIBLE')}
+
+
 def assess(item, target, now=None):
     now = now or datetime.now(timezone.utc)
     def block(reason): return {'eligible': False, 'reason': reason}
@@ -107,6 +153,9 @@ def assess(item, target, now=None):
     blocked = ['empty box', 'box only', 'digital code', 'proxy', 'replica', 'repack', 'mystery', 'break spot'] + target.get('excluded_terms', [])
     if any(folded(x) in title for x in blocked):
         return block('EXCLUDED_PRODUCT')
+    lot_reason = lot_status(item, target)
+    if lot_reason:
+        return block(lot_reason)
     identity = gtin_status(item, target)
     if identity['reason'] != 'GTIN_MATCH':
         from app.marketplaces.ebay_listing_review import approved
@@ -119,8 +168,6 @@ def assess(item, target, now=None):
         return block('ASPECT_MISMATCH')
     if item.get('itemGroupType') or item.get('itemGroupHref') or item.get('itemGroupId'):
         return block('VARIATION_GROUP')
-    if (str(item.get('lotSize', '1')) != '1' or re.search(r'\b(?:lot|set|case) of [2-9]\d*\b|\b[2-9]\d*\s*[x×]\s*|\b[2-9]\d*\s+booster bundles?\b', title)):
-        return block('MULTI_UNIT_LOT')
     if item.get('itemLocation', {}).get('country') != 'US':
         return block('IMPORT_COSTS_NOT_SUPPORTED_IN_PILOT')
     seller = item.get('seller') or {}
