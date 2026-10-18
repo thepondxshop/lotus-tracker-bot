@@ -124,7 +124,15 @@ def parse(url,html):
                 elif typ=='CASE' and label in {'case','cs'}:codes.append(code)
                 elif typ in {'BOOSTER PACK','SLEEVED BOOSTER PACK'} and label in {'pack','ea','each'}:codes.append(code)
             source=urljoin(url,p.get('link',''))
-            rows.append(record(source,p.get('sku',''),title,price,p.get('release_date_display') or p.get('release_date'),'GTS',codes,int(cq[1]) if cq else None,case_code))
+            from app.distributor_units import unit_valid
+            entry=record(source,p.get('sku',''),title,price,p.get('release_date_display') or p.get('release_date'),'GTS',codes,int(cq[1]) if cq else None,case_code)
+            units=[u for u in p.get('uomPrice',[]) if u.get('isDefault') is True or u.get('IsDefault') is True]
+            if len(units)==1:
+                entry['unit_evidence']={'schema':'GTS_UOM1','label':units[0].get('UomName'),'field':'UomName','source':source,'amount':money(units[0].get('SRetailPrice'))}
+            if not unit_valid(entry):
+                entry['ready']=False
+                entry['issues'].append('PRICE_UNIT_UNVERIFIED')
+            rows.append(entry)
     elif host=='phdgames.com':
         # Only dated article pages: listing excerpts are incomplete and may mix SKUs.
         if re.fullmatch(r'/\d{4}/\d{2}/\d{2}/[^/]+/?',urlsplit(url).path):
