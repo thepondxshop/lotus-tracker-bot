@@ -159,7 +159,8 @@ def assess(item, target, now=None):
     identity = gtin_status(item, target)
     if identity['reason'] != 'GTIN_MATCH':
         from app.marketplaces.ebay_listing_review import approved
-        if identity['reason'] != 'GTIN_MISSING' or not approved(item, target, now):
+        from app.marketplaces.ebay_identity import multi_field_identity
+        if identity['reason'] != 'GTIN_MISSING' or not (approved(item, target, now) or multi_field_identity(item, target)):
             return dict(eligible=False, **identity)
     if str(item.get('conditionId')) != target['condition_id']:
         return block('CONDITION_MISMATCH')
@@ -219,7 +220,7 @@ def assess(item, target, now=None):
     url = urlsplit(str(item.get('itemWebUrl', '')))
     if url.scheme != 'https' or url.hostname not in {'www.ebay.com', 'ebay.com'} or url.username or url.password:
         return block('INVALID_LISTING_URL')
-    result.update(title=str(item['title'])[:230], url=item['itemWebUrl'], auction=auction,
+    result.update(identity_method='GTIN' if identity['reason']=='GTIN_MATCH' else 'REVIEWED_LISTING' if approved(item,target,now) else 'MULTI_FIELD_151', title=str(item['title'])[:230], url=item['itemWebUrl'], auction=auction,
                   price=str(price['value']), shipping=str(shipping) if shipping is not None else None, tax_rate=target.get('tax_rate'),
                   destination_zip=target.get('destination_zip'), ends_at=item.get('itemEndDate'),
                   observed_at=now.isoformat(), game=target['game'], currency=target['currency'])
