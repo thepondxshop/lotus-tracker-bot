@@ -2430,7 +2430,9 @@ class ShopifyAdapter:
                 if len(collections) < 250:
                     break
 
-        ranked = sorted(candidates.values())[:MAX_PRIORITY_COLLECTIONS]
+        # Relevance precedes preorder wording before applying the collection cap.
+        ranked = sorted(candidates.values(), key=lambda row: (
+            not collection_priority.explicit_tcg(row[1], row[2]), row))[:MAX_PRIORITY_COLLECTIONS]
         # Never cache an empty discovery result. An empty result may simply
         # mean a transient 429/5xx response; caching it would blind the fast
         # lane for the full cache window.
