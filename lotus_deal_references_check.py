@@ -24,4 +24,4 @@ if __name__ == '__main__':
     now = datetime.now(timezone.utc)
     print(json.dumps({'path': str(dest), 'exists': dest.exists(), 'references': len(rows),
         'unexpired': sum(datetime.fromisoformat(r['expires_at']) > now for r in rows),
-        'alerts_sent': 0, 'automatic_distributor_feed': False}, indent=2))
+        'alerts_sent': 0, 'automatic_distributor_feed': 'DATABASE_BACKED_CHECK_WITH_lotus_distributor_sync_check.py', 'distributor_sync_enabled': os.getenv('LOTUS_DISTRIBUTOR_SYNC_ENABLED','true').lower() in {'true','1','yes'}}, indent=2))
