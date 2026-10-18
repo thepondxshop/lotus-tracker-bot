@@ -24,7 +24,7 @@ def event(**kw):
 def ref(kind='MSRP'):
     r = event();r.pop('event_type');r.update(amount='100', kind=kind, scope='EXACT_PRODUCT', confidence='HIGH',
         family='GLOBAL_STANDARD', reviewed=True, source='https://example.com/evidence',
-        captured_at=NOW.isoformat(), expires_at=(NOW+timedelta(days=2)).isoformat(), sample_count=10)
+        captured_at=NOW.isoformat(), expires_at=(NOW+timedelta(days=2)).isoformat(), sample_count=10,release_date_verified=True,release_date=(NOW-timedelta(days=40)).date().isoformat(),release_date_source='https://example.com/release')
     return r
 
 class LaunchTests(unittest.TestCase):
