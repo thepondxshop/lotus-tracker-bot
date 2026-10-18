@@ -1,12 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.3.4'
+VERSION = '1.4.0'
 RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Corrected sealed pricing: MSRP applies only before release plus 30 days; thereafter only verified market deals qualify.',
-    'No MSRP fallback after the cutoff when market evidence is unavailable.',
-    'Added explicit reference-window diagnostics and public distributor MSRP extraction checks.',
+    'Public ACD, GTS and PHD MSRP and release-date evidence now refreshes into persistent storage.',
+    'Exact retailer matches feed the existing strict MSRP/30-day market policy; ambiguous packaging and conflicting prices remain blocked.',
+    'Expanded eBay search coverage and added narrow multi-field matching for GTIN-less English 151 bundles.',
+    'New distributor coverage and eBay price diagnostics show remaining data gaps; live activation gates remain in place.',
 )
 
 def build_id():
