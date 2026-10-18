@@ -2133,6 +2133,9 @@ class ShopifyAdapter:
                 if required:
                     raise ShopifyRateLimitError(429,f"Store cooldown active for {remaining:.1f}s",url=url,purpose=purpose)
                 return None
+            if shopify_pacing.is_general(purpose) and not shopify_pacing.begin_general_attempt(self.domain):
+                self.diagnostics['general_feed_skipped'] = 1
+                return None
             retry_5xx = 0
 
             while True:
@@ -2185,7 +2188,9 @@ class ShopifyAdapter:
                                         and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
                                     _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
                                     print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C19")
-                                shopify_pacing.succeeded(self.domain)
+                                # Only a valid products payload can clear general endpoint recovery.
+                                valid_general = isinstance(data, dict) and isinstance(data.get('products'), list) and all(isinstance(p, dict) for p in data['products'])
+                                shopify_pacing.succeeded(self.domain, purpose if valid_general else None)
                                 return data
                             except Exception as error:
                                 if required:
@@ -2199,7 +2204,7 @@ class ShopifyAdapter:
 
                         if status == 429:
                             self.diagnostics["http_429"] += 1
-                            shopify_pacing.throttled(self.domain)
+                            shopify_pacing.throttled(self.domain, purpose)
                             failures=_DOMAIN_THROTTLE_FAILURES.get(self.domain,0)
                             wait_seconds=_retry_after_seconds(response.headers.get("Retry-After"),failures)
                             _DOMAIN_THROTTLE_FAILURES[self.domain]=failures+1
@@ -2502,10 +2507,11 @@ class ShopifyAdapter:
             # After the domain cooldown, check ONE collection from known links.
             # Do not permanently strand recovery on an empty or failing head.
             # No discovery requests or fallback requests in this recovery pass.
-            priority_collections = (_recovery_collection(self.domain) if recovery
+            general_probe = recovery and shopify_pacing.general_blocked(self.domain) and shopify_pacing.general_due(self.domain)
+            priority_collections = ([] if general_probe else _recovery_collection(self.domain) if recovery
                                     else await self._discover_priority_collections(session))
             recovery_collection = bool(recovery and priority_collections)
-            self.diagnostics['limited_coverage'] = bool(recovery and (recovery_collection or self.domain in collection_priority.WAITING))
+            self.diagnostics['limited_coverage'] = bool(recovery and not general_probe and (recovery_collection or self.domain in collection_priority.WAITING))
             if recovery_collection:
                 self.diagnostics['priority_collections'] = 1
                 print(f"SHOPIFY RECOVERY COVERAGE | Store={self.domain} | "
@@ -2700,7 +2706,14 @@ class ShopifyAdapter:
                 # Recovery checks the small head and preserves the deep cursor.
                 run_general = not self.diagnostics['limited_coverage']
                 cursor = 1
-            page_limit = 25 if recovery else 250
+            if not shopify_pacing.general_due(self.domain):
+                run_general = False
+                self.diagnostics['limited_coverage'] = True
+            if general_probe:
+                run_general = True
+                self.diagnostics['limited_coverage'] = True
+                print(f'SHOPIFY GENERAL PROBE | Store={self.domain} | Limit=250 | ReplacesCollectionSlot=True')
+            page_limit = 250 if general_probe else 25 if recovery else 250
             general_pages = 0
             if run_general:
                 # Set this before requesting so a rate-limited general scan is
