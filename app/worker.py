@@ -1,5 +1,5 @@
 from app.merchandise_guard import building_product
-from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price, deal_matches, alert_matches, deal_title, deal_dedupe_key
+from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price, deal_matches, alert_matches, deal_title, deal_dedupe_key, case_destination
 from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
 from app.display_time import new_york_now
 from app.regional_routes import route_decision, routing_status
@@ -1518,6 +1518,13 @@ async def route_event_to_discord(
         if not price_route['channel_id']:
             print('LOTUS PRICE ROUTE BLOCKED | ' + json.dumps(price_route), flush=True)
             return False
+
+    case_route = case_destination(event)
+    if case_route is not None:
+        if not case_route['channel_id']:
+            print('LOTUS CASE ROUTE BLOCKED | CHANNEL_CASE_SEALED_DEALS missing', flush=True)
+            return False
+        destination = case_route
 
     regional_id = destination["channel_id"]
     channel_id = regional_id or channel_id
