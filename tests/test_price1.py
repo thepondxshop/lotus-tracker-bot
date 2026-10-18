@@ -8,9 +8,9 @@ from app.marketplaces.opportunity import evaluate
 
 class PriceTest(unittest.TestCase):
     def event(self,**kw):
-        e=dict(event_type='PRICE_DROP',price=90,old_price=100,currency='USD',product_family='GLOBAL_STANDARD',region='US',in_stock=True,source_type='shopify')
+        e=dict(product_type='Booster Box',event_type='PRICE_DROP',price=90,old_price=100,currency='USD',product_family='GLOBAL_STANDARD',region='US',in_stock=True,source_type='shopify')
         e.update(kw); return e
-    def ref(self): return dict(amount=100,currency='USD',scope='EXACT_PRODUCT',confidence='HIGH',kind='MSRP',source='Publisher fixture',region='US',family='GLOBAL_STANDARD')
+    def ref(self): return dict(release_date_verified=True,release_date_source='https://example.com/release',release_date=(datetime.now(timezone.utc)-timedelta(days=5)).date().isoformat(),amount=100,currency='USD',scope='EXACT_PRODUCT',confidence='HIGH',kind='MSRP',source='Publisher fixture',region='US',family='GLOBAL_STANDARD')
     def test_increase_and_tiny_drop(self):
         self.assertEqual(classify(self.event(event_type='PRICE_INCREASE',price=101)),'HISTORY_ONLY')
         self.assertEqual(classify(self.event(price='99.99')),'PRICE_DROP')
