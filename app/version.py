@@ -1,12 +1,11 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.4.3'
+VERSION = '1.4.4'
 RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Successful Shopify collection requests no longer clear a blocked general-catalog endpoint.',
-    'General-catalog recovery uses a separate 15/30/60-minute probe schedule while collection polling continues.',
-    'Dragon Ball Super TCG: Fusion World titles now map to the existing Fusion World game.',
+    'Card cases, sleeve sets and collector briefcases no longer route to sealed-case alerts.',
+    'Queued case misclassifications are corrected before pricing and channel routing.',
 )
 
 
