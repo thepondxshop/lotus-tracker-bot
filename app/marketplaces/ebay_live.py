@@ -232,7 +232,7 @@ async def loop(bot, store, leader, mode):
                         auction = index%2 == 1
                         index += 1
                         epoch = await store.epoch()
-                        data = await api.get('item_summary/search', {'gtin':target['gtin'],'limit':'5',
+                        data = await api.get('item_summary/search', {('gtin' if ((index-1)//(2*len(targets)))%2 == 0 else 'q'): (target['gtin'] if ((index-1)//(2*len(targets)))%2 == 0 else ' '.join(target['required_terms'])), 'limit':'20',
                             'sort':'endingSoonest' if auction else 'newlyListed',
                             'filter':'buyingOptions:{'+('AUCTION' if auction else 'FIXED_PRICE')+'},itemLocationCountry:US'}, target)
                         reasons = Counter()
@@ -240,9 +240,9 @@ async def loop(bot, store, leader, mode):
                         if not isinstance(rows, list) or 'errors' in data:
                             raise ValueError('Invalid search response')
                         # One detail request per cycle keeps the pilot near 120
-                        # Browse calls/hour; rotate among the first five results.
-                        candidates = rows[:5]
-                        selected = [candidates[((index-1)//(2*len(targets))) % len(candidates)]] if candidates else []
+                        # Browse calls/hour; rotate among up to twenty results, alternating GTIN and title searches.
+                        candidates = rows[:20]
+                        selected = [candidates[((index-1)//(4*len(targets))) % len(candidates)]] if candidates else []
                         for row in selected:
                             iid = row.get('itemId')
                             if not isinstance(iid,str) or len(iid)>200:
@@ -253,6 +253,13 @@ async def loop(bot, store, leader, mode):
                                 reasons['ITEM_ID_MISMATCH']+=1; continue
                             result = assess(item,target)
                             identity = gtin_status(item, target)
+                            from app.marketplaces.ebay_live_policy import review_diagnostics
+                            diagnostic = review_diagnostics(item, target)
+                            log('PRICE_ASSESSMENT', target=target['id'], auction=auction,
+                                benchmark_ready=diagnostic['benchmark_ready'],
+                                item_price_threshold=diagnostic['item_price_threshold'],
+                                price_only_meets_threshold=diagnostic['price_only_meets_threshold'],
+                                assessment=result.get('reason','ELIGIBLE'), identity_method=result.get('identity_method'))
                             log('IDENTITY_CHECK', target=target['id'], auction=auction,
                                 fieldgroups='PRODUCT', assessment_reason=result.get('reason', 'ELIGIBLE'),
                                 **identity)
