@@ -1,12 +1,12 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.4.2'
+VERSION = '1.4.3'
 RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Shopify recovery excludes comic-only and tabletop-only collections and prioritizes explicit TCG collections.',
-    'TCG relevance now ranks ahead of generic preorder wording during collection discovery.',
-    'Ambiguous pack/deck display MSRP is blocked, including previously cached distributor records.',
+    'Successful Shopify collection requests no longer clear a blocked general-catalog endpoint.',
+    'General-catalog recovery uses a separate 15/30/60-minute probe schedule while collection polling continues.',
+    'Dragon Ball Super TCG: Fusion World titles now map to the existing Fusion World game.',
 )
 
 
