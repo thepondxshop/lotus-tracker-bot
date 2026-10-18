@@ -1,5 +1,5 @@
 from app.merchandise_guard import building_product
-from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price, deal_matches, deal_title, deal_dedupe_key
+from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price, deal_matches, alert_matches, deal_title, deal_dedupe_key
 from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
 from app.display_time import new_york_now
 from app.regional_routes import route_decision, routing_status
@@ -262,9 +262,9 @@ def validate_event_game(event):
 # =========================================================
 
 def determine_alert_route(event):
-    if classify_price(event) == 'DEAL': return 'deal'
-    if event.get('event_type') in PRICE_EVENTS or classify_price(event) == 'DEAL':
-        if classify_price(event) not in {'DEAL', 'PRICE_DROP'}:
+    if classify_price(event) in {'DEAL', 'BELOW_MSRP'}: return 'deal'
+    if event.get('event_type') in PRICE_EVENTS or classify_price(event) in {'DEAL', 'BELOW_MSRP'}:
+        if classify_price(event) not in {'DEAL', 'BELOW_MSRP', 'PRICE_DROP'}:
             return None
     event_type = (
         event.get("event_type")
@@ -457,7 +457,7 @@ REALTIME_EVENTS = {
 
 
 async def should_suppress_duplicate(event):
-    is_deal = classify_price(event) == 'DEAL'
+    is_deal = classify_price(event) in {'DEAL', 'BELOW_MSRP'}
     if (
         not is_deal and
         event.get("event_type")
@@ -465,7 +465,7 @@ async def should_suppress_duplicate(event):
     ):
         return False
 
-    is_deal = classify_price(event) == 'DEAL'
+    is_deal = classify_price(event) in {'DEAL', 'BELOW_MSRP'}
     if is_deal: event = dict(event, event_type='DEAL')
     redis_client = get_redis()
 
@@ -1141,13 +1141,20 @@ async def build_event_embed(event):
             "USD conversion approximate"
         )
 
-    if classify_price(event) == 'DEAL':
+    if classify_price(event) in {'DEAL', 'BELOW_MSRP'}:
         embed.title = deal_title(event)
-        for ref in deal_matches(event):
-            label = 'MSRP' if ref['kind'] == 'MSRP' else 'sold-market benchmark'
+        for ref in alert_matches(event):
+            label = ('Calculated case MSRP' if ref.get('derivation') else 'MSRP') if ref['kind'] == 'MSRP' else 'sold-market benchmark'
+            calculation = ''
+            if ref.get('derivation'):
+                unit = ref['derivation']['unit_reference']
+                contents = ref['derivation']['case_contents']
+                calculation = (f"Calculation: {unit['amount']} × {contents['quantity']} units\n"
+                               f"Unit MSRP source: {unit['source']}\n"
+                               f"Case quantity source: {contents['source']}\n")
             embed.add_field(name='Below ' + label, value=(
                 f"Reference: {ref['amount']} {ref['currency']}\nSource: {ref['source']}\n"
-                "Item price only; shipping/tax excluded."), inline=False)
+                + calculation + "Item price only; shipping/tax excluded."), inline=False)
 
     footer_parts.append('Alert prepared: ' + new_york_now())
 
@@ -1502,7 +1509,7 @@ async def route_event_to_discord(
     )
 
     destination = route_decision(event, alert_type, access["minimum_tier"])
-    if event.get('event_type') in PRICE_EVENTS or classify_price(event) == 'DEAL':
+    if event.get('event_type') in PRICE_EVENTS or classify_price(event) in {'DEAL', 'BELOW_MSRP'}:
         price_route = price_destination(event)
         print('LOTUS PRICE DECISION | ' + json.dumps({**explain_price(event),
             'store': event.get('store_name'), 'product_url': event.get('product_url'),
@@ -1557,7 +1564,7 @@ async def route_event_to_discord(
         minimum_tier,
     )
     notification_chunks = build_notification_chunks(event, eligible_members)
-    if classify_price(event) == 'DEAL':
+    if classify_price(event) in {'DEAL', 'BELOW_MSRP'}:
         old_title = EVENT_TITLES.get(event.get('event_type'), '')
         notification_chunks = [(content.replace(old_title, deal_title(event), 1) if old_title else deal_title(event) + ' ' + content, ids)
                                for content, ids in notification_chunks]
@@ -1627,7 +1634,7 @@ async def route_event_to_discord(
         return False
 
     primary_confirmed(message, event)
-    if classify_price(event) == 'DEAL':
+    if classify_price(event) in {'DEAL', 'BELOW_MSRP'}:
         try:
             redis = get_redis()
             if redis is not None:
