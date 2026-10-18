@@ -25,6 +25,8 @@ def packaging(title):
     s=norm(title)
     if re.search(r'\b(?:assortment|assorted|protector|acrylic|empty|sleeves|binder|playmat)\b',s):return None
     if re.search(r'\bcase\b',s):return 'CASE'
+    # Display MSRP is not a single pack/deck MSRP; leave ambiguous units unready.
+    if 'display' in s and re.search(r'\b(?:booster pack|commander deck|starter deck|build (?:and )?battle)\b',s):return None
     if re.search(r'\b(?:lot|set of|two|three|four|[2-9]\d*)\s+(?:of\s+)?(?:booster\s+)?(?:boxes|bundles|decks)\b',s):return None
     if 'booster bundle' in s:return 'BOOSTER BUNDLE'
     if 'elite trainer box' in s:return 'ELITE TRAINER BOX'
