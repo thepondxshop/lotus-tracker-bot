@@ -1,12 +1,12 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.4.1'
+VERSION = '1.4.2'
 RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Seller diagnostics now distinguish missing or invalid feedback from below-minimum feedback.',
-    'English item specifics satisfy the 151 bundle language check without repeating English in the title.',
-    'Distributor matching normalizes packaging labels and preorder/sealed wording; coverage diagnostics expose unmatched examples.',
+    'Shopify recovery excludes comic-only and tabletop-only collections and prioritizes explicit TCG collections.',
+    'TCG relevance now ranks ahead of generic preorder wording during collection discovery.',
+    'Ambiguous pack/deck display MSRP is blocked, including previously cached distributor records.',
 )
 
 
