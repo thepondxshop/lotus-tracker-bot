@@ -9,7 +9,7 @@ from urllib.parse import quote
 import aiohttp
 from app.marketplaces.ebay_live import Browse
 from app.marketplaces.ebay_live_store import Store
-from app.marketplaces.ebay_live_policy import load_targets, gtin_status, assess
+from app.marketplaces.ebay_live_policy import load_targets, gtin_status, assess, review_diagnostics
 from app.marketplaces.ebay_listing_review import fingerprint
 from app.marketplaces.ebay_evidence import identity_key
 from lotus_ebay_setup import save
@@ -40,8 +40,11 @@ async def run(args):
                     'condition': item.get('condition'), 'aspects': aspects,
                     'price': item.get('price'), 'minimum_next_bid': item.get('minimumPriceToBid'),
                     'buying_options': item.get('buyingOptions'), 'lot_size': item.get('lotSize'),
-                    'identity': gtin_status(item,target), 'assessment': assess(item,target).get('reason','ELIGIBLE')}, indent=2))
+                    'identity': gtin_status(item,target), 'diagnostics': review_diagnostics(item,target)}, indent=2))
                 if args.confirm_reviewed:
+                    from app.marketplaces.ebay_live_policy import lot_status
+                    if lot_status(item, target):
+                        raise ValueError('Cannot approve: ' + lot_status(item, target))
                     if gtin_status(item,target)['reason'] != 'GTIN_MISSING':
                         raise ValueError('Review only applies to missing identifiers, never mismatches')
                     print('Confirm against the product page: one sealed English Pokemon 151 Booster Bundle containing six packs; no lots, breaks, loose packs, empty boxes or other languages.')
