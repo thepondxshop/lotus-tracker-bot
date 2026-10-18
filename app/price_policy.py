@@ -1,3 +1,4 @@
+from app.case_identity import normalize_case_event, shipping_case_event
 """PRICE1: price increases are history-only; deals need exact reference evidence."""
 from decimal import Decimal, InvalidOperation
 import os
@@ -53,7 +54,7 @@ def reference_window_status(event, ref, now=None):
 
 def case_destination(event, environ=None):
     """Override only the destination of already-eligible product events."""
-    if str(event.get('product_type', '')).strip().upper() not in {'CASE','SEALED CASE','BOOSTER CASE'}: return None
+    if not shipping_case_event(event): return None
     if event.get('event_type') == 'PRICE_INCREASE': return None
     env = os.environ if environ is None else environ
     raw = str(env.get('CHANNEL_CASE_SEALED_DEALS', '')).strip()
@@ -151,13 +152,14 @@ def classify(event):
     return 'PRICE_DROP'
 
 def destination(event, environ=None):
+    event=normalize_case_event(event)
     env=os.environ if environ is None else environ
     result=classify(event)
     if result not in {'DEAL','BELOW_MSRP','PRICE_DROP'}: return {'classification':result,'variable':None,'channel_id':None}
     global_store=str(event.get('region') or '').upper() not in US
     if result in {'DEAL','BELOW_MSRP'}:
         # Explicit case metadata only; a booster box is not automatically a case.
-        is_case=str(event.get('product_type') or '').upper() in {'CASE','SEALED CASE','BOOSTER CASE'}
+        is_case=shipping_case_event(event)
         variable='CHANNEL_CASE_SEALED_DEALS' if is_case else ('CHANNEL_GLOBAL_DEALS' if global_store else 'CHANNEL_DEALS')
     else:
         variable='CHANNEL_GLOBAL_PRICE_DROPS' if global_store else 'CHANNEL_PRICE_DROPS'
