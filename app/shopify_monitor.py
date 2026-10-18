@@ -3065,7 +3065,7 @@ async def _process_shopify_product_batch(store, adapter, native_currency, raw_pr
         candidate = make_product_event(event_type=ProductEventType.DEAL,
             item=item, store=store, in_stock=True)
         data = enrich(vars(candidate))
-        if classify(data) == 'DEAL':
+        if classify(data) in {'DEAL', 'BELOW_MSRP'}:
             candidate.reference_evidence = data['reference_evidence']
             events_to_send.append(candidate)
 
