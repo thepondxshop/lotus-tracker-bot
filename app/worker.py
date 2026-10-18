@@ -1425,6 +1425,8 @@ async def route_event_to_discord(
                         event.get('product_type'), event.get('product_url')):
         print(f"EVENT SUPPRESSED | Reason=EVENT_REGISTRATION | Store={event.get('store_name')} | ProductURL={event.get('product_url')}")
         return False
+    from app.case_identity import normalize_case_event
+    event = normalize_case_event(event)
     from app.deal_references import enrich
     event = enrich(event)
     if (event.get("game") == NEW_TCG
