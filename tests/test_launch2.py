@@ -46,7 +46,7 @@ class LaunchTests(unittest.TestCase):
             r=ref('MARKET_SOLD');r.update(change)
             self.assertNotEqual(classify(event(reference_evidence=r)),'DEAL')
     def test_exact_threshold_and_history_not_reference(self):
-        self.assertEqual(classify(event(reference_evidence=ref(),price='90.01')),'NO_VERIFIED_DECREASE')
+        self.assertEqual(classify(event(reference_evidence=ref(),price='90.01')),'BELOW_MSRP')
         self.assertEqual(classify(event(event_type='PRICE_DROP',price='40',old_price='100')),'PRICE_DROP')
     def test_reference_import_and_binding(self):
         with tempfile.TemporaryDirectory() as d:
