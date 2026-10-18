@@ -24,7 +24,7 @@ def event(**kw):
 def ref(kind='MSRP'):
     r = event();r.pop('event_type');r.update(amount='100', kind=kind, scope='EXACT_PRODUCT', confidence='HIGH',
         family='GLOBAL_STANDARD', reviewed=True, source='https://example.com/evidence',
-        captured_at=NOW.isoformat(), expires_at=(NOW+timedelta(days=2)).isoformat(), sample_count=10,release_date_verified=True,release_date=(NOW-timedelta(days=40)).date().isoformat(),release_date_source='https://example.com/release')
+        captured_at=NOW.isoformat(), expires_at=(NOW+timedelta(days=2)).isoformat(), sample_count=10,release_date_verified=True,release_date=(NOW-timedelta(days=40 if kind == "MARKET_SOLD" else 5)).date().isoformat(),release_date_source='https://example.com/release')
     return r
 
 class LaunchTests(unittest.TestCase):
@@ -36,8 +36,9 @@ class LaunchTests(unittest.TestCase):
         for change,reason in [({'event_type':'PRICE_INCREASE'},'HISTORY_ONLY'),({'in_stock':False},'NO_VERIFIED_DECREASE'),({'old_currency':'CAD'},'CURRENCY_CHANGED')]:
             self.assertEqual(classify(event(reference_evidence=ref(),**change)),reason)
     def test_market_and_dual(self):
-        e=event(reference_evidence={'references':[ref(),ref('MARKET_SOLD')]})
-        self.assertEqual(classify(e),'DEAL');self.assertIn('MSRP & MARKET',deal_title(e))
+        market=ref('MARKET_SOLD');msrp=ref();msrp['release_date']=market['release_date']
+        e=event(reference_evidence={'references':[msrp,market]})
+        self.assertEqual(classify(e),'DEAL');self.assertIn('BELOW MARKET',deal_title(e));self.assertNotIn('MSRP',deal_title(e))
         self.assertEqual(destination(e,{'CHANNEL_DEALS':'123'})['channel_id'],123)
     def test_invalid_market_references(self):
         for change in ({'kind':'ASKING'},{'reviewed':False},{'sample_count':True},{'sample_count':4},
