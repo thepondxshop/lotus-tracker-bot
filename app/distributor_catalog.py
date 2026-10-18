@@ -16,7 +16,9 @@ SEEDS={
 def norm(value):
     s=unicodedata.normalize('NFKD',str(value)).encode('ascii','ignore').decode().lower()
     s=re.sub(r'\b(?:trading card game|card game|tcg|ccg)\b',' ',s)
-    s=s.replace('booster display','booster box').replace('core booster box','booster box')
+    s=re.sub(r'^\s*(?:pre[ -]?order)\s*[:\-]?\s*','',s)
+    s=re.sub(r'\b(?:factory sealed|sealed)\b',' ',s)
+    s=s.replace('booster display box','booster box').replace('booster display','booster box').replace('core booster box','booster box')
     return ' '.join(re.findall(r'[a-z0-9]+',s))
 
 def packaging(title):
@@ -26,7 +28,7 @@ def packaging(title):
     if re.search(r'\b(?:lot|set of|two|three|four|[2-9]\d*)\s+(?:of\s+)?(?:booster\s+)?(?:boxes|bundles|decks)\b',s):return None
     if 'booster bundle' in s:return 'BOOSTER BUNDLE'
     if 'elite trainer box' in s:return 'ELITE TRAINER BOX'
-    if 'booster box' in s:return 'BOOSTER BOX'
+    if 'booster box' in s or re.search(r'\b(?:play|collector|draft|set) booster (?:box|display)\b',s):return 'BOOSTER BOX'
     if 'sleeved booster' in s:return 'SLEEVED BOOSTER PACK'
     if 'booster pack' in s:return 'BOOSTER PACK'
     if 'collector box' in s or 'collection box' in s:return 'COLLECTION BOX'
