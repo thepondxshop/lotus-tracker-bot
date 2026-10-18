@@ -32,6 +32,12 @@ def load(path=None):
             raise ValueError('Only MSRP or MARKET_SOLD evidence accepted')
         if r.get('scope') != 'EXACT_PRODUCT' or r.get('confidence') != 'HIGH':
             raise ValueError('Exact high-confidence evidence required')
+        if r.get('derivation') is not None:
+            from app.case_msrp import calculated_case_amount
+            calculated = calculated_case_amount(r)
+            if r.get('amount') is not None and Decimal(str(r['amount'])) != calculated:
+                raise ValueError('Case MSRP contradicts calculation')
+            r['amount'] = str(calculated)
         v = Decimal(str(r.get('amount')))
         if not v.is_finite() or v <= 0:
             raise ValueError('Positive reference amount required')
@@ -56,6 +62,12 @@ def matched(event, rows=None, now=None):
                 continue
             if r.get('captured_at') and datetime.fromisoformat(r['captured_at']) > now:
                 continue
+            if r.get('derivation') is not None:
+                from app.case_msrp import calculated_case_amount
+                try:
+                    calculated_case_amount(r, now)
+                except (ValueError, TypeError):
+                    continue
             result.append(dict(r, family=r['product_family']))
     return result
 
