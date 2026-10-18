@@ -1,3 +1,4 @@
+from app.distributor_units import unit_valid
 from app.case_identity import normalize_case_event, shipping_case_event
 """PRICE1: price increases are history-only; deals need exact reference evidence."""
 from decimal import Decimal, InvalidOperation
@@ -66,6 +67,7 @@ def qualifying_references(event):
     from datetime import datetime, timezone
     r = event.get('reference_evidence')
     rows = r.get('references', [r]) if isinstance(r, dict) else []
+    rows=[r for r in rows if isinstance(r,dict) and (r.get('kind')!='MSRP' or unit_valid(r,event.get('product_type')))]
     result = []
     # Conflicting sourced release dates cannot permit both windows at once.
     from datetime import date
