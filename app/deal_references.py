@@ -78,9 +78,18 @@ def enrich(event):
     except (ValueError, KeyError, TypeError, OSError, ArithmeticError) as e:
         print('LOTUS REFERENCE FILE INVALID | Error=' + type(e).__name__, flush=True)
         refs = []
+    from app.distributor_references import matched as distributor_matches
+    distributor_refs = distributor_matches(event)
+    refs.extend(distributor_refs)
     if refs:
         old = event.get('reference_evidence')
         if isinstance(old, dict):
             refs.extend(old.get('references', [old]))
+        # A matched distributor release date can date-bind an existing sold-market
+        # reference for this exact retailer product; no market price is invented.
+        if distributor_refs:
+            release = distributor_refs[0]
+            refs = [dict(r, release_date=release['release_date'], release_date_source=release['source'],release_date_verified=True)
+                    if isinstance(r,dict) and r.get('kind')=='MARKET_SOLD' and not r.get('release_date_verified') else r for r in refs]
         event['reference_evidence'] = {'references': refs}
     return event
