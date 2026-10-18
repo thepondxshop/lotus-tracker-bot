@@ -123,6 +123,25 @@ def lot_status(item, target):
     return None
 
 
+def seller_diagnostics(item):
+    """Explain the existing gate without emitting seller identifiers."""
+    seller=item.get('seller') or {}
+    if not isinstance(seller,dict):seller={}
+    score=number(seller.get('feedbackScore'))
+    percentage=number(seller.get('feedbackPercentage'))
+    blockers=[]
+    if not seller.get('username'):blockers.append('SELLER_IDENTIFIER_MISSING')
+    for field,value,minimum in (('FEEDBACK_SCORE',score,Decimal('100')),('FEEDBACK_PERCENTAGE',percentage,Decimal('98'))):
+        raw=seller.get('feedbackScore' if field=='FEEDBACK_SCORE' else 'feedbackPercentage')
+        if raw is None or raw=='':blockers.append(field+'_MISSING')
+        elif value is None:blockers.append(field+'_INVALID')
+        elif value<minimum:blockers.append(field+'_BELOW_MINIMUM')
+    return {'eligible':not blockers,'blockers':blockers,
+            'feedback_score':str(score) if score is not None else None,
+            'feedback_percentage':str(percentage) if percentage is not None else None,
+            'minimum_feedback_score':100,'minimum_feedback_percentage':'98'}
+
+
 def review_diagnostics(item, target, now=None):
     """Independent observations; price-only eligibility is never permission to send."""
     from app.marketplaces.ebay_evidence import comparison
@@ -134,7 +153,7 @@ def review_diagnostics(item, target, now=None):
     price = item.get('minimumPriceToBid' if auction else 'price') or {}
     benchmark = comparison(target, now) if target.get('comparison_mode') == 'ITEM_ONLY' else {}
     price_only = evaluate_item_only(price.get('value'), target, auction, now) if price.get('currency') == target.get('currency') and benchmark else {}
-    return {'identity': gtin_status(item, target), 'lot_blocker': lot_status(item, target),
+    return {'seller': seller_diagnostics(item), 'identity': gtin_status(item, target), 'lot_blocker': lot_status(item, target),
             'lot_metadata': 'UNSPECIFIED' if item.get('lotSize') in (None, 0, '0') else 'REPORTED',
             'aspect_mismatches': mismatches, 'benchmark_ready': benchmark.get('ready', False),
             'item_price_threshold': benchmark.get('threshold'),
@@ -171,10 +190,9 @@ def assess(item, target, now=None):
         return block('VARIATION_GROUP')
     if item.get('itemLocation', {}).get('country') != 'US':
         return block('IMPORT_COSTS_NOT_SUPPORTED_IN_PILOT')
-    seller = item.get('seller') or {}
-    score, percentage = number(seller.get('feedbackScore')), number(seller.get('feedbackPercentage'))
-    if not seller.get('username') or score is None or score < 100 or percentage is None or percentage < Decimal('98'):
-        return block('SELLER_EVIDENCE_INSUFFICIENT')
+    seller_check = seller_diagnostics(item)
+    if not seller_check['eligible']:
+        return dict(block('SELLER_EVIDENCE_INSUFFICIENT'), seller_diagnostics=seller_check)
     options = item.get('buyingOptions') or []
     auction = 'AUCTION' in options
     if not auction and 'FIXED_PRICE' not in options:
