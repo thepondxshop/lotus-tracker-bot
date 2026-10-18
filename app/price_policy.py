@@ -40,6 +40,17 @@ def market_age_status(event, ref, now=None):
     except (ValueError, TypeError, KeyError): return 'RELEASE_DATE_UNVERIFIED'
     return 'ELIGIBLE' if elapsed >= 30 else 'BEFORE_MARKET_DAY_30'
 
+def reference_window_status(event, ref, now=None):
+    typ = str(event.get('product_type', '')).strip().upper()
+    if typ in SINGLE_TYPES:
+        return 'ELIGIBLE' if ref.get('kind') == 'MARKET_SOLD' else 'SINGLES_REQUIRE_MARKET'
+    age = market_age_status(event, ref, now)
+    if ref.get('kind') == 'MSRP':
+        if age == 'BEFORE_MARKET_DAY_30': return 'ELIGIBLE'
+        if age == 'ELIGIBLE': return 'MSRP_WINDOW_ENDED'
+        return age
+    return age
+
 def case_destination(event, environ=None):
     """Override only the destination of already-eligible product events."""
     if str(event.get('product_type', '')).strip().upper() not in {'CASE','SEALED CASE','BOOSTER CASE'}: return None
@@ -55,11 +66,26 @@ def qualifying_references(event):
     r = event.get('reference_evidence')
     rows = r.get('references', [r]) if isinstance(r, dict) else []
     result = []
+    # Conflicting sourced release dates cannot permit both windows at once.
+    from datetime import date
+    dates = set()
+    if str(event.get('product_type', '')).strip().upper() in SEALED_TYPES:
+        for row in rows:
+            if not isinstance(row, dict): continue
+            if (row.get('scope') != 'EXACT_PRODUCT' or row.get('confidence') != 'HIGH'
+                    or row.get('currency') != event.get('currency')
+                    or row.get('family') != event.get('product_family')
+                    or str(row.get('region', '')).upper() not in {str(event.get('region', '')).upper(), 'GLOBAL'}
+                    or row.get('release_date_verified') is not True
+                    or not str(row.get('release_date_source', '')).startswith('https://')): continue
+            try: dates.add(date.fromisoformat(row['release_date']))
+            except (KeyError, TypeError, ValueError): continue
+        if len(dates) > 1: return []
     for r in rows:
         if not isinstance(r, dict): continue
         if r.get('scope') != 'EXACT_PRODUCT' or r.get('confidence') != 'HIGH': continue
         if r.get('kind') not in {'MSRP', 'MARKET_SOLD'} or not r.get('source'): continue
-        if r.get('kind') == 'MSRP' and str(event.get('product_type', '')).strip().upper() in {'SINGLE', 'SINGLES', 'SINGLE CARD', 'GRADED CARD', 'SLAB'}: continue
+        if reference_window_status(event, r) != 'ELIGIBLE': continue
         if r.get('currency') != event.get('currency'): continue
         family = event.get('product_family')
         if not family or family == 'UNKNOWN' or r.get('family') != family: continue
@@ -154,10 +180,10 @@ def explanation(event):
     return {'classification': result, 'historical_drop_percent': str((previous-current)*100/previous) if previous and current else None,
         'deal_blockers': reasons, 'reference_basis': [r['kind'] for r in refs] or 'NONE',
         'qualifying_bases': [r['kind'] for r in alert_matches(event)], 'is_deal': bool(deal_matches(event)),
-        'market_age_checks': [market_age_status(event, row) for row in (
+        'reference_window_checks': [{'kind': row.get('kind'), 'status': reference_window_status(event, row)} for row in (
             event['reference_evidence'].get('references', [event['reference_evidence']])
             if isinstance(event.get('reference_evidence'), dict) else [])
-            if isinstance(row, dict) and row.get('kind') == 'MARKET_SOLD']}
+            if isinstance(row, dict) and row.get('kind') in {'MSRP','MARKET_SOLD'}]}
 
 
 def deal_dedupe_key(event):
