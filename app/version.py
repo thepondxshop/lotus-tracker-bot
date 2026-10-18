@@ -1,12 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.3.1'
-RELEASE_KIND = 'patch'  # patch, regular, major
+VERSION = '1.3.2'
+RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'eBay no longer treats zero or omitted lot size as automatic evidence of a multi-item lot.',
-    'Added multi-box title and 151 pack-count checks; identity and other eligibility checks remain required.',
-    'Listing review diagnostics now show identity, lot, packaging and price comparison separately.',
+    'Any verified price below MSRP now qualifies for a Below MSRP alert; discounts of 10% or more add the Deal label.',
+    'Below Market deals still require at least 10% below a verified sold-market reference.',
+    'Added calculated case MSRP from reviewed unit prices and product-specific case quantities.',
+    'Individual-card MSRP references are excluded; stock and identity checks remain required.',
 )
 
 def build_id():
