@@ -1,14 +1,12 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.3.0'
-RELEASE_KIND = 'regular'  # patch, regular, major
+VERSION = '1.3.1'
+RELEASE_KIND = 'patch'  # patch, regular, major
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Retailer deals support reviewed MSRP and sold-market comparisons without requiring a prior price drop.',
-    'Reviewed Shopify products are checked for current-price deals on each observation.',
-    'eBay supports expiring review of individual listings that omit GTINs; other eligibility checks still apply.',
-    'Registered TCGplayer for Premium and Cardmarket for Premium+; their live adapters are not enabled.',
-    'Automatic sold-data retrieval and distributor reference ingestion still require connected evidence sources.',
+    'eBay no longer treats zero or omitted lot size as automatic evidence of a multi-item lot.',
+    'Added multi-box title and 151 pack-count checks; identity and other eligibility checks remain required.',
+    'Listing review diagnostics now show identity, lot, packaging and price comparison separately.',
 )
 
 def build_id():
