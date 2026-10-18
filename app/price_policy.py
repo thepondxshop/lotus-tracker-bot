@@ -13,6 +13,43 @@ def amount(value):
         return v if v.is_finite() and 0<v<Decimal("1e15") else None
     except (InvalidOperation, ValueError, TypeError): return None
 
+SINGLE_TYPES = {'SINGLE', 'SINGLES', 'SINGLE CARD', 'GRADED CARD', 'SLAB'}
+SEALED_TYPES = {'CASE', 'SEALED CASE', 'BOOSTER CASE', 'BOOSTER BOX', 'BOOSTER DISPLAY',
+                'BOOSTER BUNDLE', 'BOOSTER PACK', 'SLEEVED BOOSTER PACK', 'DOUBLE PACK',
+                'BLISTER', 'ELITE TRAINER BOX', 'ETB', 'COLLECTION BOX', 'TIN',
+                'DECK', 'STARTER DECK', 'COMMANDER DECK', 'DECK SET', 'BUNDLE', 'SEALED'}
+
+def market_age_status(event, ref, now=None):
+    """Sold prices for sealed products start 30 calendar days after sourced release.
+
+    Release metadata belongs to the exact, regional reference, not a date guessed
+    from a listing title or the first time Lotus saw the product.
+    """
+    from datetime import datetime, date, timezone
+    from zoneinfo import ZoneInfo
+    typ = str(event.get('product_type', '')).strip().upper()
+    if typ in SINGLE_TYPES: return 'ELIGIBLE'
+    if typ not in SEALED_TYPES: return 'PRODUCT_FORMAT_UNVERIFIED'
+    if ref.get('release_date_verified') is not True or not str(ref.get('release_date_source', '')).startswith('https://'):
+        return 'RELEASE_DATE_UNVERIFIED'
+    try:
+        release = date.fromisoformat(ref['release_date'])
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None: return 'RELEASE_DATE_UNVERIFIED'
+        elapsed = (current.astimezone(ZoneInfo('America/New_York')).date() - release).days
+    except (ValueError, TypeError, KeyError): return 'RELEASE_DATE_UNVERIFIED'
+    return 'ELIGIBLE' if elapsed >= 30 else 'BEFORE_MARKET_DAY_30'
+
+def case_destination(event, environ=None):
+    """Override only the destination of already-eligible product events."""
+    if str(event.get('product_type', '')).strip().upper() not in {'CASE','SEALED CASE','BOOSTER CASE'}: return None
+    if event.get('event_type') == 'PRICE_INCREASE': return None
+    env = os.environ if environ is None else environ
+    raw = str(env.get('CHANNEL_CASE_SEALED_DEALS', '')).strip()
+    return {'variable':'CHANNEL_CASE_SEALED_DEALS',
+            'channel_id':int(raw) if re.fullmatch(r'[0-9]+',raw) and int(raw)>0 else None,
+            'reason':'ALL_CASE_ALERTS', 'version':'CASE30'}
+
 def qualifying_references(event):
     from datetime import datetime, timezone
     r = event.get('reference_evidence')
@@ -30,6 +67,7 @@ def qualifying_references(event):
         rr = str(r.get('region') or '').upper()
         if rr != region and not (rr == 'GLOBAL' and family == 'GLOBAL_STANDARD'): continue
         if r.get('kind') == 'MARKET_SOLD':
+            if market_age_status(event, r) != 'ELIGIBLE': continue
             try:
                 count = r.get('sample_count')
                 captured = datetime.fromisoformat(r['captured_at'])
@@ -115,7 +153,11 @@ def explanation(event):
             reasons.append('LESS_THAN_TEN_PERCENT_BELOW_REFERENCE')
     return {'classification': result, 'historical_drop_percent': str((previous-current)*100/previous) if previous and current else None,
         'deal_blockers': reasons, 'reference_basis': [r['kind'] for r in refs] or 'NONE',
-        'qualifying_bases': [r['kind'] for r in alert_matches(event)], 'is_deal': bool(deal_matches(event))}
+        'qualifying_bases': [r['kind'] for r in alert_matches(event)], 'is_deal': bool(deal_matches(event)),
+        'market_age_checks': [market_age_status(event, row) for row in (
+            event['reference_evidence'].get('references', [event['reference_evidence']])
+            if isinstance(event.get('reference_evidence'), dict) else [])
+            if isinstance(row, dict) and row.get('kind') == 'MARKET_SOLD']}
 
 
 def deal_dedupe_key(event):
