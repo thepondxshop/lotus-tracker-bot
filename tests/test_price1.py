@@ -18,7 +18,7 @@ class PriceTest(unittest.TestCase):
         self.assertEqual(classify(self.event(old_currency='CAD')),'CURRENCY_CHANGED')
     def test_deal_boundary_and_evidence(self):
         self.assertEqual(classify(self.event(reference_evidence=self.ref())),'DEAL')
-        self.assertEqual(classify(self.event(price='90.01',reference_evidence=self.ref())),'PRICE_DROP')
+        self.assertEqual(classify(self.event(price='90.01',reference_evidence=self.ref())),'BELOW_MSRP')
         for field,value in [('scope','GAME_DEFAULT'),('currency','JPY'),('family','JP'),('confidence','LOW'),('region','CA')]:
             r=self.ref();r[field]=value
             self.assertEqual(classify(self.event(reference_evidence=r)),'PRICE_DROP')
