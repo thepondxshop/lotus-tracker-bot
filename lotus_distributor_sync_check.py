@@ -3,7 +3,7 @@ import argparse,asyncio,json
 from collections import Counter
 from sqlalchemy import text
 from app.distributor_sync import ensure,refresh,load_cache
-from app.distributor_references import status,matched
+from app.distributor_references import status,matched,validated_rows
 
 async def run(apply):
     from app.database import engine
@@ -20,7 +20,8 @@ async def run(apply):
                 finally:
                     if engine.dialect.name=='postgresql':await lock.execute(text('SELECT pg_advisory_unlock(:k)'),{'k':LOCK})
             else:print('LOTUS DISTRIBUTOR REFRESH | OTHER_WORKER_ACTIVE')
-    rows=await load_cache(engine)
+    await load_cache(engine)
+    rows=validated_rows()
     async with engine.connect() as c:
         states=[json.loads(r[0]) for r in (await c.execute(text('SELECT payload FROM lotus_distributor_sync_state'))).all()]
     from app.distributor_references import _RETAIL
@@ -44,7 +45,7 @@ async def run(apply):
         'retailer_matches':dict(matches),'match_examples':examples,
         'retailer_type_counts':dict(types.most_common(25)),'unmatched_examples':unmatched,
         'ready_distributor_examples':[{'name':r['name'],'sku':r['sku'],'type':r['product_type'],'source':r['source_kind']} for r in rows if r['ready']][:20],
-        'sources':[{k:v for k,v in s.items() if k not in {'queue','seen'}} for s in states],
+        'sources':[{('ready_at_last_fetch' if k=='ready' else k):v for k,v in s.items() if k not in {'queue','seen'}} for s in states],
         'alerts_sent':0,'note':'MSRP and release evidence only; no sold-market feed or stock verification.'}))
     await engine.dispose()
 if __name__=='__main__':
