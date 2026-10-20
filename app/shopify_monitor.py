@@ -3835,7 +3835,7 @@ async def _run_scheduled_store(store_id):
 async def run_shopify_monitor():
     global _SCHEDULER_HEARTBEAT
     MONITOR_STATUS["running"] = True
-    print(f"Lotus Shopify Monitor C20 started. Independent stores; adaptive recovery; max concurrent scans={MAX_CONCURRENT_STORE_SCANS}.")
+    print(f"Lotus Shopify Monitor C21 started. Independent stores; adaptive recovery; max concurrent scans={MAX_CONCURRENT_STORE_SCANS}.")
     tasks = {}
     health_task = None
     last_health_probe = 0.0
@@ -3906,7 +3906,7 @@ def get_shopify_monitor_status():
                    recovery_mode=shopify_pacing.recovering(domain))
         runtime.append(row)
     data.update({
-        'component_version': '1.6.0-C20',
+        'component_version': '1.6.1-C21',
         'alert_update_version': '1.0.6-A1',
         'scheduler_heartbeat_age_seconds': round(now-_SCHEDULER_HEARTBEAT, 1) if _SCHEDULER_HEARTBEAT is not None else None,
         'store_runtime': runtime,
