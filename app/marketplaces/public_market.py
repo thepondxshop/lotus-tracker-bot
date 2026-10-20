@@ -76,11 +76,26 @@ def sealed_rows(c,g):
         field='avg7' if r.get('avg7') is not None else 'avg'
         try:value=money(r.get(field))
         except (ValueError,ArithmeticError):continue
-        out.append(row(provider='cardmarket',marketplace='cardmarket',source=GUIDE,source_id=str(k),
+        out.append(row(detected_product_type=sealed_format(p['name'],p['idCategory']),provider='cardmarket',marketplace='cardmarket',source=GUIDE,source_id=str(k),
             source_name=p['name'],category_id=p['idCategory'],variant='sealed',source_field=field,
             amount=value,currency='EUR',source_updated_at=g['createdAt'],catalog_source=CATALOG,
             aggregate_scope='PROVIDER_LANGUAGE_AGGREGATE'))
     return out
+
+def sealed_format(name, category):
+    """A category is a family, not a unit. Aggregate packages remain blocked."""
+    text=str(name or '').casefold()
+    if re.search(r'\b(?:case|display|bundle|pack)\b',text):
+        # One booster bundle is supported; bundle displays/cases are not.
+        if category==53 and re.search(r'\bbooster bundle\b',text) and not re.search(r'\b(?:case|display|\d+[- ]pack)\b',text):
+            return 'BOOSTER BUNDLE'
+        # A single booster pack is supported, but numeric multi-packs are not.
+        if category!=52 or re.search(r'\b(?:case|display|bundle|\d+[- ]pack)\b',text):return None
+    if re.search(r'\b(?:set of|lot of|\d+\s*[x×]|[x×]\s*\d+)\b',text):return None
+    patterns={52:r'\bbooster(?: pack)?$',53:r'\bbooster box$',
+        54:r'\b(?:theme|starter) deck$',1013:r'\btrainer kit$',
+        1014:r'\b(?:mini )?tin$',1016:r'\belite trainer box$',1083:r'\bblister$'}
+    return TYPES.get(category) if re.search(patterns.get(category,r'(?!)'),text) else None
 
 def mapping_path():return Path(os.getenv('LOTUS_MARKET_MAPPINGS_FILE','/app/app/market-mappings.json'))
 def cache_path():return Path(os.getenv('LOTUS_MARKET_CACHE_FILE','/app/app/market-reference-cache.json'))
@@ -103,7 +118,7 @@ def validate(m):
         if identity.get('condition')!='Near Mint' or identity.get('language')!='English' or not identity.get('variant_id'):raise ValueError('SINGLE_VARIANT_CONDITION_LANGUAGE_REQUIRED')
         if market=='cardmarket' and m['variant']!='normal':raise ValueError('FOIL_AGGREGATE_AMBIGUOUS')
     elif m.get('provider')=='cardmarket':
-        if market!='cardmarket' or m.get('variant')!='sealed' or TYPES.get(m.get('category_id'))!=m['product_type'].upper():raise ValueError('SEALED_PACKAGING_MISMATCH')
+        if market!='cardmarket' or m.get('variant')!='sealed' or sealed_format(m.get('source_name'),m.get('category_id'))!=m['product_type'].upper():raise ValueError('SEALED_PACKAGING_MISMATCH')
         if not re.fullmatch('[1-9][0-9]*',m['source_id']):raise ValueError('INVALID_ID')
         if m.get('release_date_verified') is not True or not str(m.get('release_date_source','')).startswith('https://'):raise ValueError('RELEASE_DATE_REQUIRED')
         from datetime import date
