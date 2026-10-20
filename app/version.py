@@ -1,15 +1,15 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.5.0'
+VERSION = '1.6.0'
 RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Expanded distributor packaging checks and corrected coverage reporting.',
-    'Recognizes the reported Dragon Ball Card Game FB01 listing as Fusion World.',
-    'Added consolidated marketplace launch checks and saved eBay cycle diagnostics.',
-    'Added read-only TCGplayer API and Cardmarket price-guide previews.',
-    'Added reviewed sold-data imports for five marketplaces; automatic feeds remain separate.',
+    'Premium Bandai public US card catalog connected for page and price monitoring; stock remains unverified.',
+    'Added optional public product-page watchlists for major retailers without partner credentials.',
+    'Expanded eBay game discovery and reviewed-target capacity; improved detail rotation within the request budget.',
+    'Increased cross-store Shopify scan capacity while preserving domain cooldowns.',
 )
+
 
 
 def build_id():
