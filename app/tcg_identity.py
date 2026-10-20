@@ -77,6 +77,21 @@ _EXCLUDED = re.compile(
 )
 
 
+def graded_pokemon_title(title):
+    text = _text(title)
+    # Require the character, collector number, grading company and numeric grade.
+    # Character merchandise, raw cards and other games cannot satisfy this rule.
+    return bool(re.search(r"\bpikachu\b", text)
+        and re.search(r"\b\d{1,4}/\d{1,4}\b", text)
+        and re.search(r"\b(?:psa|bgs|cgc|sgc)\s+(?:10|[1-9](?:\.5)?)\b", text)
+        and not _NOT_CARDS.search(text))
+
+
+def non_tcg_stationery(title):
+    text = _text(title)
+    return bool(re.search(r"\b(?:a[345]\s+clear\s+file|clear\s+file|stationery|pencil\s+case|pen\s+case)\b", text))
+
+
 def title_identity(title):
     """Return a named identity, a neutral TCG candidate, or no evidence.
 
@@ -84,6 +99,8 @@ Two competing names are ambiguous (including crossover products). Known
 games retain their existing physical-product checks in the adapter.
 """
     text = _text(title)
+    if non_tcg_stationery(title): return None
+    if graded_pokemon_title(title): return "Pokemon"
     if _EXCLUDED.search(text):
         return None
     matches = {game for game, pattern in _GAME_PATTERNS if pattern.search(text)}
@@ -120,6 +137,7 @@ not establish a new game's identity. Title conflicts cannot borrow tags.
     raw_type = _text(product.get("product_type"))
     tags = _text(product.get("tags"))
     combined = " ".join((title, raw_type, tags))
+    if graded_pokemon_title(title) or non_tcg_stationery(title): return None
     if _EXCLUDED.search(title) or _NOT_CARDS.search(title):
         return None
     if not _PHYSICAL.search(" ".join((title, raw_type))) or not _TCG.search(combined):
