@@ -267,49 +267,55 @@ def parse_preload_product(body, page_url):
 @major_retailer_adapter("premium_bandai")
 class PremiumBandaiMajorRetailerAdapter(MajorRetailerAdapter):
     retailer_key = "premium_bandai"
-    version = "1.0.6-6K3D3"
+    version = "1.6.0-PBSEARCH1"
+
     @property
     def capabilities(self):
-        # No product capability is claimed from a source-access probe.
-        return MajorRetailerCapabilityProfile()
+        # Search status is not proof of checkout availability or lottery access.
+        return MajorRetailerCapabilityProfile(discovery=True, price=True, page_live=True)
+
     async def healthcheck(self):
-        self.diagnostics={"integration_state":"VALIDATION_ONLY", "product_data_parsed":False, "step":STEP,
-                          "requests":0, "product_parser_verified":False,
-                          "stock_verified":False, "last_error":None}
-        url=safe_probe_url(os.getenv("PREMIUM_BANDAI_PROBE_URL",DEFAULT_URL).strip())
-        success=False;status=None;message="PREMIUM_BANDAI_INVALID_PROBE_URL"
-        if url:
-            self.diagnostics["probe_url"]=url
-            try:
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12),
-                    headers={"User-Agent":"LotusTracker/1.0.6 PremiumBandaiSourceAssessment", "Accept":"text/html"}) as session:
-                    self.diagnostics["requests"]=1
-                    async with session.get(url,allow_redirects=False) as response:
-                        status=response.status
-                        if status!=200:
-                            message=f"PREMIUM_BANDAI_HTTP_{status}"
-                            if status in {301,302,303,307,308}:
-                                target=safe_probe_url(urljoin(url,response.headers.get("Location","")))
-                                self.diagnostics["us_redirect_target"]=target
-                        elif "html" not in response.headers.get("Content-Type", "").lower():
-                            message="PREMIUM_BANDAI_UNEXPECTED_CONTENT_TYPE"
-                        else:
-                            raw=bytearray()
-                            async for chunk in response.content.iter_chunked(65536):
-                                raw.extend(chunk)
-                                if len(raw)>2*1024*1024:
-                                    raise ValueError("RESPONSE_TOO_LARGE")
-                            self.diagnostics["response_bytes"]=len(raw)
-                            success,message,details=assess_html(raw.decode("utf-8",errors="replace"), url)
-                            self.diagnostics.update(details)
-            except asyncio.CancelledError:raise
-            except Exception as error:
-                message="PREMIUM_BANDAI_PROBE_"+type(error).__name__.upper()
-        if not success:self.diagnostics["last_error"]=message
-        print("PREMIUM BANDAI SOURCE DIAGNOSTICS | " + json.dumps(
-            {"probe_message": message, "http_status": status, **self.diagnostics},
-            ensure_ascii=True, sort_keys=True), flush=True)
-        return MajorRetailerProbe(self.retailer_key,success,"PremiumBandaiPublicUS", "LOW",
-                                  status,message,self.get_diagnostics())
-    async def discover_products(self, *, limit=20):
-        raise RuntimeError("PREMIUM_BANDAI_PRODUCT_PARSER_NOT_VALIDATED_STEP_6K_3D")
+        from app.pbandai_public import fetch_page
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20),trust_env=False) as session:
+                result=await fetch_page(session,limit=20)
+            success=bool(result['products']) and result['rejected']==0
+            self.diagnostics={'source':'PUBLIC_US_CARD_SEARCH','products':len(result['products']),
+                'rejected':result['rejected'],'total_count':result['total_count'],
+                'stock_verified':False,'requests':1}
+            return MajorRetailerProbe(self.retailer_key,success,'PremiumBandaiPublicSearch','HIGH',200,
+                'PUBLIC_PRODUCT_SCHEMA_VERIFIED' if success else 'PRODUCT_SCHEMA_REJECTED',self.diagnostics)
+        except Exception as error:
+            return MajorRetailerProbe(self.retailer_key,False,'PremiumBandaiPublicSearch','LOW',None,
+                str(error) if isinstance(error,ValueError) else type(error).__name__,{'stock_verified':False})
+
+    async def discover_products(self, *, limit=50):
+        from app.pbandai_public import fetch_catalog
+        from app.tcg_identity import title_identity, NEW_TCG
+        from .base import MajorRetailerProduct
+        from app.shopify_adapter import infer_product_type, infer_product_category
+        from app.product_family import detect_product_family
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20),trust_env=False) as session:
+            result=await fetch_catalog(session)
+        if result['rejected']: raise ValueError('PUBLIC_SEARCH_INVALID_PRODUCT_ROWS')
+        products=[]
+        for row in result['products']:
+            game=title_identity(row['title'])
+            if not game or game==NEW_TCG: continue
+            products.append(MajorRetailerProduct(
+                retailer_key=self.retailer_key,external_product_id=row['id'],title=row['title'],game=game,
+                url=row['url'],price=float(row['price']),currency='USD',image_url=row['image_url'],
+                product_type=infer_product_type(row['title']),product_category=infer_product_category(row['title']),
+                product_family=detect_product_family({'title':row['title']}),
+                lifecycle_state='PAGE_LIVE',lifecycle_confidence='HIGH',
+                availability_state='UNKNOWN',availability_known=False,
+                source_name='PremiumBandaiPublicSearch',source_confidence='HIGH',
+                extra={'public_sale_status':row['sale_status'],'public_order_start':row['order_start'],
+                       'public_order_end':row['order_end'],'lottery':row['lottery'],
+                       'stock_note':'Public page and price observed; purchase availability unverified'}))
+        # Do not truncate a baseline: a later page must not masquerade as a new drop.
+        if len(products)>200: raise ValueError('TRACKED_CATALOG_EXCEEDS_PIPELINE_CAPACITY')
+        self.diagnostics={'source':'PUBLIC_US_CARD_SEARCH','catalog_complete':True,
+            'total_count':result['total_count'],'tracked_products':len(products),'pages':result['pages'],
+            'stock_verified':False,'coverage':'ALL_RETURNED_TRACKED_GAMES_IN_US_CARD_CATEGORY'}
+        return products
