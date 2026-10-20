@@ -26,7 +26,9 @@ def local_status(environ=None):
     ebay={'mode':env.get('EBAY_MONITOR_MODE','OFF').upper(),'database_checked':False,
           'database_configured':bool(env.get('EBAY_DATABASE_URL')),
           'retention_key_configured':len(env.get('EBAY_RETENTION_HMAC_KEY',''))>=32,
-          'automatic_sold_feed':False,'targets':[]}
+          'automatic_sold_feed':False,'targets':[],
+          'discovery_scope':'ROTATING_TRACKED_GAME_SEARCHES',
+          'discovery_is_deal_delivery':False,'maximum_reviewed_targets':250}
     ebay['channels']={label:str(env.get(key,'')).isdigit() and int(env[key])>0 for label,key in
         (('fixed','CHANNEL_EBAY_INTELLIGENCE'),('auction','CHANNEL_EBAY_AUCTIONS'))}
     path=Path(env.get('EBAY_TARGETS_FILE','ebay-targets.json'))
@@ -40,7 +42,7 @@ def local_status(environ=None):
     except (OSError,ValueError,TypeError,KeyError) as e:ebay['targets_error']=type(e).__name__
     return {'markets':markets,'ebay':ebay,'alerts_sent':0,'settings_changed':False,
         'pending_other_monitors':['Pokemon Center: live stock access not verified',
-        'Premium Bandai: product schema and production promotion not verified',
+        'Premium Bandai: public page/price adapter installed; run lotus_public_retailer_setup.py premium_bandai; stock unverified',
         'Major retailers: check lotus_readiness_check.py --database'],
         'note':'Price previews are not listing feeds or alert integrations. No cross-currency or regional averages are combined.'}
 
