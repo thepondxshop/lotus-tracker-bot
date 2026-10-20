@@ -22,12 +22,20 @@ def norm(value):
     return ' '.join(re.findall(r'[a-z0-9]+',s))
 
 def packaging(title):
+    from app.case_identity import personal_case_format
+    if personal_case_format(title):return None
     s=norm(title)
+    # Never collapse multi-unit retail lots into single-item references.
+    if re.search(r'\b(?:lot|set of|bundle plus)\b|\bx\s*[2-9]\d*\b|\b[2-9]\d*\s*x\b|\b(?:two|three|four) (?:boxes|decks|packs)\b',s):return None
+    if '+' in str(title):return None
     if re.search(r'\b(?:assortment|assorted|protector|acrylic|empty|sleeves|binder|playmat)\b',s):return None
     if re.search(r'\bcase\b',s):return 'CASE'
     # Display MSRP is not a single pack/deck MSRP; leave ambiguous units unready.
     if 'display' in s and re.search(r'\b(?:booster pack|commander deck|starter deck|build (?:and )?battle)\b',s):return None
     if re.search(r'\b(?:lot|set of|two|three|four|[2-9]\d*)\s+(?:of\s+)?(?:booster\s+)?(?:boxes|bundles|decks)\b',s):return None
+    if 'gift bundle' in s:return 'GIFT BUNDLE'
+    if 'scene box' in s:return 'SCENE BOX'
+    if 'premium collection' in s:return 'COLLECTION BOX'
     if 'booster bundle' in s:return 'BOOSTER BUNDLE'
     if 'elite trainer box' in s:return 'ELITE TRAINER BOX'
     if 'booster box' in s or re.search(r'\b(?:play|collector|draft|set) booster (?:box|display)\b',s):return 'BOOSTER BOX'
@@ -36,6 +44,8 @@ def packaging(title):
     if 'collector box' in s or 'collection box' in s:return 'COLLECTION BOX'
     if 'starter deck' in s:return 'STARTER DECK'
     if 'commander deck' in s:return 'COMMANDER DECK'
+    if re.search(r'\bbundle\b',s):return 'BUNDLE'
+    if re.search(r'\btin\b',s):return 'TIN'
     return None
 
 def date_value(value):
