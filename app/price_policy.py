@@ -45,7 +45,7 @@ def market_age_status(event, ref, now=None):
 def reference_window_status(event, ref, now=None):
     typ = str(event.get('product_type', '')).strip().upper()
     if typ in SINGLE_TYPES:
-        return 'ELIGIBLE' if ref.get('kind') == 'MARKET_SOLD' else 'SINGLES_REQUIRE_MARKET'
+        return 'ELIGIBLE' if ref.get('kind') in {'MARKET_SOLD', 'MARKET_PUBLISHED'} else 'SINGLES_REQUIRE_MARKET'
     age = market_age_status(event, ref, now)
     if ref.get('kind') == 'MSRP':
         if age == 'BEFORE_MARKET_DAY_30': return 'ELIGIBLE'
@@ -87,7 +87,7 @@ def qualifying_references(event):
     for r in rows:
         if not isinstance(r, dict): continue
         if r.get('scope') != 'EXACT_PRODUCT' or r.get('confidence') != 'HIGH': continue
-        if r.get('kind') not in {'MSRP', 'MARKET_SOLD'} or not r.get('source'): continue
+        if r.get('kind') not in {'MSRP', 'MARKET_SOLD', 'MARKET_PUBLISHED'} or not r.get('source'): continue
         if reference_window_status(event, r) != 'ELIGIBLE': continue
         if r.get('currency') != event.get('currency'): continue
         family = event.get('product_family')
@@ -95,6 +95,9 @@ def qualifying_references(event):
         region = str(event.get('region') or '').upper()
         rr = str(r.get('region') or '').upper()
         if rr != region and not (rr == 'GLOBAL' and family == 'GLOBAL_STANDARD'): continue
+        if r.get('kind') == 'MARKET_PUBLISHED':
+            from app.marketplaces.public_market import authorized
+            if not authorized(r, event): continue
         if r.get('kind') == 'MARKET_SOLD':
             if market_age_status(event, r) != 'ELIGIBLE': continue
             try:
@@ -134,7 +137,7 @@ def deal_matches(event):
     return [r for r in alert_matches(event) if current <= amount(r['amount']) * Decimal('0.90')]
 
 def deal_title(event):
-    kinds = {r['kind'] for r in alert_matches(event)}
+    kinds = {'MARKET_SOLD' if r['kind']=='MARKET_PUBLISHED' else r['kind'] for r in alert_matches(event)}
     suffix = ' · DEAL' if deal_matches(event) else ''
     if kinds == {'MSRP', 'MARKET_SOLD'}: return '🔥 BELOW MSRP & MARKET' + suffix
     return ('🔥 BELOW MARKET' if 'MARKET_SOLD' in kinds else '🔥 BELOW MSRP') + suffix
@@ -187,7 +190,7 @@ def explanation(event):
         'reference_window_checks': [{'kind': row.get('kind'), 'status': reference_window_status(event, row)} for row in (
             event['reference_evidence'].get('references', [event['reference_evidence']])
             if isinstance(event.get('reference_evidence'), dict) else [])
-            if isinstance(row, dict) and row.get('kind') in {'MSRP','MARKET_SOLD'}]}
+            if isinstance(row, dict) and row.get('kind') in {'MSRP','MARKET_SOLD','MARKET_PUBLISHED'}]}
 
 
 def deal_dedupe_key(event):
