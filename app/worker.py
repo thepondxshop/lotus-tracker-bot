@@ -1145,6 +1145,8 @@ async def build_event_embed(event):
         embed.title = deal_title(event)
         for ref in alert_matches(event):
             label = ('Calculated case MSRP' if ref.get('derivation') else 'MSRP') if ref['kind'] == 'MSRP' else 'sold-market benchmark'
+            if ref['kind'] == 'MARKET_PUBLISHED':
+                label = ref['display_label']
             calculation = ''
             if ref.get('derivation'):
                 unit = ref['derivation']['unit_reference']
@@ -1416,6 +1418,12 @@ async def route_event_to_discord(
     bot,
     event,
 ):
+    from app.tcg_identity import non_tcg_stationery, graded_pokemon_title
+    if non_tcg_stationery(event.get('product_name') or event.get('title')):
+        return False
+    if graded_pokemon_title(event.get('product_name') or event.get('title')):
+        event = dict(event, game='Pokemon', product_type='Single Card', product_category='SINGLE')
+        event.pop('reference_evidence', None)  # Graded values require grade-specific evidence.
     if building_product(event.get('product_name'), event.get('product_type')):
         print('LOTUS TCG EVENT SUPPRESSED | Reason=BUILDING_PRODUCT | '
               f"Store={event.get('store_name')} | ProductURL={event.get('product_url')}")
