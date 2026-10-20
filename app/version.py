@@ -1,13 +1,14 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.6.1'
-RELEASE_KIND = 'patch'
+VERSION = '1.7.0'
+RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Shopify recovery alternates collection heads with deeper pages without increasing requests.',
-    'Avoided duplicate general page-one fetches after a completed short catalog head.',
-    'Retailer readiness now includes redacted error and disable reasons.',
+    'Corrected accessory case routing, stationery exclusions and graded Pikachu identity.',
+    'Added exact-mapped Pokemon public market references with source freshness checks.',
+    'Added public-source diagnostics; source availability does not imply live stock coverage.',
 )
+
 
 
 
