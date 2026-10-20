@@ -16,13 +16,17 @@ def local_status(environ=None):
       'ebay':('BROWSE_WORKER_IMPLEMENTED','REVIEWED_BENCHMARK_AND_LIVE_GATES'),
       'mercari_us':('MANUAL_LISTING_REVIEW_ONLY','LISTING_SOURCE_NOT_CONNECTED'),
       'buyee_jp':('MANUAL_LISTING_REVIEW_ONLY','LISTING_SOURCE_NOT_CONNECTED'),
-      'tcgplayer':('PRICE_API_PREVIEW_IMPLEMENTED','EXISTING_API_ACCESS_AND_EXACT_SKU_MAPPING_REQUIRED'),
-      'cardmarket':('PRICE_GUIDE_PREVIEW_IMPLEMENTED','GUIDE_ACCESS_AND_EXACT_PRODUCT_MAPPING_REQUIRED')}
+      'tcgplayer':('TCGDEX_POKEMON_REFERENCE_WORKER','EXACT_REVIEWED_MAPPING_AND_FRESH_PRICE_REQUIRED'),
+      'cardmarket':('POKEMON_GUIDE_REFERENCE_WORKER','EXACT_REVIEWED_MAPPING_AND_FRESH_PRICE_REQUIRED')}
     markets={k:{'minimum_tier':MINIMUM_TIERS[k],'implementation':v[0],'remaining':v[1],
         'channel_variable':CHANNELS[k],'channel_configured':str(env.get(CHANNELS[k],'')).isdigit() and int(env[CHANNELS[k]])>0,
         'live_delivery_verified':False} for k,v in capabilities.items()}
     markets['tcgplayer']['credentials_present']=bool(env.get('TCGPLAYER_ACCESS_TOKEN') or
         (env.get('TCGPLAYER_CLIENT_ID') and env.get('TCGPLAYER_CLIENT_SECRET')))
+    markets['tcgplayer']['tcgdex_requires_tcgplayer_credentials']=False
+    for name in ('tcgplayer','cardmarket'):
+        markets[name]['listing_feed_connected']=False
+        markets[name]['reference_scope']='POKEMON_ONLY; retailer deals after exact mapping'
     ebay={'mode':env.get('EBAY_MONITOR_MODE','OFF').upper(),'database_checked':False,
           'database_configured':bool(env.get('EBAY_DATABASE_URL')),
           'retention_key_configured':len(env.get('EBAY_RETENTION_HMAC_KEY',''))>=32,
