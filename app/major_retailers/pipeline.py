@@ -61,12 +61,17 @@ FLICKER_WINDOW_SECONDS = 300
 AUTO_DEMOTE_FAILURES = 3
 
 PRODUCTION_BLOCKS = {
-    "premium_bandai": "PREMIUM_BANDAI_SOURCE_ASSESSMENT_ONLY_STEP_6K_3D",
     "gamestop": "GAMESTOP_SOURCE_VALIDATION_REQUIRED_STEP_6K_3C",
     "best_buy": "BESTBUY_API_LIVE_VALIDATION_REQUIRED_STEP_6K_3B",
     "target": "TARGET_OFFICIAL_SOURCE_REQUIRED",
     "walmart": "WALMART_VALIDATION_ONLY_STEP_6K_3A",
 }
+
+# Public-page adapters still require clean validation, a silent baseline and
+# explicit promotion. Only their verified page/price capabilities are enabled.
+from .public_pages import PublicPageAdapter
+PRODUCTION_BLOCKS = {key:reason for key,reason in PRODUCTION_BLOCKS.items()
+    if not issubclass(get_major_retailer_adapter_class(key) or object, PublicPageAdapter)}
 
 CONFIDENCE_RANK = {
     "UNKNOWN": 0,
