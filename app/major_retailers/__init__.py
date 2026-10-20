@@ -11,6 +11,13 @@ from . import best_buy as _best_buy  # noqa: E402,F401
 from . import gamestop as _gamestop  # noqa: E402,F401
 from . import premium_bandai as _premium_bandai  # noqa: E402,F401
 
+# Optional exact public-page watchlists use no partner credentials.
+from .public_pages import install as _install_public_pages
+try:
+    _install_public_pages()
+except (ValueError, OSError, TypeError) as error:
+    print('LOTUS PUBLIC RETAILER WATCHLIST | State=INVALID | Error='+type(error).__name__, flush=True)
+
 from .base import (  # noqa: E402,F401
     MajorRetailerAdapter,
     MajorRetailerCapabilityProfile,
