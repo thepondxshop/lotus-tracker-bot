@@ -1,13 +1,12 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.6.0'
-RELEASE_KIND = 'regular'
+VERSION = '1.6.1'
+RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Premium Bandai public US card catalog connected for page and price monitoring; stock remains unverified.',
-    'Added optional public product-page watchlists for major retailers without partner credentials.',
-    'Expanded eBay game discovery and reviewed-target capacity; improved detail rotation within the request budget.',
-    'Increased cross-store Shopify scan capacity while preserving domain cooldowns.',
+    'Shopify recovery alternates collection heads with deeper pages without increasing requests.',
+    'Avoided duplicate general page-one fetches after a completed short catalog head.',
+    'Retailer readiness now includes redacted error and disable reasons.',
 )
 
 
