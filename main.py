@@ -1206,6 +1206,8 @@ class LotusTrackerBot(
         if self.database_ready:
             from app.distributor_sync import start as start_distributor_sync
             start_distributor_sync(self)
+            from app.marketplaces.public_market import start as start_public_market
+            start_public_market(self)
 
         start_x_monitor(self)
 
