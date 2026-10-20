@@ -30,7 +30,18 @@ def has_fusion_world_identity(value):
 
     Dragon Ball Super or Masters alone is not Fusion World evidence.
     """
-    return bool(FUSION_WORLD_PATTERN.search(_text(value)))
+    text = _text(value)
+    if re.search(r"\bmasters\b", text):
+        return False
+    explicit = bool(FUSION_WORLD_PATTERN.search(text))
+    # FB01 is the official Fusion World booster code. Retailers sometimes
+    # omit the line name; require Dragon Ball card-game context, never FB alone.
+    contextual_code = bool(
+        re.search(r"\bdragon\s*ball(?:\s+super)?\b", text)
+        and re.search(r"\b(?:card\s+game|tcg|ccg)\b", text)
+        and re.search(r"\bfb\s*0?1\b", text)
+    )
+    return explicit or contextual_code
 
 
 _TCG = re.compile(r"\b(?:tcg|ccg|trading card game|collectible card game|card game)\b")
@@ -76,6 +87,10 @@ games retain their existing physical-product checks in the adapter.
     if _EXCLUDED.search(text):
         return None
     matches = {game for game, pattern in _GAME_PATTERNS if pattern.search(text)}
+    if has_fusion_world_identity(text):
+        matches.add(FUSION_WORLD_GAME)
+    elif re.search(r"\bmasters\b", text):
+        matches.discard(FUSION_WORLD_GAME)
     if len(matches) == 1:
         return next(iter(matches))
     if len(matches) > 1 or _TCG.search(text):
