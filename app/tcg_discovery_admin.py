@@ -124,6 +124,8 @@ class Candidate:
 
 
 def candidate_from_event(event):
+    from app.tcg_identity import graded_pokemon_title, non_tcg_stationery
+    if graded_pokemon_title(event.get("product_name")) or non_tcg_stationery(event.get("product_name")): return None
     game = event.get("game")
     if not game or event.get("source_type") == "simulation" or str(event.get("event_type", "")).startswith("QUEUE_"):
         return None
