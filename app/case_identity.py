@@ -7,6 +7,8 @@ CASE_TYPES={'CASE','SEALED CASE','BOOSTER CASE'}
 def personal_case_format(title):
     text=unicodedata.normalize('NFKD',str(title or '')).encode('ascii','ignore').decode().lower()
     text=re.sub(r'[-_]+',' ',text)
+    if re.search(r'\b(?:play\s*mat|dice|damage\s+counter|can|pencil|pen)\s+(?:and\s+)?case\b|\bdice\s+and\s+case\b', text):
+        return ('Accessory Case','ACCESSORY')
     if re.search(r'\b(?:attache\s+case|brief\s*case)\b',text):
         if re.search(r'\b(?:set|collection|booster)\b',text):return ('Collection Box','SEALED')
         return ('Accessory Case','ACCESSORY')
