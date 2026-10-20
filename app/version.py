@@ -1,12 +1,11 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.0'
-RELEASE_KIND = 'regular'
+VERSION = '1.7.1'
+RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Corrected accessory case routing, stationery exclusions and graded Pikachu identity.',
-    'Added exact-mapped Pokemon public market references with source freshness checks.',
-    'Added public-source diagnostics; source availability does not imply live stock coverage.',
+    'Cardmarket package validation distinguishes booster bundles, boxes and multipacks.',
+    'Case and display prices cannot be bound as individual product references.',
 )
 
 
