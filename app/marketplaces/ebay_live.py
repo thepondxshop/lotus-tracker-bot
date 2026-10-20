@@ -18,6 +18,7 @@ from app.marketplaces.ebay_live_policy import load_targets, assess, gtin_status
 from app.marketplaces.ebay_live_store import Store, WORKER_LOCK
 from app.marketplaces.ebay_evidence import config_hash
 from app.marketplaces import ebay_shadow
+from app.marketplaces.ebay_search_plan import DetailRotation, discovery_plan
 
 
 def log(state, **fields):
@@ -203,6 +204,9 @@ async def run_once(bot):
 async def loop(bot, store, leader, mode):
     index = 0
     cooldown_until = 0.0
+    rotation = DetailRotation()
+    discovery_index = 0
+    cycles = 0
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15),trust_env=False,cookie_jar=aiohttp.DummyCookieJar()) as session:
         api = Browse(store, session)
         while not bot.is_closed():
@@ -232,17 +236,19 @@ async def loop(bot, store, leader, mode):
                         auction = index%2 == 1
                         index += 1
                         epoch = await store.epoch()
-                        data = await api.get('item_summary/search', {('gtin' if ((index-1)//(2*len(targets)))%2 == 0 else 'q'): (target['gtin'] if ((index-1)//(2*len(targets)))%2 == 0 else ' '.join(target['required_terms'])), 'limit':'20',
-                            'sort':'endingSoonest' if auction else 'newlyListed',
-                            'filter':'buyingOptions:{'+('AUCTION' if auction else 'FIXED_PRICE')+'},itemLocationCountry:US'}, target)
+                        query_kind='gtin' if ((index-1)//(2*len(targets)))%2 == 0 else 'q'
+                        cache_key=(fingerprint,target['id'],auction,query_kind)
+                        rows=rotation.get(cache_key)
+                        if rows is None:
+                            data = await api.get('item_summary/search', {
+                                query_kind: target['gtin'] if query_kind=='gtin' else ' '.join(target['required_terms']),
+                                'limit':'100','sort':'endingSoonest' if auction else 'newlyListed',
+                                'filter':'buyingOptions:{'+('AUCTION' if auction else 'FIXED_PRICE')+'},itemLocationCountry:US'},target)
+                            if 'errors' in data: raise ValueError('Invalid search response')
+                            rotation.put(cache_key,data.get('itemSummaries',[]))
+                            rows=rotation.get(cache_key)
                         reasons = Counter()
-                        rows = data.get('itemSummaries', [])
-                        if not isinstance(rows, list) or 'errors' in data:
-                            raise ValueError('Invalid search response')
-                        # One detail request per cycle keeps the pilot near 120
-                        # Browse calls/hour; rotate among up to twenty results, alternating GTIN and title searches.
-                        candidates = rows[:20]
-                        selected = [candidates[((index-1)//(4*len(targets))) % len(candidates)]] if candidates else []
+                        selected = rotation.take(cache_key,3)
                         for row in selected:
                             iid = row.get('itemId')
                             if not isinstance(iid,str) or len(iid)>200:
@@ -281,6 +287,17 @@ async def loop(bot, store, leader, mode):
                                 await ebay_shadow.record(store,fingerprint,target['id'],auction,result['eligible'])
                         await ebay_shadow.record_cycle(store,fingerprint,target['id'],auction,mode,len(rows),len(selected),reasons)
                         log('CYCLE_COMPLETE', mode=mode, target=target['id'], auction=auction, search_results=len(rows), details_checked=len(selected), counts=dict(reasons))
+                cycles += 1
+                if mode != 'OFF' and cycles%4 == 0 and asyncio.get_running_loop().time() >= cooldown_until:
+                    game,params=discovery_plan(discovery_index)
+                    data=await api.get('item_summary/search',params,{'comparison_mode':'ITEM_ONLY'})
+                    found=data.get('itemSummaries',[])
+                    if not isinstance(found,list) or 'errors' in data: raise ValueError('Invalid discovery response')
+                    discovery_index+=1
+                    # No raw listing/seller data retained. These are candidates, not sold values or deals.
+                    log('GAME_DISCOVERY',game=game,search_results=len(found),offset=params['offset'],sort=params['sort'],
+                        coverage='ROTATING_PARTIAL_RESULTS',alerts_sent=0,
+                        note='Product-specific reviewed comparison required for deal delivery')
             except AccessFailure as error:
                 result = error.result
                 wait = 900
@@ -297,7 +314,7 @@ async def loop(bot, store, leader, mode):
             except Exception as error:
                 # Never log server bodies, API listing content or seller identifiers.
                 log('CYCLE_FAILED', error_type=type(error).__name__)
-            await asyncio.sleep(60+random.uniform(0,5))
+            await asyncio.sleep(135+random.uniform(0,5))
 
 
 def start(bot):
