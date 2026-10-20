@@ -4,9 +4,18 @@ import ast
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def safe_reason(value):
+    """Bound diagnostic text; do not expose URLs, credentials or signed headers."""
+    text = str(value or '')
+    text = re.sub(r'(?i)\b(?:https?|postgres(?:ql)?(?:\+asyncpg)?|redis)://\S+', '[URL_REDACTED]', text)
+    text = re.sub(r'(?is)\b(?:authorization|cookie|set-cookie|signature|api[_-]?key|token|secret|password)\b.*', '[CREDENTIAL_REDACTED]', text)
+    return text[:400] or None
 
 
 def emit(label, data):
@@ -23,7 +32,7 @@ def literal_assignment(path, name):
 def local_report(root=ROOT):
     pipeline = root / 'app/major_retailers/pipeline.py'
     return {
-        'version': 'READY1', 'production_blocks': literal_assignment(pipeline, 'PRODUCTION_BLOCKS'),
+        'version': 'READY2', 'production_blocks': literal_assignment(pipeline, 'PRODUCTION_BLOCKS'),
         'validation_passes_required': literal_assignment(pipeline, 'VALIDATION_PASSES_REQUIRED'),
         'bestbuy_api_key_present': bool(os.getenv('BESTBUY_API_KEY', '').strip()),
         'database_url_present': bool(os.getenv('DATABASE_URL', '').strip()),
@@ -49,13 +58,13 @@ async def database_report():
                 await connection.execute(text("SET LOCAL statement_timeout = '5000ms'"))
                 queries = {
                     'stores': '''SELECT id, name, domain, platform, region, active, health_status,
-                        consecutive_failures, last_success_at,
+                        consecutive_failures, last_success_at, last_error, disabled_reason,
                         (last_error IS NOT NULL AND last_error <> '') AS has_last_error,
                         (disabled_reason IS NOT NULL AND disabled_reason <> '') AS has_disabled_reason
                         FROM public.stores ORDER BY id LIMIT 500''',
                     'major_retailer_runtime': '''SELECT retailer_key, store_id, mode, kill_switch,
                         baseline_ready, validation_passes, last_probe_success, last_success_at,
-                        last_accepted, last_emitted_events,
+                        last_accepted, last_emitted_events, last_error,
                         (last_error IS NOT NULL AND last_error <> '') AS has_last_error
                         FROM public.major_retailer_runtime ORDER BY retailer_key LIMIT 100''',
                     'major_retailer_system_control': '''SELECT control_key, global_kill_switch
@@ -66,7 +75,14 @@ async def database_report():
                         emit('LOTUS READINESS DATABASE', {'table': table, 'state': 'NOT_CREATED'})
                         continue
                     rows = (await connection.execute(text(query))).mappings().all()
-                    emit('LOTUS READINESS DATABASE', {'table': table, 'rows': [dict(row) for row in rows]})
+                    safe_rows = []
+                    for row in rows:
+                        item = dict(row)
+                        for field in ('last_error', 'disabled_reason'):
+                            if field in item:
+                                item[field] = safe_reason(item[field])
+                        safe_rows.append(item)
+                    emit('LOTUS READINESS DATABASE', {'table': table, 'rows': safe_rows})
     finally:
         await engine.dispose()
 
@@ -84,7 +100,8 @@ def main():
         emit('LOTUS READINESS ERROR', {'type': type(error).__name__, 'database_requested': args.database})
         return 1
     emit('LOTUS READINESS NOTE', {'live_access_tested': False, 'discord_delivery_tested': False,
-                                 'stores_enabled': False, 'database_modified': False})
+                                 'stores_enabled': False, 'database_modified': False,
+                                 'shopify_freshness': 'Use /shopifystatus in the running bot; collection timing is process-local.'})
     return 0
 
 
