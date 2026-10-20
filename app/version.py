@@ -1,12 +1,14 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.4.5'
-RELEASE_KIND = 'patch'
+VERSION = '1.5.0'
+RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'GTS MSRP requires explicit matching price-unit evidence; generic Each/default prices are blocked.',
-    'Cached and queued GTS references without verified units no longer qualify as below-MSRP deals.',
-    'Repeated identical reference evidence is deduplicated during enrichment.',
+    'Expanded distributor packaging checks and corrected coverage reporting.',
+    'Recognizes the reported Dragon Ball Card Game FB01 listing as Fusion World.',
+    'Added consolidated marketplace launch checks and saved eBay cycle diagnostics.',
+    'Added read-only TCGplayer API and Cardmarket price-guide previews.',
+    'Added reviewed sold-data imports for five marketplaces; automatic feeds remain separate.',
 )
 
 
