@@ -279,6 +279,7 @@ async def loop(bot, store, leader, mode):
                                 reasons[result['reason']] += 1
                             if mode == 'SHADOW':
                                 await ebay_shadow.record(store,fingerprint,target['id'],auction,result['eligible'])
+                        await ebay_shadow.record_cycle(store,fingerprint,target['id'],auction,mode,len(rows),len(selected),reasons)
                         log('CYCLE_COMPLETE', mode=mode, target=target['id'], auction=auction, search_results=len(rows), details_checked=len(selected), counts=dict(reasons))
             except AccessFailure as error:
                 result = error.result
