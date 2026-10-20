@@ -24,7 +24,7 @@ def install(rows,retailers=None):
         if packaging(r['name']) is None:
             r['ready']=False
             r['issues']=list(dict.fromkeys(list(r.get('issues',[]))+['PACKAGING_UNVERIFIED']))
-    _CASES=[dict(r,name_key=norm(r['name'])) for r in _CASES]
+    _CASES=[r for r in rows if r.get('ready') and r.get('product_type')=='BOOSTER BOX' and isinstance(r.get('case_quantity'),int) and 1<r['case_quantity']<=1000]
     _ROWS=list(rows);_NAMES=defaultdict(list);_SKUS=defaultdict(list)
     for r in rows:
         _NAMES[r['name_key']].append(r);_SKUS[r['sku'].upper()].append(r)
@@ -32,7 +32,7 @@ def install(rows,retailers=None):
 
 def type_key(value):
     value=' '.join(re.sub(r'[_-]+',' ',str(value or '')).upper().split())
-    return {'BOOSTER DISPLAY':'BOOSTER BOX','BOOSTER CASE':'CASE','SEALED CASE':'CASE','ETB':'ELITE TRAINER BOX','BOOSTER DISPLAY BOX':'BOOSTER BOX','COLLECTOR BOOSTER BOX':'BOOSTER BOX','PLAY BOOSTER BOX':'BOOSTER BOX','DRAFT BOOSTER BOX':'BOOSTER BOX','SET BOOSTER BOX':'BOOSTER BOX'}.get(value,value)
+    return {'BOOSTER DISPLAY':'BOOSTER BOX','BOOSTER CASE':'CASE','SEALED CASE':'CASE','ETB':'ELITE TRAINER BOX','PREMIUM COLLECTION':'COLLECTION BOX','BOOSTER DISPLAY BOX':'BOOSTER BOX','COLLECTOR BOOSTER BOX':'BOOSTER BOX','PLAY BOOSTER BOX':'BOOSTER BOX','DRAFT BOOSTER BOX':'BOOSTER BOX','SET BOOSTER BOX':'BOOSTER BOX'}.get(value,value)
 
 def game_matches(game,title):
     aliases={'MTG':'magic the gathering','Pokemon':'pokemon','Yu-Gi-Oh!':'yu gi oh',
@@ -46,6 +46,8 @@ def matched(event,now=None):
     if event.get('currency')!='USD' or str(event.get('region','')).upper() not in {'US','USA'} or event.get('product_family')!='GLOBAL_STANDARD':
         COUNTS['REGION_CURRENCY_OR_FAMILY_UNSUPPORTED']+=1;return []
     typ=type_key(event.get('product_type'));title=event.get('product_name','')
+    # Retailers often label sleeved packs generically; the exact title retains the sleeve distinction.
+    if typ=='BOOSTER PACK' and packaging(title)=='SLEEVED BOOSTER PACK':typ='SLEEVED BOOSTER PACK'
     if not packaging(title) or type_key(packaging(title))!=typ:
         COUNTS['RETAIL_PACKAGING_UNVERIFIED']+=1;return []
     candidates=list(_NAMES.get(norm(title),[]));method='EXACT_TITLE_AND_PACKAGING'
@@ -101,3 +103,19 @@ def status():
     now=datetime.now(timezone.utc)
     return {'records':len(_ROWS),'ready':sum(bool(r.get('ready')) and datetime.fromisoformat(r['expires_at'])>now for r in _ROWS),
         'retailer_records_loaded':len(_RETAIL),'runtime_match_counts':dict(COUNTS)}
+
+
+
+def validated_rows():
+    """Snapshot of the same validated records used for matching, for diagnostics."""
+    from copy import deepcopy
+    rows=deepcopy(_ROWS)
+    now=datetime.now(timezone.utc)
+    for row in rows:
+        try:
+            valid_time=datetime.fromisoformat(row['captured_at'])<=now<datetime.fromisoformat(row['expires_at'])
+        except (KeyError,TypeError,ValueError):valid_time=False
+        if not valid_time:
+            row['ready']=False
+            row['issues']=list(dict.fromkeys(row.get('issues',[])+['REFERENCE_EXPIRED_OR_INVALID_TIME']))
+    return rows
