@@ -10,6 +10,12 @@ def personal_case_format(title):
     if re.search(r'\b(?:attache\s+case|brief\s*case)\b',text):
         if re.search(r'\b(?:set|collection|booster)\b',text):return ('Collection Box','SEALED')
         return ('Accessory Case','ACCESSORY')
+    # A named TCG display case is not automatically a personal display holder.
+    # Require explicit booster wording or a numbered One Piece booster set.
+    shipping_display = bool(re.search(r'\bdisplay case\b',text) and
+        re.search(r'\bbooster\b|\bone piece\b.*\bop\s*\d{1,3}\b',text) and
+        not re.search(r'\b(?:acrylic|protector|storage|empty|case only)\b',text))
+    if shipping_display:return None
     if re.search(r'\b(?:card|(?<!commander )(?<!starter )(?<!structure )deck|accessory|storage|carrying|carry|display)\s+case\b|\bcase\s+only\b',text):
         return ('Card Case' if re.search(r'\b(?:card|deck)\s+case\b',text) else 'Accessory Case','ACCESSORY')
     if re.search(r'\bsleeves?\b',text):return ('Sleeves','ACCESSORY')
@@ -17,7 +23,13 @@ def personal_case_format(title):
 
 def normalize_case_event(event):
     result=personal_case_format(event.get('product_name') or event.get('title'))
-    if not result:return event
+    if not result:
+        title=event.get('product_name') or event.get('title') or ''
+        if str(event.get('product_type','')).upper()=='ACCESSORY CASE' and re.search(r'\bdisplay case\b',title,re.I):
+            corrected=dict(event,product_type='Case',product_category='SEALED')
+            corrected.pop('reference_evidence',None)
+            return corrected
+        return event
     typ,category=result
     # A mixed case of accessories is not automatically a sealed TCG shipping case.
     corrected=dict(event,product_type=typ,product_category=category)
