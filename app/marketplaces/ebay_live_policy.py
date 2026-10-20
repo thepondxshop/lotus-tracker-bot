@@ -11,11 +11,11 @@ from app.marketplaces.ebay_evidence import evaluate_item_only
 
 def load_targets(path):
     p = Path(path)
-    if p.stat().st_size > 262144:
+    if p.stat().st_size > 4194304:
         raise ValueError('Target file too large')
     rows = json.loads(p.read_text())
-    if not isinstance(rows, list) or len(rows) > 10:
-        raise ValueError('Expected at most ten reviewed targets')
+    if not isinstance(rows, list) or len(rows) > 250:
+        raise ValueError('Expected at most 250 reviewed targets')
     seen = set()
     for t in rows:
         if not isinstance(t, dict) or not re.fullmatch(r'[a-z0-9_-]{1,60}', str(t.get('id', ''))):
