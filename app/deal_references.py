@@ -81,6 +81,8 @@ def enrich(event):
     from app.distributor_references import matched as distributor_matches
     distributor_refs = distributor_matches(event)
     refs.extend(distributor_refs)
+    from app.marketplaces.public_market import matched as public_matches
+    refs.extend(public_matches(event))
     if refs:
         old = event.get('reference_evidence')
         if isinstance(old, dict):
