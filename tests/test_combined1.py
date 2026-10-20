@@ -93,7 +93,7 @@ class MarketTests(unittest.TestCase):
         self.event['reference_evidence']=r;self.assertFalse(policy.qualifying_references(self.event))
     def test_exact_sealed_id_join_and_duplicate_rejection(self):
         d=datetime.now(timezone.utc).isoformat()
-        c={'version':1,'createdAt':d,'products':[{'idProduct':1,'name':'Box','idCategory':53}]}
+        c={'version':1,'createdAt':d,'products':[{'idProduct':1,'name':'151 Booster Box','idCategory':53}]}
         g={'version':1,'createdAt':d,'priceGuides':[{'idProduct':1,'idCategory':53,'avg7':100,'low':1}]}
         r=pm.sealed_rows(c,g)[0];self.assertEqual(r['amount'],'100');self.assertEqual(r['currency'],'EUR')
         c['products']*=2
@@ -101,16 +101,16 @@ class MarketTests(unittest.TestCase):
     def test_sealed_release_cutoff(self):
         from zoneinfo import ZoneInfo
         today=datetime.now(ZoneInfo('America/New_York')).date()
-        m=dict(self.m,provider='cardmarket',marketplace='cardmarket',currency='EUR',region='DE',product_type='Booster Box',source_id='1',source_name='Box',variant='sealed',category_id=53,release_date_verified=True,release_date_source='https://publisher.example/release',release_date=(today-timedelta(days=30)).isoformat())
+        m=dict(self.m,provider='cardmarket',marketplace='cardmarket',currency='EUR',region='DE',product_type='Booster Box',source_id='1',source_name='151 Booster Box',variant='sealed',category_id=53,release_date_verified=True,release_date_source='https://publisher.example/release',release_date=(today-timedelta(days=30)).isoformat())
         pm.atomic_write(pm.mapping_path(),[m])
-        r=pm.row(provider='cardmarket',marketplace='cardmarket',currency='EUR',source=pm.GUIDE,source_id='1',source_name='Box',category_id=53,variant='sealed',source_field='avg7',amount=100,source_updated_at=datetime.now(timezone.utc).isoformat())
+        r=pm.row(provider='cardmarket',marketplace='cardmarket',currency='EUR',source=pm.GUIDE,source_id='1',source_name='151 Booster Box',category_id=53,variant='sealed',source_field='avg7',amount=100,source_updated_at=datetime.now(timezone.utc).isoformat())
         e={**self.event,**{k:m[k] for k in pm.BIND},'price':90,'reference_evidence':pm.bind(m,r)}
         self.assertTrue(policy.alert_matches(e))
         m['release_date']=(today-timedelta(days=29)).isoformat();pm.atomic_write(pm.mapping_path(),[m]);e['reference_evidence']=pm.bind(m,r)
         self.assertFalse(policy.alert_matches(e))
     def test_published_average_fallback_label(self):
         d=datetime.now(timezone.utc).isoformat()
-        c={'version':1,'createdAt':d,'products':[{'idProduct':1,'name':'Box','idCategory':53}]}
+        c={'version':1,'createdAt':d,'products':[{'idProduct':1,'name':'151 Booster Box','idCategory':53}]}
         g={'version':1,'createdAt':d,'priceGuides':[{'idProduct':1,'idCategory':53,'avg7':None,'avg':100,'low':1}]}
         r=pm.sealed_rows(c,g)[0]
         self.assertEqual(r['source_field'],'avg');self.assertEqual(r['amount'],'100')
