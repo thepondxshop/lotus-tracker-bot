@@ -19,7 +19,7 @@ SINGLE_TYPES = {'SINGLE', 'SINGLES', 'SINGLE CARD', 'GRADED CARD', 'SLAB'}
 SEALED_TYPES = {'CASE', 'SEALED CASE', 'BOOSTER CASE', 'BOOSTER BOX', 'BOOSTER DISPLAY',
                 'BOOSTER BUNDLE', 'BOOSTER PACK', 'SLEEVED BOOSTER PACK', 'DOUBLE PACK',
                 'BLISTER', 'ELITE TRAINER BOX', 'ETB', 'COLLECTION BOX', 'TIN',
-                'DECK', 'STARTER DECK', 'COMMANDER DECK', 'DECK SET', 'BUNDLE', 'SEALED'}
+                'SCENE BOX', 'GIFT BUNDLE', 'PREMIUM COLLECTION', 'DECK', 'STARTER DECK', 'COMMANDER DECK', 'DECK SET', 'BUNDLE', 'SEALED'}
 
 def market_age_status(event, ref, now=None):
     """Sold prices for sealed products start 30 calendar days after sourced release.
