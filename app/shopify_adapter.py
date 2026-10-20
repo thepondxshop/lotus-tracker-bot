@@ -31,6 +31,7 @@ _RECOVERY_COLLECTION_CURSOR = {}
 _RECOVERY_COLLECTION_LAST_CHECK = {}
 _RECOVERY_COLLECTION_EMPTY_UNTIL = {}
 _RECOVERY_COLLECTION_PAGES = {}
+_RECOVERY_COLLECTION_DEEP_PAGES = {}
 RECOVERY_COLLECTION_MAX_PAGES = 20
 # Observed public collection links, not guesses. JSON access is still validated
 # by each request and uses the same domain cooldown/signing rules.
@@ -76,10 +77,20 @@ def _record_collection_page(domain, handle, page, count, recovery):
     if recovery:
         # Advance only after processing succeeds. Caps and slice movement never
         # mean that omitted products are sold out or that coverage is complete.
-        _RECOVERY_COLLECTION_PAGES[key] = page + 1 if count == 250 and page < RECOVERY_COLLECTION_MAX_PAGES else 1
+        if page == 1:
+            if count == 250:
+                _RECOVERY_COLLECTION_PAGES[key] = _RECOVERY_COLLECTION_DEEP_PAGES.get(key, 2)
+            else:
+                _RECOVERY_COLLECTION_PAGES[key] = 1
+                _RECOVERY_COLLECTION_DEEP_PAGES.pop(key, None)
+        else:
+            _RECOVERY_COLLECTION_DEEP_PAGES[key] = (
+                page + 1 if count == 250 and page < RECOVERY_COLLECTION_MAX_PAGES else 2
+            )
+            _RECOVERY_COLLECTION_PAGES[key] = 1
         print(f'SHOPIFY COLLECTION COVERAGE | Store={domain} | Collection={handle} | '
               f'Page={page} | Products={count} | NextPage={_RECOVERY_COLLECTION_PAGES[key]} | '
-              f'PageCapReached={page == RECOVERY_COLLECTION_MAX_PAGES and count == 250} | Version=1.0.6-C19')
+              f'PageCapReached={page == RECOVERY_COLLECTION_MAX_PAGES and count == 250} | Version=1.6.1-C21')
 
 from app.tcg_identity import (
     DISCOVERY_GAMES, JURASSIC_TCG, discovery_identity, explicit_discovery_family, title_identity,
@@ -96,7 +107,7 @@ from app.product_family import (
 # =========================================================
 # LOTUS SHOPIFY ADAPTER
 # PonDeX Trackers
-# Component Version 1.0.6-C19 (retains collection recovery and signed access)
+# Component Version 1.6.1-C21 (retains collection recovery and signed access)
 # Step 6K-2C5 - Shopify Non-TCG Merchandise Integrity
 #
 # Strict Structured TCG Classification
@@ -1820,7 +1831,7 @@ def default_family_for_store_region(
 # - never use missing data as a sold-out signal
 # =========================================================
 
-SHOPIFY_COMPONENT_VERSION = "1.0.6-C19"
+SHOPIFY_COMPONENT_VERSION = "1.6.1-C21"
 _STORE_CURRENCY_CACHE = {}
 _CURRENCY_REFRESH_NOT_BEFORE = {}
 STORE_CURRENCY_CACHE_SECONDS = 3600
@@ -2191,12 +2202,12 @@ class ShopifyAdapter:
                                         and isinstance(data.get("products"), list)
                                         and self.domain not in _OPERATOR_SIGNED_ACCESS_CONFIRMED):
                                     _OPERATOR_SIGNED_ACCESS_CONFIRMED.add(self.domain)
-                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.0.6-C19")
+                                    print(f"SHOPIFY OPERATOR SIGNED ACCESS | Store={self.domain} | HTTP=200 | ProductsJSON=True | Version=1.6.1-C21")
                                 if (signature_headers and not operator_signed and isinstance(data, dict)
                                         and isinstance(data.get("products"), list)
                                         and not _THEPONDX_SIGNED_ACCESS_CONFIRMED):
                                     _THEPONDX_SIGNED_ACCESS_CONFIRMED = True
-                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.0.6-C19")
+                                    print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.6.1-C21")
                                 # Only a valid products payload can clear general endpoint recovery.
                                 valid_general = isinstance(data, dict) and isinstance(data.get('products'), list) and all(isinstance(p, dict) for p in data['products'])
                                 shopify_pacing.succeeded(self.domain, purpose if valid_general else None)
@@ -2459,6 +2470,7 @@ class ShopifyAdapter:
     async def fetch_products(self, max_pages=20, *, on_batch=None, priority_handles=()):
         products_by_key = {}
         anonymous_products = []
+        head_complete = False
         recovery = shopify_pacing.recovering(self.domain)
         self.diagnostics['recovery_mode'] = recovery
 
@@ -2524,7 +2536,7 @@ class ShopifyAdapter:
             if recovery_collection:
                 self.diagnostics['priority_collections'] = 1
                 print(f"SHOPIFY RECOVERY COVERAGE | Store={self.domain} | "
-                      f"Mode=ROTATING_COLLECTION | GeneralFeed=DEFERRED | Version=1.0.6-C19")
+                      f"Mode=ROTATING_COLLECTION | GeneralFeed=DEFERRED | Version=1.6.1-C21")
             if on_batch is not None and priority_collections:
                 hot = next((row for row in priority_collections if any(term in
                     (row[1] + " " + row[2]).lower() for term in
@@ -2570,6 +2582,7 @@ class ShopifyAdapter:
                         if error.status == 404:
                             _WORKING_COLLECTIONS.get(self.domain, {}).pop(handle, None)
                             _RECOVERY_COLLECTION_PAGES.pop(membership_key, None)
+                            _RECOVERY_COLLECTION_DEEP_PAGES.pop(membership_key, None)
                             _RECOVERY_COLLECTION_EMPTY_UNTIL[membership_key] = time.monotonic() + 3600
                         raise
                     if (not isinstance(data, dict) or not isinstance(data.get('products'), list)
@@ -2696,7 +2709,10 @@ class ShopifyAdapter:
                         self.diagnostics['general_products_seen'] += len(rows)
                         if _GENERAL_FEED_CURSOR.get(self.domain,1)==1:
                             _GENERAL_FEED_CURSOR[self.domain] = 2 if len(rows)>=250 else 1
-                            if len(rows)<250: _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain]=time.monotonic()
+                            if len(rows)<250:
+                                _GENERAL_FEED_LAST_ATTEMPT_AT[self.domain]=time.monotonic()
+                                self.diagnostics['general_sweep_complete'] = True
+                                head_complete = True
 
             # =================================================
             # 2. GENERAL PRODUCT FEED — THIRTY-SECOND REFRESH TARGET
@@ -2723,6 +2739,8 @@ class ShopifyAdapter:
                 self.diagnostics['limited_coverage'] = True
                 print(f'SHOPIFY GENERAL PROBE | Store={self.domain} | Limit=250 | ReplacesCollectionSlot=True')
             page_limit = 250 if general_probe else 25 if recovery else 250
+            if head_complete:
+                run_general = False
             general_pages = 0
             if run_general:
                 # Set this before requesting so a rate-limited general scan is
