@@ -1,3 +1,4 @@
+from app.tcg_identity import graded_pokemon_title, non_tcg_stationery
 from app.case_identity import personal_case_format
 from app.merchandise_guard import building_product
 from app.store_currency_fallback import currency_for_store
@@ -483,6 +484,7 @@ NON_TCG_MERCHANDISE_PATTERNS = (
 def is_non_tcg_merchandise(
     product,
 ):
+    if non_tcg_stationery(product.get("title")): return True
     if building_product(product.get("title"), product.get("product_type")):
         return True
 
@@ -510,6 +512,8 @@ def classify_game(product):
     """Explicit title evidence wins; unknown TCGs never borrow a set-code role."""
     if building_product(product.get("title"), product.get("product_type")):
         return None
+    if non_tcg_stationery(product.get("title")): return None
+    if graded_pokemon_title(product.get("title")): return "Pokemon"
     if registered_title(product.get("title")):
         return registered_identity(product)
     if is_non_tcg_merchandise(product):
@@ -881,6 +885,8 @@ def infer_product_type(
     tags=None,
 ):
 
+    from app.tcg_identity import graded_pokemon_title
+    if graded_pokemon_title(title): return "Single Card"
     case_format = personal_case_format(title)
     if case_format:
         return case_format[0]
@@ -1134,6 +1140,8 @@ def infer_product_category(
     tags=None,
 ):
 
+    from app.tcg_identity import graded_pokemon_title
+    if graded_pokemon_title(title): return "SINGLE"
     case_format = personal_case_format(title)
     if case_format:
         return case_format[1]
