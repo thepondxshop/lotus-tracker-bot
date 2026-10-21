@@ -69,4 +69,5 @@ def build_affiliate_url(
     if _is_linkconnector_tracking_url(final_url):
         return final_url, True
 
-    return final_url, False
+    from app.affiliate_registry import lookup
+    return lookup(final_url, store_name)
