@@ -1,18 +1,18 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.1'
-RELEASE_KIND = 'patch'
+VERSION = '1.7.2'
+RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Cardmarket package validation distinguishes booster bundles, boxes and multipacks.',
-    'Case and display prices cannot be bound as individual product references.',
+    'Optional community XP, rank and leaderboard commands with activity limits.',
+    'Approved exact-product affiliate links with expiry and disclosure.',
+    'Reviewed eBay target searches rotate pages with bounded request settings.',
+    'Major retailer access-failure cooldowns and deployment integrity checks.',
 )
-
-
-
 
 def build_id():
     return os.getenv('RAILWAY_GIT_COMMIT_SHA', 'unknown')[:12]
+
 def announcement():
     if RELEASE_KIND not in {'patch', 'regular', 'major'}:
         raise ValueError('Invalid release kind')
