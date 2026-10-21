@@ -312,6 +312,8 @@ intents = (
 )
 
 intents.members = True
+# Enable in Discord Developer Portal before setting this environment flag.
+intents.message_content = os.getenv("LOTUS_XP_MESSAGE_CONTENT", "false").lower() == "true"
 
 
 # =========================================================
@@ -1208,6 +1210,9 @@ class LotusTrackerBot(
             start_distributor_sync(self)
             from app.marketplaces.public_market import start as start_public_market
             start_public_market(self)
+
+        from app.member_xp import install as install_member_xp
+        await install_member_xp(self, self.database_ready)
 
         start_x_monitor(self)
 
