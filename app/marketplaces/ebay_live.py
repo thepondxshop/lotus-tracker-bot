@@ -204,7 +204,11 @@ async def run_once(bot):
 async def loop(bot, store, leader, mode):
     index = 0
     cooldown_until = 0.0
+    from app.marketplaces.ebay_capacity import settings, SearchPages
+    capacity = settings()
+    pages = SearchPages(capacity["pages"])
     rotation = DetailRotation()
+    log("CAPACITY", **capacity)
     discovery_index = 0
     cycles = 0
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15),trust_env=False,cookie_jar=aiohttp.DummyCookieJar()) as session:
@@ -240,15 +244,18 @@ async def loop(bot, store, leader, mode):
                         cache_key=(fingerprint,target['id'],auction,query_kind)
                         rows=rotation.get(cache_key)
                         if rows is None:
+                            offset=pages.offset(cache_key)
                             data = await api.get('item_summary/search', {
                                 query_kind: target['gtin'] if query_kind=='gtin' else ' '.join(target['required_terms']),
-                                'limit':'100','sort':'endingSoonest' if auction else 'newlyListed',
+                                'limit':'100','offset':str(offset),'sort':'endingSoonest' if auction else 'newlyListed',
                                 'filter':'buyingOptions:{'+('AUCTION' if auction else 'FIXED_PRICE')+'},itemLocationCountry:US'},target)
                             if 'errors' in data: raise ValueError('Invalid search response')
                             rotation.put(cache_key,data.get('itemSummaries',[]))
                             rows=rotation.get(cache_key)
+                            pages.advance(cache_key,len(rows))
+                            log('TARGET_SEARCH_PAGE',target=target['id'],auction=auction,offset=offset,search_results=len(rows))
                         reasons = Counter()
-                        selected = rotation.take(cache_key,3)
+                        selected = rotation.take(cache_key,capacity["details"])
                         for row in selected:
                             iid = row.get('itemId')
                             if not isinstance(iid,str) or len(iid)>200:
@@ -314,7 +321,7 @@ async def loop(bot, store, leader, mode):
             except Exception as error:
                 # Never log server bodies, API listing content or seller identifiers.
                 log('CYCLE_FAILED', error_type=type(error).__name__)
-            await asyncio.sleep(135+random.uniform(0,5))
+            await asyncio.sleep(capacity["interval"]+random.uniform(0,5))
 
 
 def start(bot):
