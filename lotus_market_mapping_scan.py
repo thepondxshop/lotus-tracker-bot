@@ -38,6 +38,19 @@ def candidate(retailer,source):
         'ready_to_import':False,'blockers':blockers,'mapping':m}
 
 
+def excluded_kind(row):
+    """Exclude explicit events, merchandise and accessories before market gates."""
+    title=name_key(row.get('product_name'))
+    typ=name_key(row.get('product_type'))
+    if typ in {'saga event','event','events','tournament','tournament entry'} or re.search(r'\b(league and trade|league trade|meet up|tournament entry|tournament ticket)\b',title) or (re.search(r'\b(tournament|league)\b',title) and re.search(r'\b(mon|monday|tue|tuesday|wed|wednesday|thu|thurs|thursday|fri|friday|sat|saturday|sun|sunday)\b',title)):
+        return 'EVENT_NOT_MARKET_PRODUCT'
+    if typ in {'plushies','plush','figure','figures','stationery'} or re.search(r'\b(plush|plushie|plushies|mascot|squishy)\b',title):
+        return 'MERCHANDISE_NOT_MARKET_PRODUCT'
+    if typ in {'deck box','binder','sleeves','playmat','accessory case','accessories'} or re.search(r'\b(acrylic case|acrylic display|protective case|archivador|portfolio|caja de mazo)\b',title):
+        return 'ACCESSORY_NOT_MARKET_PRODUCT'
+    return None
+
+
 def build_report(retailers,sources):
     index=defaultdict(list)
     for s in sources:
@@ -51,6 +64,7 @@ def build_report(retailers,sources):
         reason=None
         typ=str(r.get('product_type') or '').upper()
         if r.get('game')!='Pokemon':reason='OTHER_GAME'
+        elif excluded_kind(r):reason=excluded_kind(r)
         elif typ in {'SINGLE','SINGLE CARD','SINGLES','GRADED CARD','SLAB'}:reason='SINGLES_NEED_EXACT_CARD_VARIANT_AND_CONDITION'
         elif r.get('currency')!='EUR' or r.get('region') not in pm.EU:reason='CARDMARKET_CURRENCY_REGION_UNSUPPORTED'
         elif r.get('product_family') in (None,'','UNKNOWN'):reason='PRODUCT_FAMILY_UNKNOWN'
@@ -98,6 +112,7 @@ async def run(args):
     rows,truncated=await database_rows()
     # Avoid two downloads when there are no eligible EUR sealed retailer rows.
     eligible=[r for r in rows if r.get('currency')=='EUR' and r.get('region') in pm.EU
+        and not excluded_kind(r)
         and str(r.get('product_type','')).upper() not in {'SINGLE','SINGLE CARD','SINGLES','GRADED CARD','SLAB'}]
     sources=[]
     if eligible:
