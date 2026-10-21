@@ -1204,6 +1204,12 @@ async def run_major_retailer_pipeline_scan(
     async with _scan_lock(key):
         started = time.monotonic()
         runtime = await _runtime_row(key)
+        from app.major_retailers.retry_policy import remaining
+        cooldown = remaining(runtime)
+        if cooldown:
+            return {"success": False, "retailer_key": key, "deferred": True,
+                    "error": "PERSISTED_ACCESS_COOLDOWN", "retry_in_seconds": cooldown,
+                    "runtime": runtime, "events_emitted": 0}
         store_id = await _bind_store_if_available(key)
         global_kill = await _global_kill_switch()
 
@@ -1750,7 +1756,7 @@ async def run_major_retailer_monitor() -> None:
                         limit=BACKGROUND_SCAN_LIMIT,
                         force_validation=False,
                     )
-                    if not result.get("success"):
+                    if not result.get("success") and not result.get("deferred"):
                         failures += 1
                 except asyncio.CancelledError:
                     raise
