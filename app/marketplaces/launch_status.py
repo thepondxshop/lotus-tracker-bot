@@ -44,9 +44,15 @@ def local_status(environ=None):
         ebay['targets']=[{'target':t['id'],'comparison':comparison(t),
             'fixed_shadow_ready':None,'auction_shadow_ready':None} for t in targets]
     except (OSError,ValueError,TypeError,KeyError) as e:ebay['targets_error']=type(e).__name__
+    from app.marketplaces.ebay_capacity import settings
+    ebay['capacity']=settings(env)
+    ebay['search_coverage']='PARTIAL_HEAD_AND_ROTATING_DEEP_PAGES'
     return {'markets':markets,'ebay':ebay,'alerts_sent':0,'settings_changed':False,
+        'community_xp':{'enabled_configured':env.get('LOTUS_XP_ENABLED','false').lower()=='true',
+                        'message_content_configured':env.get('LOTUS_XP_MESSAGE_CONTENT','false').lower()=='true',
+                        'runtime_verified':False,'check':'/xpstatus'},
         'pending_other_monitors':['Pokemon Center: live stock access not verified',
-        'Premium Bandai: public page/price adapter installed; run lotus_public_retailer_setup.py premium_bandai; stock unverified',
+        'Premium Bandai: page/price adapter installed; current production state must be checked with lotus_readiness_check.py --database; stock unverified',
         'Major retailers: check lotus_readiness_check.py --database'],
         'note':'Price previews are not listing feeds or alert integrations. No cross-currency or regional averages are combined.'}
 
