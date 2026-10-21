@@ -89,6 +89,7 @@ def graded_pokemon_title(title):
 
 def non_tcg_stationery(title):
     text = _text(title)
+    if re.search(r"\bfrenda\b", text): return True
     return bool(re.search(r"\b(?:a[345]\s+clear\s+file|clear\s+file|stationery|pencil\s+case|pen\s+case)\b", text))
 
 
