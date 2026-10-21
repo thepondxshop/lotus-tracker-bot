@@ -12,6 +12,8 @@ def personal_case_format(title):
     if re.search(r'\b(?:attache\s+case|brief\s*case)\b',text):
         if re.search(r'\b(?:set|collection|booster)\b',text):return ('Collection Box','SEALED')
         return ('Accessory Case','ACCESSORY')
+    if re.search(r'\b(?:acrylic|protective|protector|organizer|organiser|folder)\b', text):
+        return ('Accessory Case','ACCESSORY')
     # A named TCG display case is not automatically a personal display holder.
     # Require explicit booster wording or a numbered One Piece booster set.
     shipping_display = bool(re.search(r'\bdisplay case\b',text) and
@@ -23,12 +25,26 @@ def personal_case_format(title):
     if re.search(r'\bsleeves?\b',text):return ('Sleeves','ACCESSORY')
     return None
 
+def sealed_case_title(title):
+    text=unicodedata.normalize('NFKD',str(title or '')).encode('ascii','ignore').decode().lower()
+    text=re.sub(r'[-_]+',' ',text)
+    if personal_case_format(title): return False
+    # Require both shipping-case wording and a recognizable sealed TCG format.
+    if not re.search(r'\bcases?\b',text): return False
+    return bool(re.search(r'\b(?:booster|elite trainer|etb|commander deck|starter deck|structure deck|theme deck|collection|blister|tin|battle box|beginner box|double pack)\b',text)
+                or re.search(r'\bone piece\b.*\bop\s*\d{1,3}\b.*\bdisplay case\b',text)
+                or re.search(r'\bcollector\b.*\bsealed (?:inner )?case\b',text))
+
 def normalize_case_event(event):
     result=personal_case_format(event.get('product_name') or event.get('title'))
     if not result:
         title=event.get('product_name') or event.get('title') or ''
-        if str(event.get('product_type','')).upper()=='ACCESSORY CASE' and re.search(r'\bdisplay case\b',title,re.I):
+        if str(event.get('product_type','')).upper()=='ACCESSORY CASE' and sealed_case_title(title):
             corrected=dict(event,product_type='Case',product_category='SEALED')
+            corrected.pop('reference_evidence',None)
+            return corrected
+        if str(event.get('product_type','')).strip().upper() in CASE_TYPES and not sealed_case_title(title):
+            corrected=dict(event,product_type='TCG Product',product_category='UNKNOWN')
             corrected.pop('reference_evidence',None)
             return corrected
         return event
@@ -41,4 +57,4 @@ def normalize_case_event(event):
 
 def shipping_case_event(event):
     if personal_case_format(event.get('product_name') or event.get('title')):return False
-    return str(event.get('product_type','')).strip().upper() in CASE_TYPES
+    return str(event.get('product_type','')).strip().upper() in CASE_TYPES and sealed_case_title(event.get('product_name') or event.get('title'))
