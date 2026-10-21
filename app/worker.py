@@ -1,3 +1,4 @@
+from app.cart_buttons import build_cart_view
 from app.merchandise_guard import building_product
 from app.price_policy import PRICE_EVENTS, classify as classify_price, destination as price_destination, explanation as explain_price, deal_matches, alert_matches, deal_title, deal_dedupe_key, case_destination
 from app.dispatch_observability import mark_phase, traced_dispatch, optional_conversion, primary_confirmed
@@ -1610,6 +1611,7 @@ async def route_event_to_discord(
                 await channel.send(
                     content=timestamp_ping(notification_chunks[0][0]),
                     embed=embed,
+                    view=build_cart_view(event),
                     allowed_mentions=(
                         discord.AllowedMentions(
                             roles=False,
