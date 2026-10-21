@@ -1,0 +1,24 @@
+{
+  "release": "1.7.2",
+  "files": {
+    "lotus_batch_preflight.py": "a6bb4440118b8a8e502cf4a0019350e3d1821994d4478f2fc4d84658de8ac62c",
+    "affiliate-links.example.json": "bf664eed6c81e7c77418ef136262bb4c8eea20836211eb5ebd4ac4b3a80f2b22",
+    "lotus_delivery_latency.py": "ad5e0167d378a877d902c79fec74f3f45868364a17c9f1b5cdf4d05f2da4b5e0",
+    "tests/test_expansion1.py": "87441a8eab201b81196b63cffd9f8a94aab756a38cc69e00e8278eb699949775",
+    "tests/test_launch_batch.py": "f50a78f1fd06f2207135fde27c36fca88af9f96f1399b578ed5dcc04564721f4",
+    "tests/test_msrp1.py": "8c13a06c0b8899e611b3e96ad642d60905f15f67a3c7538e0d581f612834ddeb",
+    "START_HERE_LAUNCH_BATCH.md": "5425309f4e135c53303fe9d1f5125f29286164626485812682c1c14eff359870",
+    "main.py": "887669bafc5b483131523fe30482e3ae6308b98beb470c0b9d105954f6c3c4f6",
+    "lotus_affiliate_check.py": "d015560cb716054facc21183df447e4d59a043b25cc26e30b23741a0b9e11703",
+    "app/affiliate.py": "bfce40eaf24335f702bf6f479c040032c0f4f81cb97c297a070d465f6652d94f",
+    "app/marketplaces/ebay_live.py": "f140f62c07c2679ddce40f56b6bf00c587e3b51c071ed30324d2115af1c9b83b",
+    "app/marketplaces/launch_status.py": "71e293d2877e9898a7fb563b666f8395a8a2ce539e67ced8c268fb4c956cfaec",
+    "app/marketplaces/ebay_capacity.py": "30eb80d69471eb46faa4e5eeff8dffa920784a083c2a4694d3e518254dcec00d",
+    "app/member_xp.py": "a296cd75deb697e1df8e2bf329fbfb8f9e5f53b065c61901d081c1cb40d94387",
+    "app/major_retailers/pipeline.py": "81ddf105869ca8f29e49d759a25a650034040484a5ab8baa794df1b6459eb13d",
+    "app/major_retailers/retry_policy.py": "7f000c4f76f1c4065de7a2f24c952267e7aeb81a3caa117629ba71a8b41b3948",
+    "app/affiliate_registry.py": "76deb1c567c23c553686a19775a599427de048d9d78fb0f9d3f13b15a35a673e",
+    "app/version.py": "f966371e19c83d03ac51c909a50e62e491a19e3c2ac0d330563243a9cf472da0",
+    "Lotus-Master-Milestones.md": "5d8696b8f0706dab807fe7276028da8da0297f034a39a46ed2a8de18a64733fc"
+  }
+}
