@@ -15,6 +15,8 @@ def remaining(runtime, now=None):
         if last.tzinfo is None: last = last.replace(tzinfo=timezone.utc)
         now = now or datetime.now(timezone.utc)
         delay = min(3600, 900 * 2 ** min(streak - 1, 2))
+        retry=re.search(r'RETRY_AFTER_SECONDS=(\d{1,9})\b',error)
+        if retry:delay=max(delay,int(retry[1]))
         return max(0, min(delay, int(delay - (now-last).total_seconds())))
     except (TypeError, ValueError, OverflowError):
         return 0
