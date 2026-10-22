@@ -16,6 +16,8 @@ _ADAPTERS: dict[str, Type[MajorRetailerAdapter]] = {}
 def normalize_retailer_key(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     aliases = {
+        'merch.riotgames.com':'riot_merch',
+        'riot merch':'riot_merch',
         "target.com": "target",
         "walmart.com": "walmart",
         "bestbuy": "best_buy",
