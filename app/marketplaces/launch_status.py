@@ -52,6 +52,7 @@ def local_status(environ=None):
                         'message_content_configured':env.get('LOTUS_XP_MESSAGE_CONTENT','false').lower()=='true',
                         'runtime_verified':False,'check':'/xpstatus'},
         'pending_other_monitors':['Pokemon Center: live stock access not verified',
+        'Riot/Riftbound: run lotus_riot_probe.py and lotus_riot_status.py --database; merch is page/price-only, official news is opt-in',
         'Premium Bandai: page/price adapter installed; current production state must be checked with lotus_readiness_check.py --database; stock unverified',
         'Major retailers: check lotus_readiness_check.py --database'],
         'note':'Price previews are not listing feeds or alert integrations. No cross-currency or regional averages are combined.'}
