@@ -1214,6 +1214,10 @@ class LotusTrackerBot(
         from app.member_xp import install as install_member_xp
         await install_member_xp(self, self.database_ready)
 
+        if self.database_ready:
+            from app.riot_news import start as start_riot_news
+            start_riot_news(self)
+
         start_x_monitor(self)
 
         synced = (
