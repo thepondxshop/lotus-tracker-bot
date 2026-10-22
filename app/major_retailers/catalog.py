@@ -9,6 +9,8 @@ STEP = "6K-2C"
 # Definitions are roadmap/identity records only. Runtime promotion is handled
 # by pipeline.py after silent validation; nothing here activates polling.
 BUILTIN_MAJOR_RETAILERS = (
+    MajorRetailerDefinition(key='riot_merch',display_name='Riot Games — Riftbound',domain='merch.riotgames.com',region='US',enabled=False,
+        notes='Official Riftbound public category page/price monitoring. Drawing and stock eligibility are not inferred.'),
     MajorRetailerDefinition(
         key="target",
         display_name="Target",
