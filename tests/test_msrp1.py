@@ -33,7 +33,9 @@ class MsrpTests(unittest.TestCase):
         self.assertEqual(classify(event('90','MARKET_SOLD',product_type='Single Card')),'DEAL')
     def test_routes(self):
         for region,typ,key in [('US','Booster Box','CHANNEL_DEALS'),('JP','Booster Box','CHANNEL_GLOBAL_DEALS'),('US','CASE','CHANNEL_CASE_SEALED_DEALS')]:
-            e=event(region=region,product_type=typ);e['reference_evidence']['region']=region;self.assertEqual(destination(e,{key:'123'})['channel_id'],123)
+            e=event(region=region,product_type=typ,product_name='Pokemon Booster Box Case' if typ=='CASE' else 'Pokemon Booster Box');e['reference_evidence']['region']=region;self.assertEqual(destination(e,{key:'123'})['channel_id'],123)
+    def test_untitled_case_is_not_routed_as_shipping_case(self):
+        self.assertIsNone(destination(event(product_type='CASE'),{'CHANNEL_CASE_SEALED_DEALS':'123'})['channel_id'])
     def test_actual_worker_route(self):
         tree=ast.parse(Path('app/worker.py').read_text());node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='determine_alert_route');ns={'classify_price':classify,'PRICE_EVENTS':PRICE_EVENTS}
         exec(compile(ast.Module(body=[node],type_ignores=[]),'route','exec'),ns);self.assertEqual(ns['determine_alert_route'](event()),'deal')
