@@ -9,7 +9,7 @@ async def main(args):
         get_major_retailer_definition, build_major_retailer_adapter)
     from app.major_retailers.public_pages import PublicPageAdapter
     adapter=build_major_retailer_adapter(args.retailer)
-    if args.retailer!='premium_bandai' and not isinstance(adapter,PublicPageAdapter):
+    if args.retailer not in ('premium_bandai','riot_merch') and not isinstance(adapter,PublicPageAdapter):
         raise ValueError('Configure PUBLIC_RETAILER_WATCHLIST_FILE and redeploy first')
     if not args.activate:
         probe=await adapter.healthcheck()
@@ -34,7 +34,7 @@ async def main(args):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('retailer',choices=['premium_bandai','target','walmart','gamestop','best_buy'])
+    parser.add_argument('retailer',choices=['premium_bandai','target','walmart','gamestop','best_buy','riot_merch'])
     parser.add_argument('--activate',action='store_true',help='Stage, baseline, validate twice, then promote only if ready')
     args=parser.parse_args()
     asyncio.run(main(args))
