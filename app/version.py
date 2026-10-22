@@ -1,13 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.2'
+VERSION = '1.7.3'
 RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Optional community XP, rank and leaderboard commands with activity limits.',
-    'Approved exact-product affiliate links with expiry and disclosure.',
-    'Reviewed eBay target searches rotate pages with bounded request settings.',
-    'Major retailer access-failure cooldowns and deployment integrity checks.',
+    'Official Riot/Riftbound announcement monitoring, with drawing notices kept separate from stock alerts.',
+    'Riot Merch public category page/price adapter added behind validation and promotion gates.',
+    'Member XP opt-out, progress erasure and opt-in controls.',
+    'Includes the prior launch batch; retailer access and marketplace live gates remain enforced.',
 )
 
 def build_id():
