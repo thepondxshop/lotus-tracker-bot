@@ -1,4 +1,5 @@
 import asyncio
+import os
 from app.version import VERSION as BOT_VERSION, build_id
 print(f"LOTUS BOT RELEASE | Version={BOT_VERSION} | Commit={build_id()}", flush=True)
 
