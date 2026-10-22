@@ -30,6 +30,7 @@ def eligible_message(message):
             and message.channel.id in channel_ids() and content_key(message.content) is not None)
 
 def award_amount(row,key,message_id,now):
+    if row.get('enabled') is False:return 0
     if message_id<=int(row['last_message_id']):return 0
     previous=row['last_awarded_at']
     if previous is not None and (now-previous).total_seconds()<60:return 0
@@ -46,9 +47,22 @@ async def ensure_schema(engine):
             last_awarded_at TIMESTAMPTZ, last_message_id BIGINT NOT NULL DEFAULT 0,
             last_content_hash TEXT, PRIMARY KEY(guild_id,user_id))'''))
         await conn.execute(text('CREATE INDEX IF NOT EXISTS lotus_member_xp_ranking ON lotus_member_xp(guild_id,xp DESC,user_id)'))
+        await conn.execute(text('ALTER TABLE lotus_member_xp ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE'))
 
 class XPStore:
     def __init__(self,engine):self.engine=engine
+    async def privacy(self,guild_id,user_id,enabled):
+        async with self.engine.begin() as conn:
+            # Reset personal progress when opting out. Keep only the opt-out identity
+            # needed to prevent the next message from silently re-enrolling the member.
+            await conn.execute(text('''INSERT INTO lotus_member_xp(guild_id,user_id,enabled) VALUES (:g,:u,:enabled)
+                ON CONFLICT(guild_id,user_id) DO UPDATE SET enabled=:enabled,
+                xp=CASE WHEN :enabled THEN lotus_member_xp.xp ELSE 0 END,
+                daily_xp=CASE WHEN :enabled THEN lotus_member_xp.daily_xp ELSE 0 END,
+                last_content_hash=CASE WHEN :enabled THEN lotus_member_xp.last_content_hash ELSE NULL END,
+                last_awarded_at=CASE WHEN :enabled THEN lotus_member_xp.last_awarded_at ELSE NULL END,
+                last_message_id=CASE WHEN :enabled THEN lotus_member_xp.last_message_id ELSE 0 END'''),
+                dict(g=guild_id,u=user_id,enabled=enabled))
     async def award(self,guild_id,user_id,message_id,key):
         async with self.engine.begin() as conn:
             args=dict(g=guild_id,u=user_id)
@@ -66,15 +80,26 @@ class XPStore:
     async def rank(self,guild_id,user_id):
         async with self.engine.connect() as conn:
             row=(await conn.execute(text('''SELECT xp, 1+(SELECT count(*) FROM lotus_member_xp b
-                WHERE b.guild_id=a.guild_id AND b.xp>a.xp) AS rank
-                FROM lotus_member_xp a WHERE guild_id=:g AND user_id=:u'''),dict(g=guild_id,u=user_id))).mappings().first()
+                WHERE b.guild_id=a.guild_id AND b.enabled AND b.xp>a.xp) AS rank
+                FROM lotus_member_xp a WHERE guild_id=:g AND user_id=:u AND enabled'''),dict(g=guild_id,u=user_id))).mappings().first()
             return dict(row) if row else dict(xp=0,rank=None)
     async def leaders(self,guild_id):
         async with self.engine.connect() as conn:
-            return (await conn.execute(text('SELECT user_id,xp FROM lotus_member_xp WHERE guild_id=:g ORDER BY xp DESC,user_id LIMIT 10'),dict(g=guild_id))).mappings().all()
+            return (await conn.execute(text('SELECT user_id,xp FROM lotus_member_xp WHERE guild_id=:g AND enabled AND xp>0 ORDER BY xp DESC,user_id LIMIT 10'),dict(g=guild_id))).mappings().all()
 
 class MemberXP(commands.Cog):
     def __init__(self,bot,store,active):self.bot,self.store,self.active=bot,store,active
+    @app_commands.command(name='xpprivacy',description='Opt out and erase XP progress, or opt back in.')
+    @app_commands.guild_only()
+    @app_commands.choices(action=[app_commands.Choice(name='Opt out and erase my XP',value='out'),app_commands.Choice(name='Opt back in',value='in')])
+    async def xpprivacy(self,interaction:discord.Interaction,action:app_commands.Choice[str]):
+        await interaction.response.defer(ephemeral=True)
+        if not self.active:
+            await interaction.followup.send('XP is inactive. Ask an administrator to handle any existing XP data request.',ephemeral=True);return
+        try:
+            await self.store.privacy(interaction.guild_id,interaction.user.id,action.value=='in')
+            await interaction.followup.send('XP enabled; previous erased progress is not restored.' if action.value=='in' else 'XP disabled and progress erased. Your guild/member IDs remain only to remember the opt-out. Paid roles are unchanged.',ephemeral=True)
+        except Exception:await interaction.followup.send('XP privacy update failed; no success is confirmed. Please contact an administrator.',ephemeral=True)
     @commands.Cog.listener()
     async def on_message(self,message):
         if not self.active or not eligible_message(message):return
