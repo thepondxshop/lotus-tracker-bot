@@ -10,6 +10,7 @@ from . import walmart as _walmart  # noqa: E402,F401
 from . import best_buy as _best_buy  # noqa: E402,F401
 from . import gamestop as _gamestop  # noqa: E402,F401
 from . import premium_bandai as _premium_bandai  # noqa: E402,F401
+from . import riot_merch as _riot_merch
 
 # Optional exact public-page watchlists use no partner credentials.
 from .public_pages import install as _install_public_pages
