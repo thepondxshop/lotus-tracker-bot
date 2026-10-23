@@ -124,6 +124,9 @@ class Candidate:
 
 
 def candidate_from_event(event):
+    from app.registered_games import registered_identity
+    if registered_identity(dict(event, title=event.get('product_name') or event.get('title'))):
+        return None
     from app.tcg_identity import graded_pokemon_title, non_tcg_stationery
     if graded_pokemon_title(event.get("product_name")) or non_tcg_stationery(event.get("product_name")): return None
     game = event.get("game")
@@ -242,7 +245,10 @@ class DiscoveryNotifier:
                 await self._io(redis.zrem(base+":due", key))
                 return True
             candidate = Candidate(**json.loads(payload))
+            from app.registered_games import registered_identity
+            known_product = registered_identity({'title':candidate.product, 'store_name':candidate.store})
             if (_registered(candidate.name)
+                    or known_product
                     or _registered(title_identity(candidate.product) or "")):
                 message_id = "already_registered"
             elif key in self.delivered:
