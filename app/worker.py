@@ -1440,6 +1440,9 @@ async def route_event_to_discord(
     from app.case_identity import normalize_case_event
     event = normalize_case_event(event)
     event = normalize_accessory_event(event)
+    known_game = registered_identity(dict(event, title=event.get('product_name') or event.get('title')))
+    if known_game and event.get('game') in {None, NEW_TCG, 'Unidentified TCG'}:
+        event = dict(event, game=known_game)
     from app.deal_references import enrich
     event = enrich(event)
     if (event.get("game") == NEW_TCG
