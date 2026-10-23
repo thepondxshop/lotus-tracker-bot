@@ -1419,6 +1419,9 @@ async def route_event_to_discord(
     bot,
     event,
 ):
+    from app.accessory_routes import merchandise_event, normalize_accessory_event, accessory_destination
+    if merchandise_event(event):
+        return False
     from app.tcg_identity import non_tcg_stationery, graded_pokemon_title
     if non_tcg_stationery(event.get('product_name') or event.get('title')):
         return False
@@ -1436,6 +1439,7 @@ async def route_event_to_discord(
         return False
     from app.case_identity import normalize_case_event
     event = normalize_case_event(event)
+    event = normalize_accessory_event(event)
     from app.deal_references import enrich
     event = enrich(event)
     if (event.get("game") == NEW_TCG
@@ -1536,6 +1540,12 @@ async def route_event_to_discord(
             print('LOTUS CASE ROUTE BLOCKED | CHANNEL_CASE_SEALED_DEALS missing', flush=True)
             return False
         destination = case_route
+
+    accessory_route = accessory_destination(event)
+    if accessory_route is not None:
+        if not accessory_route['channel_id']:
+            return False
+        destination = accessory_route
 
     regional_id = destination["channel_id"]
     channel_id = regional_id or channel_id
