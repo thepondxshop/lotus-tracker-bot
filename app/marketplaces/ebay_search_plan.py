@@ -37,14 +37,18 @@ class DetailRotation:
     def expire(self,now):
         for key in list(self.cache):
             if now-self.cache[key]['at']>=self.ttl: del self.cache[key]
-    def put(self,key,rows,now=None):
+    def put(self,key,rows,now=None,*,offset=0):
         now=time.monotonic() if now is None else now
         if not isinstance(rows,list): raise ValueError('Invalid search response')
         # Retain only item IDs, never seller/profile fields from summaries.
         ids=list(dict.fromkeys(r['itemId'] for r in rows if isinstance(r,dict)
             and isinstance(r.get('itemId'),str) and len(r['itemId'])<=200))[:100]
-        previous=self.cursors.get(key,0)
-        self.cache[key]={'at':now,'rows':[{'itemId':i} for i in ids], 'cursor':previous}
+        if not isinstance(offset,int) or isinstance(offset,bool) or offset<0:
+            raise ValueError('Invalid search offset')
+        page_key=(key,offset)
+        previous=self.cursors.get(page_key,0)
+        self.cache[key]={'at':now,'rows':[{'itemId':i} for i in ids], 'cursor':previous,
+                         'page_key':page_key, 'offset':offset}
         self.cache.move_to_end(key);self.expire(now)
         while len(self.cache)>self.maximum:self.cache.popitem(last=False)
     def take(self,key,count=3):
@@ -53,6 +57,6 @@ class DetailRotation:
         count=min(count,len(rows));start=v['cursor']%len(rows)
         result=[rows[(start+i)%len(rows)] for i in range(count)]
         v['cursor']=(start+count)%len(rows)
-        self.cursors[key]=v['cursor'];self.cursors.move_to_end(key)
+        self.cursors[v['page_key']]=v['cursor'];self.cursors.move_to_end(v['page_key'])
         while len(self.cursors)>self.maximum:self.cursors.popitem(last=False)
         return result
