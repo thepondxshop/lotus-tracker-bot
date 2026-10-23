@@ -14,6 +14,12 @@ class CalendarAdmin(app_commands.Group):
         super().__init__(name='calendaradmin',description='Set up the release calendar and release-day announcements',
             guild_only=True,default_permissions=discord.Permissions(administrator=True))
         self.runtime=runtime
+    @app_commands.command(name='riot',description='Preview Riot drawing dates/images or import the reviewed four-product schedule')
+    async def riot(self,interaction:discord.Interaction,import_products:bool=False):
+        await interaction.response.defer(ephemeral=True)
+        from app.riot_schedule import embeds, import_catalog
+        result = await import_catalog(self.runtime,interaction.guild_id,interaction.user.id) if import_products else None
+        await interaction.followup.send(content=('Imported four product records with source images. Drawing windows are in the notes; only Gift of the Rift has a general retail release date.' if result else 'Preview only. Use import_products:True to save these four products to the catalog.'),embeds=embeds(),ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
     async def interaction_check(self,interaction):
         if interaction.guild_id and getattr(interaction.permissions,'administrator',False):return True
         await interaction.response.send_message('Calendar setup requires a server administrator.',ephemeral=True);return False
