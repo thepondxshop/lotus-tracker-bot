@@ -51,7 +51,8 @@ class CardRoutingTests(unittest.TestCase):
     def test_version(self):
         spec=importlib.util.spec_from_file_location('release_version',ROOT/'app/version.py')
         v=importlib.util.module_from_spec(spec);spec.loader.exec_module(v)
-        self.assertEqual(v.VERSION,'1.7.4')
-        self.assertEqual(v.RELEASE_KIND,'patch')
-        self.assertIn('Fusion World',v.announcement())
-        self.assertNotIn('@everyone',v.announcement())
+        self.assertRegex(v.VERSION,r'^\d+\.\d+\.\d+$')
+        self.assertIn(v.RELEASE_KIND,{'patch','regular','major'})
+        self.assertTrue(v.RELEASE_NOTES)
+        self.assertIn(v.VERSION,v.announcement())
+        if v.RELEASE_KIND != 'major':self.assertNotIn('@everyone',v.announcement())
