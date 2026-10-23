@@ -3,6 +3,8 @@ from collections import OrderedDict
 import time
 
 GAME_QUERIES = (
+    ('World of Tanks TCG','World of Tanks card game'), ('Vibes TCG','Vibes TCG'),
+    ('Shadowverse Evolve','Shadowverse Evolve'),
     ('Pokemon','Pokemon TCG'), ('One Piece','One Piece card game'),
     ('MTG','Magic the Gathering'), ('Dragon Ball Fusion World','Dragon Ball Fusion World'),
     ('Riftbound','Riftbound TCG'), ('Gundam','Gundam card game'),
