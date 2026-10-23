@@ -37,7 +37,8 @@ def type_key(value):
 def game_matches(game,title):
     aliases={'MTG':'magic the gathering','Pokemon':'pokemon','Yu-Gi-Oh!':'yu gi oh',
              'Yu-Gi-Oh':'yu gi oh','Dragon Ball Super Fusion World':'dragon ball','Final Fantasy TCG':'final fantasy',
-             'CookieRun: Braverse':'cookierun'}
+             'CookieRun: Braverse':'cookierun', 'World of Tanks TCG':'world of tanks',
+             'Vibes TCG':'vibes', 'Shadowverse Evolve':'shadowverse evolve'}
     needle=norm(aliases.get(game,game));hay=norm(title)
     return bool(needle and needle!='unknown' and re.search(r'\b'+re.escape(needle)+r'\b',hay))
 
