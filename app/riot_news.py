@@ -92,6 +92,10 @@ async def run(bot,mode):
                                 if url not in choices:choices.append(url)
                                 break
                         rows=[]
+                        # Same leader lock and validated channel as official news.
+                        # Drawing reminders do not promote a stock/release event.
+                        from app.riot_drawing_notices import tick as drawing_tick
+                        await drawing_tick(conn,session,channel,mode)
                         for url in choices:
                             await asyncio.sleep(1.5)
                             rows.append(article(await fetch(session,url),url))
