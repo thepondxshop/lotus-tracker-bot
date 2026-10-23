@@ -1,6 +1,7 @@
 """Opt-in member activity XP. PostgreSQL persistence; no paid role changes."""
 import hashlib
 import math
+import secrets
 import os
 from datetime import datetime, timezone
 import discord
@@ -14,8 +15,28 @@ def enabled():
 def channel_ids():
     return {int(v.strip()) for v in os.getenv('LOTUS_XP_CHANNEL_IDS','').split(',') if v.strip().isdigit() and int(v.strip())>0}
 
+COMMANDS_CHANNEL = 1541940028165591140
+LEVELS_CHANNEL = 1563288538433192076
+EXCLUDED_CHANNELS = {COMMANDS_CHANNEL, 1541940125343293561, LEVELS_CHANNEL, 1541940377412698223}
+
 def level(xp):
-    return math.isqrt(max(0,int(xp))//100)
+    # Start at level 1; L -> L+1 costs 100*L XP.
+    return (1 + math.isqrt(1 + max(0, int(xp)) // 50 * 4)) // 2
+
+def level_floor(lv):
+    return 50 * lv * (lv - 1)
+
+def chat_allowed(message, overrides=None):
+    channel = message.channel
+    ids = {channel.id, getattr(channel, 'parent_id', None), getattr(channel, 'category_id', None)}
+    if ids & EXCLUDED_CHANNELS or any((overrides or {}).get(cid) is False for cid in ids):
+        return False
+    if str(getattr(channel, 'name', '')).startswith('ticket-'):
+        return False
+    # A parent ticket channel also excludes its threads.
+    if str(getattr(getattr(channel, 'parent', None), 'name', '')).startswith('ticket-'):
+        return False
+    return True
 
 def cosmetic_role(guild,role):
     """Reject roles that grant permissions or are used for game/paid access."""
@@ -49,9 +70,7 @@ def award_amount(row,key,message_id,now):
     previous=row['last_awarded_at']
     if previous is not None and (now-previous).total_seconds()<60:return 0
     if row['last_content_hash']==key:return 0
-    today=now.date()
-    used=int(row['daily_xp']) if row['day']==today else 0
-    return max(0,min(10,200-used))
+    return secrets.randbelow(11) + 10
 
 async def ensure_schema(engine):
     async with engine.begin() as conn:
@@ -125,7 +144,7 @@ class XPStore:
                 dict(g=guild_id,u=user_id,enabled=enabled))
             if not enabled:
                 await conn.execute(text('DELETE FROM lotus_xp_adjustments WHERE guild_id=:g AND user_id=:u'),dict(g=guild_id,u=user_id))
-    async def award(self,guild_id,user_id,message_id,key):
+    async def award(self,guild_id,user_id,message_id,key,*,with_progress=False):
         async with self.engine.begin() as conn:
             args=dict(g=guild_id,u=user_id)
             await conn.execute(text('INSERT INTO lotus_member_xp(guild_id,user_id) VALUES (:g,:u) ON CONFLICT DO NOTHING'),args)
@@ -138,22 +157,28 @@ class XPStore:
                 daily_xp=CASE WHEN day=:day THEN daily_xp+:n ELSE :n END, day=:day,
                 last_awarded_at=:now,last_message_id=:mid,last_content_hash=:key
                 WHERE guild_id=:g AND user_id=:u'''),dict(args,n=amount,day=now.date(),now=now,mid=message_id,key=key))
-            return amount
+            return (amount,int(row['xp']),int(row['xp'])+amount) if with_progress else amount
     async def rank(self,guild_id,user_id):
         async with self.engine.connect() as conn:
             row=(await conn.execute(text('''SELECT xp, 1+(SELECT count(*) FROM lotus_member_xp b
                 WHERE b.guild_id=a.guild_id AND b.enabled AND b.xp>a.xp) AS rank
                 FROM lotus_member_xp a WHERE guild_id=:g AND user_id=:u AND enabled'''),dict(g=guild_id,u=user_id))).mappings().first()
             return dict(row) if row else dict(xp=0,rank=None)
-    async def leaders(self,guild_id):
+    async def leaders(self,guild_id,limit=10):
+        if limit not in (10,15,20):raise ValueError("Choose 10, 15 or 20.")
         async with self.engine.connect() as conn:
-            return (await conn.execute(text('SELECT user_id,xp FROM lotus_member_xp WHERE guild_id=:g AND enabled AND xp>0 ORDER BY xp DESC,user_id LIMIT 10'),dict(g=guild_id))).mappings().all()
+            return (await conn.execute(text('SELECT user_id,xp FROM lotus_member_xp WHERE guild_id=:g AND enabled AND xp>0 ORDER BY xp DESC,user_id LIMIT :limit'),dict(g=guild_id,limit=limit))).mappings().all()
 
 class MemberXP(commands.Cog):
     def __init__(self,bot,store,active):
         self.bot,self.store,self.active=bot,store,active
         self.channel_overrides={}
         self.reward_roles={}
+    async def interaction_check(self, interaction):
+        if interaction.channel_id != COMMANDS_CHANNEL:
+            await interaction.response.send_message(f'Use XP commands in <#{COMMANDS_CHANNEL}>.', ephemeral=True)
+            return False
+        return True
     @app_commands.command(name='xpreward',description='Configure a cosmetic level role, or remove its future assignment.')
     @app_commands.default_permissions(manage_guild=True,manage_roles=True)
     @app_commands.checks.has_permissions(manage_guild=True,manage_roles=True)
@@ -224,41 +249,63 @@ class MemberXP(commands.Cog):
         except Exception:await interaction.followup.send('XP privacy update failed; no success is confirmed. Please contact an administrator.',ephemeral=True)
     @commands.Cog.listener()
     async def on_message(self,message):
-        if not self.active or not eligible_message(message,self.channels(message.guild.id) if message.guild else set()):return
+        if not self.active or message.guild is None or not chat_allowed(message,self.channel_overrides.get(message.guild.id)):
+            return
+        if not eligible_message(message,{message.channel.id}):return
+        # Exclude this bot's recognized prefix commands as well as slash/bang commands.
+        if hasattr(self.bot, 'get_context'):
+            context = await self.bot.get_context(message)
+            if context.valid:return
         try:
-            awarded=await self.store.award(message.guild.id,message.author.id,message.id,content_key(message.content))
-            if awarded and self.reward_roles.get(message.guild.id):
-                progress=await self.store.rank(message.guild.id,message.author.id)
-                await self.sync_rewards(message.author,progress['xp'])
-        except Exception as exc:print('LOTUS XP | State=AWARD_FAILED | Error='+type(exc).__name__,flush=True)
-    @app_commands.command(name='rank',description='Show your community level and XP.')
-    @app_commands.guild_only()
-    async def rank(self,interaction:discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+            result=await self.store.award(message.guild.id,message.author.id,message.id,content_key(message.content),with_progress=True)
+            if not result:return
+            awarded,before,after=result
+            if self.reward_roles.get(message.guild.id):
+                try:await self.sync_rewards(message.author,after)
+                except discord.HTTPException as exc:print('LOTUS XP | State=REWARD_FAILED | Error='+type(exc).__name__,flush=True)
+            if level(after)>level(before):
+                channel=message.guild.get_channel(LEVELS_CHANNEL)
+                if channel:
+                    await channel.send(f'🎉 {message.author.mention} reached **Level {level(after)}**! **{after} XP** total.',
+                        allowed_mentions=discord.AllowedMentions(users=[message.author],roles=False,everyone=False))
+                else:print('LOTUS XP | State=LEVEL_CHANNEL_MISSING',flush=True)
+        except Exception as exc:print('LOTUS XP | State=AWARD_OR_NOTICE_FAILED | Error='+type(exc).__name__,flush=True)
+    async def show_level(self,interaction):
+        await interaction.response.defer(ephemeral=False)
         if not self.active:
-            await interaction.followup.send('Community XP is not enabled.',ephemeral=True);return
+            await interaction.followup.send('Community XP is not enabled.');return
         try:
             r=await self.store.rank(interaction.guild_id,interaction.user.id);lv=level(r['xp'])
-            await interaction.followup.send(f"Level **{lv}** • **{r['xp']} XP** • Rank **{r['rank'] or 'Unranked'}**\nNext level: {(lv+1)**2*100-r['xp']} XP away.",ephemeral=True)
-        except Exception:await interaction.followup.send('XP is temporarily unavailable.',ephemeral=True)
-    @app_commands.command(name='leaderboard',description='Show the top ten community XP members.')
+            await interaction.followup.send(f"{interaction.user.mention} — Level **{lv}** • **{r['xp']} XP** • Rank **{r['rank'] or 'Unranked'}**\n"
+                f"Progress: {r['xp']-level_floor(lv)}/{100*lv} XP toward level {lv+1}.",allowed_mentions=discord.AllowedMentions.none())
+        except Exception:await interaction.followup.send('XP is temporarily unavailable.')
+    @app_commands.command(name='level',description='Show your community level and XP in bot-commands.')
     @app_commands.guild_only()
-    async def leaderboard(self,interaction:discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+    async def level_command(self,interaction:discord.Interaction):
+        await self.show_level(interaction)
+    @app_commands.command(name='rank',description='Alias for /level; show your public community rank.')
+    @app_commands.guild_only()
+    async def rank(self,interaction:discord.Interaction):
+        await self.show_level(interaction)
+    @app_commands.command(name='leaderboard',description='Show this server’s top 10, 15 or 20 members in bot-commands.')
+    @app_commands.guild_only()
+    @app_commands.choices(top=[app_commands.Choice(name=str(n),value=n) for n in (10,15,20)])
+    async def leaderboard(self,interaction:discord.Interaction,top:int=10):
+        await interaction.response.defer(ephemeral=False)
         if not self.active:
-            await interaction.followup.send('Community XP is not enabled.',ephemeral=True);return
+            await interaction.followup.send('Community XP is not enabled.');return
         try:
-            rows=await self.store.leaders(interaction.guild_id)
+            rows=await self.store.leaders(interaction.guild_id,top)
             lines=[f"{i}. <@{r['user_id']}> — Level {level(r['xp'])}, {r['xp']} XP" for i,r in enumerate(rows,1)]
-            await interaction.followup.send('\n'.join(lines) or 'No XP earned yet.',ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
-        except Exception:await interaction.followup.send('XP is temporarily unavailable.',ephemeral=True)
+            await interaction.followup.send('\n'.join(lines) or 'No XP earned yet.',allowed_mentions=discord.AllowedMentions.none())
+        except Exception:await interaction.followup.send('XP is temporarily unavailable.')
     @app_commands.command(name='xpstatus',description='Inspect community XP configuration.')
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.guild_only()
     async def xpstatus(self,interaction:discord.Interaction):
         visible=[cid for cid in self.channels(interaction.guild_id) if interaction.guild.get_channel(cid)]
-        await interaction.response.send_message(f'XP active: {self.active}\nConfigured channels in this server: {len(visible)}\n10 XP per eligible message; 60-second cooldown; 200 XP daily cap (UTC).\nUse /xpsetup to save channel settings. Paid-tier access is unchanged.',ephemeral=True)
+        await interaction.response.send_message(f'XP active: {self.active}\nSaved enabled channel overrides: {len(visible)}\n10–20 random XP per active minute; no idle XP or daily cap. All chat channels by default; excluded channels and tickets never earn XP.\nUse /xpsetup to save channel settings. Paid-tier access is unchanged.',ephemeral=True)
 
 async def install(bot,database_ready):
     if bot.get_cog('MemberXP'):return
