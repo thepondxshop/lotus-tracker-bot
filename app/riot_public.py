@@ -65,7 +65,9 @@ def article(body,url):
     if not title or not content:raise ValueError('RIOT_ARTICLE_EMPTY')
     # Preserve schedule text; never convert a calendar window into stock evidence.
     schedule=[s for s in texts if re.search(r'registration (?:opens|goes live)|registration closes|sign.up window',s,re.I)]
-    return dict(url=url,title=title,published_at=head.get('publishDate'),
+    banner=head.get('banner',{}).get('url')
+    image_url=banner if isinstance(banner,str) and urlsplit(banner).hostname=='cmsassets.rgpub.io' and banner.startswith('https://') else None
+    return dict(url=url,title=title,published_at=head.get('publishDate'),image_url=image_url,
         fingerprint=hashlib.sha256((title+'\n'+content).encode()).hexdigest(),
         kind='DRAWING_ANNOUNCEMENT' if re.search(r'\bdrawing\b',title+' '+content,re.I) else 'OFFICIAL_ANNOUNCEMENT',
         schedule_text='\n'.join(schedule)[:1200],stock_verified=False)
