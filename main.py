@@ -650,9 +650,8 @@ async def update_game_roles(
             "\u274c Use this inside the server.",
         )
 
-    selected_games = set(
-        selected_games
-    )
+    from app.game_lifecycle import disabled as game_disabled
+    selected_games = {game for game in selected_games if not game_disabled(interaction.guild_id, game)}
 
     errors = []
 
@@ -1214,6 +1213,10 @@ class LotusTrackerBot(
 
         from app.member_xp import install as install_member_xp
         await install_member_xp(self, self.database_ready)
+        from app.community_support import install as install_community_support
+        await install_community_support(self, self.database_ready)
+        from app.game_lifecycle import install as install_game_lifecycle
+        await install_game_lifecycle(self, self.database_ready)
 
         if self.database_ready:
             from app.riot_news import start as start_riot_news
