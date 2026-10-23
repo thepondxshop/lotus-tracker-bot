@@ -250,11 +250,12 @@ async def loop(bot, store, leader, mode):
                                 'limit':'100','offset':str(offset),'sort':'endingSoonest' if auction else 'newlyListed',
                                 'filter':'buyingOptions:{'+('AUCTION' if auction else 'FIXED_PRICE')+'},itemLocationCountry:US'},target)
                             if 'errors' in data: raise ValueError('Invalid search response')
-                            rotation.put(cache_key,data.get('itemSummaries',[]))
+                            rotation.put(cache_key,data.get('itemSummaries',[]),offset=offset)
                             rows=rotation.get(cache_key)
                             pages.advance(cache_key,len(rows))
                             log('TARGET_SEARCH_PAGE',target=target['id'],auction=auction,offset=offset,search_results=len(rows))
                         reasons = Counter()
+                        details_checked = 0
                         selected = rotation.take(cache_key,capacity["details"])
                         for row in selected:
                             iid = row.get('itemId')
@@ -262,6 +263,7 @@ async def loop(bot, store, leader, mode):
                                 reasons['INVALID_ITEM_ID']+=1; continue
                             await asyncio.sleep(1)
                             item = await api.get('item/'+quote(iid,safe=''), {'fieldgroups': 'PRODUCT'}, target)
+                            details_checked += 1
                             if item.get('itemId') != iid:
                                 reasons['ITEM_ID_MISMATCH']+=1; continue
                             result = assess(item,target)
@@ -292,8 +294,12 @@ async def loop(bot, store, leader, mode):
                                 reasons[result['reason']] += 1
                             if mode == 'SHADOW':
                                 await ebay_shadow.record(store,fingerprint,target['id'],auction,result['eligible'])
-                        await ebay_shadow.record_cycle(store,fingerprint,target['id'],auction,mode,len(rows),len(selected),reasons)
-                        log('CYCLE_COMPLETE', mode=mode, target=target['id'], auction=auction, search_results=len(rows), details_checked=len(selected), counts=dict(reasons))
+                        await ebay_shadow.record_cycle(store,fingerprint,target['id'],auction,mode,len(rows),details_checked,reasons)
+                        log('CYCLE_COMPLETE', mode=mode, target=target['id'], auction=auction, search_results=len(rows),
+                            details_checked=details_checked, counts=dict(reasons),
+                            search_offset=rotation.cache[cache_key]['offset'],
+                            cached_search_age_seconds=round(asyncio.get_running_loop().time()-rotation.cache[cache_key]['at'],2),
+                            detail_coverage='PARTIAL_PAGE', reviewed_targets=len(targets))
                 cycles += 1
                 if mode != 'OFF' and cycles%4 == 0 and asyncio.get_running_loop().time() >= cooldown_until:
                     game,params=discovery_plan(discovery_index)
