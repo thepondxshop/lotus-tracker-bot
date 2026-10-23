@@ -1,13 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.5'
-RELEASE_KIND = 'patch'
+VERSION = '1.7.6'
+RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Fixed eBay detail rotation so each search page retains its own position.',
-    'Added eBay page, cache-age and completed-detail diagnostics.',
-    'Added an exported-log report for delivery timing, Shopify responses and access blockers.',
-    'Updated the launch milestone ledger; unverified feeds and retailer access remain explicitly pending.',
+    'Added source-checked Riot drawing schedule reminders with persistent duplicate prevention.',
+    'Added saved XP channel setup, audited XP corrections and cosmetic level-role rewards.',
+    'Fixed XP opt-out access while XP awarding is disabled.',
+    'Added a consolidated launch audit and updated the milestone checkpoint.',
 )
 
 def build_id():
