@@ -4,7 +4,7 @@ import unicodedata
 
 VERSION = 'GAMES4'
 
-GAMES = frozenset({'Final Fantasy TCG', 'CookieRun: Braverse', 'Harry Potter TCG — Kakawow', 'Horo Beat', 'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
+GAMES = frozenset({'World of Tanks TCG', 'Vibes TCG', 'Shadowverse Evolve', 'Final Fantasy TCG', 'CookieRun: Braverse', 'Harry Potter TCG — Kakawow', 'Horo Beat', 'Jurassic Park TCG', 'Godzilla TCG', 'Wuthering Waves', 'Union Arena'})
 PATTERNS = (
     ('Jurassic Park TCG', r'\bjurassic park\b|쥬라기공원|쥬라기 공원'),
     ('Godzilla TCG', r'\bgodzilla\b|ゴジラ'),
@@ -14,6 +14,9 @@ PATTERNS = (
     ('Harry Potter TCG — Kakawow', r'\bharry potter\b|哈利[· ]?波特'),
     ('Final Fantasy TCG', r'\bfinal fantasy\b|\bfftcg\b|ファイナルファンタジー'),
     ('CookieRun: Braverse', r'\bcookie\s*run\b|\bbraverse\b|쿠키런|クッキーラン'),
+    ('World of Tanks TCG', r'\bworld of tanks\b'),
+    ('Vibes TCG', r'\bvibes\b|\bpudgy penguins\b'),
+    ('Shadowverse Evolve', r'\bshadowverse(?: evolve)?\b|シャドウバース'),
 )
 
 def text(value):
@@ -62,6 +65,7 @@ def registered_identity(product):
             return None
         if re.search(r'\b(?:wizards|wotc|2001|2002|aura|phantom|gem|25th anniversary)\b', title):
             return None
+    if 'World of Tanks TCG' in matches and re.search(r'\b(?:generals|rush|blitz|miniatures)\b', title):return None
     evidence = title + ' ' + text(product.get('product_type')) + ' ' + text(product.get('tags'))
     physical = re.search(r'\b(?:boosters?|starter decks?|start decks?|structure decks?|display box|'
                          r'single card|singles|promo card|deck set|booster box|booster pack)\b|'
@@ -73,7 +77,7 @@ def registered_identity(product):
     # Union Arena is itself a specific card-game name. The other franchise
     # names require an explicit TCG label, Battle/Showdown identity or card-game
     # title in the native language. Bare BP01/SD01 never identifies a game.
-    specific = (game in {'Union Arena', 'Horo Beat'} or
+    specific = (game in {'Union Arena', 'Horo Beat', 'Shadowverse Evolve'} or
                 (game == 'CookieRun: Braverse' and re.search(r'\bbraverse\b|브레이버스|ブレイバース', evidence)) or
                 (game == 'Final Fantasy TCG' and re.search(r'\bfftcg\b', evidence)) or explicit_tcg or
                 (game == 'Wuthering Waves' and re.search(r'\bbattle\b|\bshowdown\b|対決|对决|對決', evidence)))
