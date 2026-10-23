@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import time
+import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import discord
@@ -115,17 +116,29 @@ class CalendarRuntime:
         # Resolve audience before durable claim. All pings are individual opt-ins,
         # never a broad game-role mention that would ping non-subscribers.
         members=await self.audience(cfg,entry,channel)
+        # Explicit server option requested for the dedicated release-day channel.
+        # Default remains individual calendar opt-ins.
+        game_role = None
+        if (channel.id == 1554313587802251284 and
+                os.getenv('LOTUS_RELEASE_DAY_GAME_ROLE_PINGS','false').lower() == 'true'):
+            from app.config import GAME_ROLES
+            from app.helpers import safe_int
+            role_id = safe_int(GAME_ROLES.get(entry['game']))
+            game_role = channel.guild.get_role(role_id) if role_id else None
+            if game_role is not None and game_role.is_default(): game_role = None
+            if game_role and not (game_role.mentionable or channel.permissions_for(channel.guild.me).mention_everyone):
+                raise CatalogError('Game role cannot be mentioned; enable role mentions for Lotus.')
         key=await self.store.claim(cfg['guild_id'],entry,channel.id,day)
         if not key:return
         embed=announcement_embed(entry,day)
         embed.set_footer(text=f'Lotus release day • {key} • Stock varies by retailer')
-        groups=[members[i:i+70] for i in range(0,len(members),70)] or [[]]
+        groups=([[]] if game_role else [members[i:i+70] for i in range(0,len(members),70)]) or [[]]
         try:
             ids=groups[0]
             picture=await asyncio.to_thread(product_image_file,entry)
             image_args={'file':picture} if picture else {}
-            message=await channel.send(content=' '.join(f'<@{x}>' for x in ids) or None,embed=embed,**image_args,
-                allowed_mentions=discord.AllowedMentions(everyone=False,roles=False,users=[discord.Object(id=x) for x in ids]))
+            message=await channel.send(content=game_role.mention if game_role else (' '.join(f'<@{x}>' for x in ids) or None),embed=embed,**image_args,
+                allowed_mentions=discord.AllowedMentions(everyone=False,roles=[game_role] if game_role else False,users=[discord.Object(id=x) for x in ids]))
             await self.store.delivered(key,'SENT',message.id)
         except (discord.Forbidden, discord.NotFound) as error:
             await self.store.delivered(key,'RETRY',error=type(error).__name__)
