@@ -40,7 +40,7 @@ class CalendarAdmin(app_commands.Group):
         self.runtime.start()
         await self.runtime.panel(cfg,await self.runtime.entries(interaction.guild_id,fresh=True),create=True)
         await interaction.followup.send(f'Calendar panel is configured in {channel.mention}. Members can open their personal calendar. Release-day pings remain separately configured.',ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
-    @app_commands.command(name='announcements',description='Configure opt-in release-day announcements; no retailer stock check')
+    @app_commands.command(name='announcements',description='Configure release-day announcements; members can opt out')
     @app_commands.describe(hour='Local hour 0–23; default 9 AM',region='US by default; ALL includes all regional editions',timezone='Default America/New_York')
     async def announcements(self,interaction:discord.Interaction,channel:discord.TextChannel,enabled:bool,
                             hour:app_commands.Range[int,0,23]=9,timezone:str='America/New_York',region:str='US'):
@@ -55,7 +55,7 @@ class CalendarAdmin(app_commands.Group):
             f"Schedule: {hour:02d}:00 {timezone}; region: {region}.\n"
             'Only exact confirmed dates trigger “releases today.” TBA windows never trigger it. '
             'If enabled after the scheduled hour, remaining releases for today may post; past days are not replayed. '
-            'Members must opt in through the calendar and have the matching game role.',ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
+            'Members with the matching game role default on and can opt out through My games / pings.',ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
     @app_commands.command(name='access',description='Set the calendar minimum tier; existing default is Lite')
     @app_commands.choices(tier=[app_commands.Choice(name=t,value=t) for t in ('Free','Lite','Premium','Premium+')])
     async def access(self,interaction:discord.Interaction,tier:str):
