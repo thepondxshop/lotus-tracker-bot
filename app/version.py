@@ -1,13 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.4'
+VERSION = '1.7.5'
 RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Fixed Fusion World release-event singles incorrectly labeled and routed as accessories.',
-    'Playmat/card sets and products explicitly including bonus or promo cards stay in their game channels.',
-    'Accessory routing retains sleeves, playmats, deck boxes and protective cases sold without cards.',
-    'Release-day default-on preferences were delivered in the preceding patch; saved opt-outs remain respected.',
+    'Fixed eBay detail rotation so each search page retains its own position.',
+    'Added eBay page, cache-age and completed-detail diagnostics.',
+    'Added an exported-log report for delivery timing, Shopify responses and access blockers.',
+    'Updated the launch milestone ledger; unverified feeds and retailer access remain explicitly pending.',
 )
 
 def build_id():
