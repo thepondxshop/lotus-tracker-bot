@@ -14,7 +14,7 @@ class XPTests(unittest.TestCase):
         self.now=datetime(2026,10,21,tzinfo=timezone.utc)
         self.row=dict(last_message_id=1,last_awarded_at=None,last_content_hash=None,day=self.now.date(),daily_xp=0)
     def test_levels(self):
-        self.assertEqual([xp.level(n) for n in (0,99,100,399,400)], [0,0,1,1,2])
+        self.assertEqual([xp.level(n) for n in (0,99,100,399,400)], [1,1,2,3,3])
     def test_content(self):
         for value in ('hi','aaaaaaaaaaaaaaaa','!this is a command','https://example.com'):
             self.assertIsNone(xp.content_key(value))
@@ -23,16 +23,16 @@ class XPTests(unittest.TestCase):
         self.row['last_awarded_at']=self.now-timedelta(seconds=59)
         self.assertEqual(xp.award_amount(self.row,'new',2,self.now),0)
         self.row['last_awarded_at']=self.now-timedelta(seconds=60)
-        self.assertEqual(xp.award_amount(self.row,'new',2,self.now),10)
+        self.assertIn(xp.award_amount(self.row,'new',2,self.now),range(10,21))
     def test_duplicate_and_old_message(self):
         self.assertEqual(xp.award_amount(self.row,'new',1,self.now),0)
         self.row['last_content_hash']='new'
         self.assertEqual(xp.award_amount(self.row,'new',2,self.now),0)
-    def test_daily_cap_and_reset(self):
+    def test_no_daily_cap_and_date_rollover(self):
         self.row['daily_xp']=200
-        self.assertEqual(xp.award_amount(self.row,'new',2,self.now),0)
+        self.assertIn(xp.award_amount(self.row,'new',2,self.now),range(10,21))
         self.row['day']=self.now.date()-timedelta(days=1)
-        self.assertEqual(xp.award_amount(self.row,'new',2,self.now),10)
+        self.assertIn(xp.award_amount(self.row,'new',2,self.now),range(10,21))
     def test_message_filter(self):
         m=SimpleNamespace(guild=object(),author=SimpleNamespace(bot=False),webhook_id=None,channel=SimpleNamespace(id=123),content='Hello everyone today')
         with patch.dict('os.environ',LOTUS_XP_CHANNEL_IDS='123'):
@@ -46,15 +46,15 @@ class XPTests(unittest.TestCase):
 
 class ListenerTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_listener(self):
-        store=SimpleNamespace(award=AsyncMock())
+        store=SimpleNamespace(award=AsyncMock(return_value=(10,0,10)))
         await xp.MemberXP(None,store,False).on_message(None)
         store.award.assert_not_called()
     async def test_listener_awards(self):
-        store=SimpleNamespace(award=AsyncMock())
+        store=SimpleNamespace(award=AsyncMock(return_value=(10,0,10)))
         m=SimpleNamespace(id=3,guild=SimpleNamespace(id=1),author=SimpleNamespace(id=2,bot=False),webhook_id=None,channel=SimpleNamespace(id=123),content='Hello everyone today')
         with patch.dict('os.environ',LOTUS_XP_CHANNEL_IDS='123'):
             await xp.MemberXP(None,store,True).on_message(m)
-        store.award.assert_awaited_once_with(1,2,3,xp.content_key(m.content))
+        store.award.assert_awaited_once_with(1,2,3,xp.content_key(m.content),with_progress=True)
 
 class AffiliateTests(unittest.TestCase):
     def row(self):
