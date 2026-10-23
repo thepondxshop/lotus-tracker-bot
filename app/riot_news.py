@@ -48,6 +48,7 @@ async def send_notice(channel,row,event):
     embed=discord.Embed(title=(kind+': '+row['title'])[:256],url=row['url'],color=0x9172ce,
         description='Official Riot news — **not an in-stock or checkout alert**.\n'+('Updated announcement.' if event=='ANNOUNCEMENT_UPDATED' else 'New announcement.'))
     if row.get('schedule_text'):embed.add_field(name='Published schedule — verify on Riot’s page',value=row['schedule_text'][:1000],inline=False)
+    if row.get('image_url'):embed.set_image(url=row['image_url'])
     embed.set_footer(text='Lotus • Riot official news • No automatic drawing entry or purchase')
     return await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
 
