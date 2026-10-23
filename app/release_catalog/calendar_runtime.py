@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import time
-import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import discord
@@ -77,7 +76,7 @@ class CalendarRuntime:
         embed=discord.Embed(title='🪷 Lotus Release Calendar',description=
             'All games are shown here. Use the month buttons to browse privately, or **Week zoom** for larger text and clickable day buttons.\n'
             'Tap the image to enlarge it. **Open my calendar** also lets you choose your games.\n'
-            'Release-day pings are optional and start off.\n'
+            'Release-day pings start on for your game roles. Use My games / pings to turn them off.\n'
             'Month, quarter, season and year-only releases appear in period-end TBA sections.',colour=0x667ACD)
         embed.set_image(url='attachment://lotus-calendar.png')
         embed.set_footer(text=f"Calendar {UI_VERSION} • Updated from the catalog • {cfg['timezone']}")
@@ -101,10 +100,17 @@ class CalendarRuntime:
         from app.helpers import safe_int
         role_id=safe_int(GAME_ROLES.get(entry['game']))
         if not role_id:return []
+        preferences=await self.store.announcement_preferences(cfg['guild_id'])
+        guild=channel.guild
+        # Complete membership before claiming delivery; never silently omit uncached members.
+        if not guild.chunked:
+            await guild.chunk(cache=True)
+        if not guild.chunked:
+            raise CatalogError('Member cache incomplete; release-day delivery deferred.')
         result=[]
-        for user_id in await self.store.subscribers(cfg['guild_id'],entry['game']):
-            try:member=channel.guild.get_member(user_id) or await channel.guild.fetch_member(user_id)
-            except (discord.NotFound,discord.Forbidden):continue
+        for member in guild.members:
+            selected=preferences.get(member.id,['__ALL__'])
+            if '__ALL__' not in selected and entry['game'] not in selected:continue
             if (not member.bot and can_access(member,cfg) and role_id in {r.id for r in member.roles}
                     and channel.permissions_for(member).view_channel):result.append(member.id)
         return result
@@ -113,32 +119,19 @@ class CalendarRuntime:
         if not due(entry,cfg,now):return
         day=now.astimezone(ZoneInfo(cfg['timezone'])).date()
         channel=await self.channel(cfg['guild_id'],cfg['announcement_channel_id'])
-        # Resolve audience before durable claim. All pings are individual opt-ins,
-        # never a broad game-role mention that would ping non-subscribers.
+        # Individual mentions honor persistent member opt-outs.
         members=await self.audience(cfg,entry,channel)
-        # Explicit server option requested for the dedicated release-day channel.
-        # Default remains individual calendar opt-ins.
-        game_role = None
-        if (channel.id == 1554313587802251284 and
-                os.getenv('LOTUS_RELEASE_DAY_GAME_ROLE_PINGS','false').lower() == 'true'):
-            from app.config import GAME_ROLES
-            from app.helpers import safe_int
-            role_id = safe_int(GAME_ROLES.get(entry['game']))
-            game_role = channel.guild.get_role(role_id) if role_id else None
-            if game_role is not None and game_role.is_default(): game_role = None
-            if game_role and not (game_role.mentionable or channel.permissions_for(channel.guild.me).mention_everyone):
-                raise CatalogError('Game role cannot be mentioned; enable role mentions for Lotus.')
         key=await self.store.claim(cfg['guild_id'],entry,channel.id,day)
         if not key:return
         embed=announcement_embed(entry,day)
         embed.set_footer(text=f'Lotus release day • {key} • Stock varies by retailer')
-        groups=([[]] if game_role else [members[i:i+70] for i in range(0,len(members),70)]) or [[]]
+        groups=[members[i:i+70] for i in range(0,len(members),70)] or [[]]
         try:
             ids=groups[0]
             picture=await asyncio.to_thread(product_image_file,entry)
             image_args={'file':picture} if picture else {}
-            message=await channel.send(content=game_role.mention if game_role else (' '.join(f'<@{x}>' for x in ids) or None),embed=embed,**image_args,
-                allowed_mentions=discord.AllowedMentions(everyone=False,roles=[game_role] if game_role else False,users=[discord.Object(id=x) for x in ids]))
+            message=await channel.send(content=(' '.join(f'<@{x}>' for x in ids) or None),embed=embed,**image_args,
+                allowed_mentions=discord.AllowedMentions(everyone=False,roles=False,users=[discord.Object(id=x) for x in ids]))
             await self.store.delivered(key,'SENT',message.id)
         except (discord.Forbidden, discord.NotFound) as error:
             await self.store.delivered(key,'RETRY',error=type(error).__name__)
@@ -153,7 +146,7 @@ class CalendarRuntime:
                     allowed_mentions=discord.AllowedMentions(everyone=False,roles=False,users=[discord.Object(id=x) for x in ids]))
             except Exception as error:
                 LOG.warning('LOTUS RELEASE DAY MENTION ERROR | Key=%s | Type=%s',key,type(error).__name__)
-        LOG.info('LOTUS RELEASE DAY SENT | Release=%s | Game=%s | OptInMentions=%s',entry['id'],entry['game'],len(members))
+        LOG.info('LOTUS RELEASE DAY SENT | Release=%s | Game=%s | EligibleMentions=%s',entry['id'],entry['game'],len(members))
 
     async def reconcile(self,cfg,entries):
         """Recover lost acknowledgments; retract changed dates without another ping."""
@@ -183,6 +176,9 @@ class CalendarRuntime:
 
     async def tick(self):
         now=datetime.now(timezone.utc)
+        channel=self.bot.get_channel(1554313587802251284)
+        if channel is not None and getattr(channel,'guild',None):
+            await self.store.enable_release_default_once(channel.guild.id,channel.id)
         for cfg in await self.store.configured():
             try:
                 entries=await self.entries(cfg['guild_id'],fresh=True)
