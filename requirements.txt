@@ -10,3 +10,7 @@ cryptography>=46.0.4,<51
 
 # Local persistence integration tests (production continues to use PostgreSQL).
 aiosqlite>=0.20,<1
+
+
+# Official game-status HTML extraction.
+beautifulsoup4>=4.12,<5
