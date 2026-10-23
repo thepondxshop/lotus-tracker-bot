@@ -1,13 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.3'
-RELEASE_KIND = 'regular'
+VERSION = '1.7.4'
+RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Official Riot/Riftbound announcement monitoring, with drawing notices kept separate from stock alerts.',
-    'Riot Merch public category page/price adapter added behind validation and promotion gates.',
-    'Member XP opt-out, progress erasure and opt-in controls.',
-    'Includes the prior launch batch; retailer access and marketplace live gates remain enforced.',
+    'Fixed Fusion World release-event singles incorrectly labeled and routed as accessories.',
+    'Playmat/card sets and products explicitly including bonus or promo cards stay in their game channels.',
+    'Accessory routing retains sleeves, playmats, deck boxes and protective cases sold without cards.',
+    'Release-day default-on preferences were delivered in the preceding patch; saved opt-outs remain respected.',
 )
 
 def build_id():
