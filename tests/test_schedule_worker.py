@@ -25,14 +25,15 @@ class ReleaseDayTests(unittest.IsolatedAsyncioTestCase):
         channel=Mock(id=1554313587802251284)
         channel.guild.get_role.return_value=role
         channel.send=AsyncMock(return_value=SimpleNamespace(id=99))
-        runtime=SimpleNamespace(channel=AsyncMock(return_value=channel),audience=AsyncMock(return_value=[]),
+        runtime=SimpleNamespace(channel=AsyncMock(return_value=channel),audience=AsyncMock(return_value=[42]),
             store=SimpleNamespace(claim=AsyncMock(side_effect=['receipt',None]),delivered=AsyncMock()))
         cfg=dict(guild_id=1,announcement_channel_id=channel.id,timezone='America/New_York')
         entry=dict(game='Riftbound',id=2)
-        with patch.dict(os.environ,{'LOTUS_RELEASE_DAY_GAME_ROLE_PINGS':'true'}),patch('app.config.GAME_ROLES',{'Riftbound':'123'}):
+        with patch.dict(os.environ,{'LOTUS_RELEASE_DAY_GAME_ROLE_PINGS':'true'}):
             await ns['announce'](runtime,cfg,entry,datetime.now(timezone.utc))
             await ns['announce'](runtime,cfg,entry,datetime.now(timezone.utc))
         channel.send.assert_awaited_once()
-        self.assertEqual(channel.send.call_args.kwargs['content'],'<@&123>')
+        self.assertEqual(channel.send.call_args.kwargs['content'],'<@42>')
+        self.assertFalse(channel.send.call_args.kwargs['allowed_mentions'].roles)
         self.assertFalse(channel.send.call_args.kwargs['allowed_mentions'].everyone)
         runtime.store.delivered.assert_awaited_once_with('receipt','SENT',99)
