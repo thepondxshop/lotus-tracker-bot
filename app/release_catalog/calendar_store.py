@@ -39,8 +39,12 @@ class Preference(Base):
     guild_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     games_json: Mapped[str] = mapped_column(Text, default='null')
-    announcements_json: Mapped[str] = mapped_column(Text, default='[]')
+    announcements_json: Mapped[str] = mapped_column(Text, default='["__ALL__"]')
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+class ReleaseDefaultApplied(Base):
+    __tablename__ = 'lotus_release_default_applied'
+    guild_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
 class Delivery(Base):
     __tablename__ = 'lotus_calendar_deliveries'
@@ -248,7 +252,7 @@ class CalendarStore:
         async with self.sessions() as s:
             row = await s.get(Preference, (guild, user))
             return {'games': json.loads(row.games_json) if row else None,
-                    'announcements': json.loads(row.announcements_json) if row else []}
+                    'announcements': json.loads(row.announcements_json) if row else ['__ALL__']}
 
     async def save_preference(self, guild, user, *, games='UNCHANGED', announcements=None):
         await self.ensure()
@@ -265,6 +269,26 @@ class CalendarStore:
         async with self.sessions() as s:
             rows = (await s.scalars(select(Preference).where(Preference.guild_id == guild))).all()
             return [r.user_id for r in rows if game in json.loads(r.announcements_json)]
+
+    async def announcement_preferences(self, guild):
+        await self.ensure()
+        async with self.sessions() as s:
+            rows = (await s.scalars(select(Preference).where(Preference.guild_id == guild))).all()
+            return {r.user_id: json.loads(r.announcements_json) for r in rows}
+
+    async def enable_release_default_once(self, guild, channel):
+        """One-time requested activation; later administrator OFF choices survive."""
+        await self.ensure()
+        async with self.writes, self.sessions() as s, s.begin():
+            await self.lock(s, guild)
+            if await s.get(ReleaseDefaultApplied, guild): return
+            row = await s.get(Settings, guild)
+            if not row:
+                row = Settings(guild_id=guild); s.add(row)
+            row.announcement_channel_id = channel
+            row.announcements_enabled = True
+            row.updated_at = utcnow()
+            s.add(ReleaseDefaultApplied(guild_id=guild))
 
     async def entries(self, guild):
         await self.ensure()
