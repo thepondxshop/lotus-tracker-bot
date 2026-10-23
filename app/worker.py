@@ -1570,6 +1570,11 @@ async def route_event_to_discord(
     if guild is None:
         return False
 
+    from app.game_lifecycle import disabled as game_disabled
+    if game_disabled(guild.id,event.get('game')):
+        print('LOTUS EVENT SUPPRESSED | Reason=ADMIN_DISCONNECTED_GAME',flush=True)
+        return True
+
     channel = (
         guild.get_channel(
             channel_id
