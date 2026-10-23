@@ -243,6 +243,7 @@ class PreferenceSelect(discord.ui.Select):
         self.calendar_owner,self.kind=parent,kind
         options=[]
         if kind=='games':options.append(discord.SelectOption(label='All games (including future additions)',value='__ALL__',default=current is None))
+        else:options.append(discord.SelectOption(label='On for my game roles (default)',value='__ALL__',default='__ALL__' in current))
         options += [discord.SelectOption(label=g[:100],value=g,default=bool(current and g in current)) for g in games[:24]]
         super().__init__(options=options,min_values=0,max_values=len(options),row=0 if kind=='games' else 1,
             placeholder='Games shown on my calendar' if kind=='games' else 'Release-day pings — choose games or clear to turn off')
@@ -264,12 +265,12 @@ class SettingsView(OwnedView):
         self.add_item(PreferenceSelect(self,games,'announcements',self.prefs['announcements']))
     def embed(self):
         shown='All games' if self.prefs['games'] is None else ', '.join(self.prefs['games']) or 'None'
-        pings=', '.join(self.prefs['announcements']) or 'Off'
+        pings='On for my game roles (default)' if '__ALL__' in self.prefs['announcements'] else ', '.join(self.prefs['announcements']) or 'Off'
         return discord.Embed(title='My calendar preferences',description=
             f'**Show:** {safe(shown,700)}\n**Release-day pings:** {safe(pings,700)}\n\n'
             'Your choices are saved across restarts. Calendar filters do not change stock-alert preferences.\n'
             'For release-day pings, also select the matching game role in **Choose your games**. '
-            'Only subscribed, eligible members are mentioned; the entire game role is never pinged.\n'
+            'Pings default on for eligible members. Saved opt-outs stay off; the entire game role is never pinged.\n'
             'Clear the second dropdown to turn all release-day pings off.',colour=0x667ACD)
 
 
