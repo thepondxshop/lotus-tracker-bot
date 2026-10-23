@@ -22,6 +22,9 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
+    "World of Tanks TCG": os.getenv("ROLE_WORLD_OF_TANKS"),
+    "Vibes TCG": os.getenv("ROLE_VIBES"),
+    "Shadowverse Evolve": os.getenv("ROLE_SHADOWVERSE"),
     "Final Fantasy TCG": os.getenv("ROLE_FINAL_FANTASY"),
     "CookieRun: Braverse": os.getenv("ROLE_COOKIE_RUN"),
     "Harry Potter TCG — Kakawow": os.getenv("ROLE_HARRY_POTTER"),
@@ -154,6 +157,9 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+    ("World of Tanks TCG", "🛡️", "World of Tanks: The Card Game alerts"),
+    ("Vibes TCG", "🐧", "Vibes: The Pudgy TCG alerts"),
+    ("Shadowverse Evolve", "🃏", "Shadowverse: Evolve physical TCG alerts"),
     ("Final Fantasy TCG", "⚔️", "Final Fantasy Trading Card Game alerts"),
     ("CookieRun: Braverse", "🍪", "CookieRun Braverse TCG alerts"),
     ("Harry Potter TCG — Kakawow", "🪄", "Kakawow Harry Potter TCG alerts"),
