@@ -137,4 +137,3 @@ class CooldownTests(unittest.TestCase):
         self.assertEqual(remaining(dict(last_error='HTTP_429',consecutive_failures=1,last_scan_at='2026-10-21T00:00:00'),now),900)
 
 if __name__=='__main__':unittest.main()
-    
