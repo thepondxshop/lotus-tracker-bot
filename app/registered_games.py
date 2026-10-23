@@ -31,6 +31,17 @@ def registered_title(title):
 
 def registered_identity(product):
     title = text(product.get('title'))
+    # Product-local taxonomy/vendor evidence may name the game when the title
+    # contains only a set name. Never consult site-wide navigation.
+    if not registered_title(title):
+        local = text([product.get('vendor'), product.get('product_type'), product.get('tags'), product.get('game')])
+        identities = {game for game, pattern in PATTERNS if re.search(pattern, local)}
+        if len(identities) == 1 and not re.search(r'\b(?:mtg|magic the gathering|secret lair)\b', title):
+            augmented = dict(product, title=next(iter(identities)) + ' ' + str(product.get('title') or ''))
+            return registered_identity(augmented)
+        known = reviewed_product_identity(product)
+        if known:
+            return known
     if not registered_title(title):
         return None
     matches = {game for game, pattern in PATTERNS if re.search(pattern, title)}
@@ -67,6 +78,16 @@ def registered_identity(product):
                 (game == 'Final Fantasy TCG' and re.search(r'\bfftcg\b', evidence)) or explicit_tcg or
                 (game == 'Wuthering Waves' and re.search(r'\bbattle\b|\bshowdown\b|対決|对决|對決', evidence)))
     return game if specific and (physical or (accessory and explicit_tcg)) else None
+
+def reviewed_product_identity(product):
+    """Narrow product aliases backed by the supplied retailer product pages."""
+    title = text(product.get('title') or product.get('product_name'))
+    if re.fullmatch(r'age of heroes and kingdoms booster display\s*(?:\[bs3[–\s]*bs4\])?', title):
+        return 'CookieRun: Braverse'
+    # 'Legacy Collection' alone is not distinctive enough to identify a game.
+    if title == 'legacy collection booster display master case' and text(product.get('store_name')) == 'nova break':
+        return 'Final Fantasy TCG'
+    return None
 
 def explicit_family(product):
     value = text(' '.join(str(product.get(k) or '') for k in
