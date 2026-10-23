@@ -4,6 +4,12 @@ import unicodedata
 
 CASE_TYPES={'CASE','SEALED CASE','BOOSTER CASE'}
 
+def retail_display_title(title):
+    value=unicodedata.normalize('NFKD',str(title or '')).encode('ascii','ignore').decode().lower()
+    return bool(re.search(r'\b(?:pokemon|poke mon)\b',value) and 'ascended heroes' in value
+        and re.search(r'\bmini tin case\s*\(10 tins\)\s*\(20 pack\)',value)
+        and not re.search(r'\b(?:master|shipping|carton|displays)\b',value))
+
 def personal_case_format(title):
     text=unicodedata.normalize('NFKD',str(title or '')).encode('ascii','ignore').decode().lower()
     text=re.sub(r'[-_]+',' ',text)
@@ -17,7 +23,8 @@ def personal_case_format(title):
     # A named TCG display case is not automatically a personal display holder.
     # Require explicit booster wording or a numbered One Piece booster set.
     shipping_display = bool(re.search(r'\bdisplay case\b',text) and
-        re.search(r'\bbooster\b|\bone piece\b.*\bop\s*\d{1,3}\b',text) and
+        (re.search(r'\bbooster\b|\bone piece\b.*\bop\s*\d{1,3}\b',text)
+         or re.search(r'\bmini tin\b.*\bdisplay case\b.*\b[2-9]\d* displays\b',text)) and
         not re.search(r'\b(?:acrylic|protector|storage|empty|case only)\b',text))
     if shipping_display:return None
     if re.search(r'\b(?:card|(?<!commander )(?<!starter )(?<!structure )deck|accessory|storage|carrying|carry|display)\s+case\b|\bcase\s+only\b',text):
@@ -28,7 +35,7 @@ def personal_case_format(title):
 def sealed_case_title(title):
     text=unicodedata.normalize('NFKD',str(title or '')).encode('ascii','ignore').decode().lower()
     text=re.sub(r'[-_]+',' ',text)
-    if personal_case_format(title): return False
+    if personal_case_format(title) or retail_display_title(title): return False
     # Require both shipping-case wording and a recognizable sealed TCG format.
     if not re.search(r'\bcases?\b',text): return False
     return bool(re.search(r'\b(?:booster|elite trainer|etb|commander deck|starter deck|structure deck|theme deck|collection|blister|tin|battle box|beginner box|double pack)\b',text)
@@ -36,6 +43,10 @@ def sealed_case_title(title):
                 or re.search(r'\bcollector\b.*\bsealed (?:inner )?case\b',text))
 
 def normalize_case_event(event):
+    if retail_display_title(event.get('product_name') or event.get('title')):
+        corrected=dict(event,product_type='Mini Tin Display',product_category='SEALED')
+        corrected.pop('reference_evidence',None)
+        return corrected
     result=personal_case_format(event.get('product_name') or event.get('title'))
     if not result:
         title=event.get('product_name') or event.get('title') or ''
