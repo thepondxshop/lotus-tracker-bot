@@ -1,5 +1,5 @@
 """Explicit admin publishing; never announce on startup or reconnect."""
-from app.version import VERSION, RELEASE_KIND, ANNOUNCEMENT_CHANNEL_ID, announcement
+from app.version import VERSION, ANNOUNCEMENT_CHANNEL_ID, announcement, release_kind
 
 async def deliver_once(reserve, send, mark_sent):
     if not await reserve():
@@ -25,6 +25,7 @@ def register_release_announcements(bot):
     async def botrelease(interaction: discord.Interaction, publish: bool = False):
         await interaction.response.defer(ephemeral=True)
         content = announcement()
+        kind = release_kind()
         if not publish:
             await interaction.followup.send(content+'\n\nPreview only. Use /botrelease publish:True to publish.', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
             return
@@ -33,7 +34,7 @@ def register_release_announcements(bot):
             await interaction.followup.send('Announcement channel must belong to this server.', ephemeral=True)
             return
         perms = channel.permissions_for(interaction.guild.me)
-        if not perms.view_channel or not perms.send_messages or (RELEASE_KIND == 'major' and not perms.mention_everyone):
+        if not perms.view_channel or not perms.send_messages or (kind == 'major' and not perms.mention_everyone):
             await interaction.followup.send('Missing announcement channel permissions (major releases also require Mention Everyone).', ephemeral=True)
             return
         async def reserve():
@@ -44,7 +45,7 @@ def register_release_announcements(bot):
                 await session.commit()
                 return inserted
         async def send():
-            return await channel.send(content, allowed_mentions=discord.AllowedMentions(everyone=RELEASE_KIND=='major', users=False, roles=False, replied_user=False))
+            return await channel.send(content, allowed_mentions=discord.AllowedMentions(everyone=kind=='major', users=False, roles=False, replied_user=False))
         async def mark_sent(message_id):
             async with SessionLocal() as session:
                 await session.execute(text("UPDATE lotus_release_announcements SET state='SENT',message_id=:message WHERE channel_id=:channel AND version=:version"), {'message':message_id,'channel':channel.id,'version':VERSION})
