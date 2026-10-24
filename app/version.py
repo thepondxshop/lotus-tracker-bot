@@ -1,16 +1,15 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.8'
+VERSION = '1.7.10'
 RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Corrected Gundam ST14 Starter Deck Box Heavy Dominion to a sealed starter-deck display, not an accessory or shipping case.',
-    'Verified uncapped daily XP; the 60-second eligible-message cooldown remains.',
-    'Registered Beyblade X TCG — Blader League for its announced 2027 launch; exact release date remains TBA.',
-    'Configured the supplied World of Tanks, Vibes and Shadowverse role IDs.',
-    'Assigned a distinct crystal-ball emoji to Shadowverse and a tornado to Beyblade X.',
-    'Added Blader League discovery and official-page status-watch configuration; restored missing update documentation.',
+    'Configured Beyblade X role 1563394352531775618.',
+    'Paced Shopify request starts across stores and staggered rate-limit recovery.',
+    'Added a shared quiet period after throttling across five stores; per-store Retry-After remains respected.',
+    'This reduces synchronized retries; live recovery and detection latency require production verification.',
 )
+
 
 
 def build_id():
