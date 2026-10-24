@@ -35,6 +35,9 @@ def type_key(value):
     return {'BOOSTER DISPLAY':'BOOSTER BOX','BOOSTER CASE':'CASE','SEALED CASE':'CASE','ETB':'ELITE TRAINER BOX','PREMIUM COLLECTION':'COLLECTION BOX','BOOSTER DISPLAY BOX':'BOOSTER BOX','COLLECTOR BOOSTER BOX':'BOOSTER BOX','PLAY BOOSTER BOX':'BOOSTER BOX','DRAFT BOOSTER BOX':'BOOSTER BOX','SET BOOSTER BOX':'BOOSTER BOX'}.get(value,value)
 
 def game_matches(game,title):
+    if game == 'Beyblade X TCG — Blader League':
+        from app.registered_games import registered_identity
+        return registered_identity({'title':title}) == game
     aliases={'MTG':'magic the gathering','Pokemon':'pokemon','Yu-Gi-Oh!':'yu gi oh',
              'Yu-Gi-Oh':'yu gi oh','Dragon Ball Super Fusion World':'dragon ball','Final Fantasy TCG':'final fantasy',
              'CookieRun: Braverse':'cookierun', 'World of Tanks TCG':'world of tanks',
