@@ -162,7 +162,7 @@ def review_diagnostics(item, target, now=None):
             'assessment': assess(item, target, now).get('reason', 'ELIGIBLE')}
 
 
-def assess(item, target, now=None):
+def assess(item, target, now=None, *, listing_only=False):
     now = now or datetime.now(timezone.utc)
     def block(reason): return {'eligible': False, 'reason': reason}
     title = folded(item.get('title', ''))
@@ -216,7 +216,16 @@ def assess(item, target, now=None):
         value = number(cost.get('value'))
         if shipping.get('shippingCostType') == 'FIXED' and cost.get('currency') == target['currency'] and value is not None:
             quotes.append(value)
-    if target.get('comparison_mode') == 'ITEM_ONLY':
+    if listing_only:
+        if auction:
+            return block('LISTING_ALERTS_FIXED_PRICE_ONLY')
+        value = number(price.get('value'))
+        if value is None or value <= 0:
+            return block('INVALID_PRICE')
+        shipping = min(quotes) if quotes else None
+        result = {'eligible':True, 'reason':'QUALIFIED_LISTING', 'alert_kind':'LISTING',
+                  'destination_variable':'CHANNEL_EBAY_MARKETPLACE'}
+    elif target.get('comparison_mode') == 'ITEM_ONLY':
         shipping = min(quotes) if quotes else None
         result = evaluate_item_only(price.get('value'), target, auction, now)
     else:
