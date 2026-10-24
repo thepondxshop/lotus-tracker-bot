@@ -22,7 +22,7 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
-    "Beyblade X TCG — Blader League": os.getenv("ROLE_BEYBLADE_X"),
+    "Beyblade X TCG — Blader League": (os.getenv("ROLE_BEYBLADE_X") or "1563394352531775618"),
     "World of Tanks TCG": (os.getenv("ROLE_WORLD_OF_TANKS") or "1563315646324940840"),
     "Vibes TCG": (os.getenv("ROLE_VIBES") or "1563315709277114501"),
     "Shadowverse Evolve": (os.getenv("ROLE_SHADOWVERSE") or "1563315730743693362"),
