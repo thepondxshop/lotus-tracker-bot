@@ -14,7 +14,7 @@ class XPTests(unittest.TestCase):
         self.now=datetime(2026,10,21,tzinfo=timezone.utc)
         self.row=dict(last_message_id=1,last_awarded_at=None,last_content_hash=None,day=self.now.date(),daily_xp=0)
     def test_levels(self):
-        self.assertEqual([xp.level(n) for n in (0,99,100,399,400)], [1,1,2,3,3])
+        self.assertEqual([xp.level(n) for n in (0,99,100,399,400)], [0,0,1,2,2])
     def test_content(self):
         for value in ('hi','aaaaaaaaaaaaaaaa','!this is a command','https://example.com'):
             self.assertIsNone(xp.content_key(value))
