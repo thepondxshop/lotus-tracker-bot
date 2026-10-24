@@ -107,9 +107,16 @@ async def publish(bot, store, item, result, epoch):
             if record:
                 await c.execute("UPDATE lotus_ebay_outbox SET state='CANCELLED' WHERE id=$1", token)
             return 'CANCELLED_BEFORE_SEND'
-        label = 'Auction ending soon' if result['auction'] else 'eBay deal'
+        label = 'eBay listing found' if result.get('alert_kind') == 'LISTING' else 'Auction ending soon' if result['auction'] else 'eBay deal'
         embed = discord.Embed(title=label+' • '+result['title'], url=result['url'], color=0x25A080, timestamp=now)
-        if result.get('comparison_basis') == 'ITEM_ONLY':
+        if result.get('alert_kind') == 'LISTING':
+            shipping = 'Not quoted; confirm at checkout' if result['shipping'] is None else '$'+result['shipping']+' API quote; confirm at checkout'
+            embed.description = ('**'+result['game']+'**\n'
+                f"Asking price: **${result['price']} USD**\nShipping: {shipping}\n"
+                'Matches a reviewed product target. No sold-price comparison; this is not a verified deal. '
+                'Availability was reported by eBay at this check and may change. '
+                'First detected by Lotus does not establish when the seller created the listing.')
+        elif result.get('comparison_basis') == 'ITEM_ONLY':
             shipping = ('Not quoted — calculated at checkout' if result['shipping'] is None
                         else '$'+result['shipping']+' API quote; confirm for your destination')
             embed.description = ('**'+result['game']+'**\n'
@@ -134,7 +141,7 @@ async def publish(bot, store, item, result, epoch):
         # Durable PREPARED row already committed. If send/commit is uncertain,
         # history reconciliation locates this marker instead of sending again.
         msg = await asyncio.wait_for(channel.send(
-            content=f"{'⏳' if result['auction'] else '💰'} {result['title']} — ${result['price']} • eBay",
+            content=f"{'🛒' if result.get('alert_kind') == 'LISTING' else '⏳' if result['auction'] else '💰'} {result['title']} — ${result['price']} • eBay",
             embed=embed, allowed_mentions=discord.AllowedMentions.none()), timeout=20)
         await c.execute("UPDATE lotus_ebay_outbox SET state='SENT',message_id=$2 WHERE id=$1", token, msg.id)
     return 'DELIVERED'
@@ -266,6 +273,17 @@ async def loop(bot, store, leader, mode):
                             details_checked += 1
                             if item.get('itemId') != iid:
                                 reasons['ITEM_ID_MISMATCH']+=1; continue
+                            if not auction:
+                                from app.marketplaces.ebay_listing_alerts import handle
+                                try:
+                                    listing_state = await handle(bot, store, item, targets, target, epoch,
+                                                                 mode, allowed_channel, publish)
+                                    if listing_state != 'OFF':
+                                        log('LISTING_ALERT', target=target['id'], state=listing_state)
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as error:
+                                    log('LISTING_ALERT_FAILED', target=target['id'], error_type=type(error).__name__)
                             result = assess(item,target)
                             identity = gtin_status(item, target)
                             from app.marketplaces.ebay_live_policy import review_diagnostics
