@@ -22,9 +22,10 @@ DISCORD_TOKEN = os.getenv(
 # =========================================================
 
 GAME_ROLES = {
-    "World of Tanks TCG": os.getenv("ROLE_WORLD_OF_TANKS"),
-    "Vibes TCG": os.getenv("ROLE_VIBES"),
-    "Shadowverse Evolve": os.getenv("ROLE_SHADOWVERSE"),
+    "Beyblade X TCG — Blader League": os.getenv("ROLE_BEYBLADE_X"),
+    "World of Tanks TCG": (os.getenv("ROLE_WORLD_OF_TANKS") or "1563315646324940840"),
+    "Vibes TCG": (os.getenv("ROLE_VIBES") or "1563315709277114501"),
+    "Shadowverse Evolve": (os.getenv("ROLE_SHADOWVERSE") or "1563315730743693362"),
     "Final Fantasy TCG": os.getenv("ROLE_FINAL_FANTASY"),
     "CookieRun: Braverse": os.getenv("ROLE_COOKIE_RUN"),
     "Harry Potter TCG — Kakawow": os.getenv("ROLE_HARRY_POTTER"),
@@ -157,9 +158,10 @@ TIER_LEVELS = {
 # =========================================================
 
 GAME_DATA = [
+    ("Beyblade X TCG — Blader League", "🌪️", "Blader League TCG — announced for 2027; exact date TBA"),
     ("World of Tanks TCG", "🛡️", "World of Tanks: The Card Game alerts"),
     ("Vibes TCG", "🐧", "Vibes: The Pudgy TCG alerts"),
-    ("Shadowverse Evolve", "🃏", "Shadowverse: Evolve physical TCG alerts"),
+    ("Shadowverse Evolve", "🔮", "Shadowverse: Evolve physical TCG alerts"),
     ("Final Fantasy TCG", "⚔️", "Final Fantasy Trading Card Game alerts"),
     ("CookieRun: Braverse", "🍪", "CookieRun Braverse TCG alerts"),
     ("Harry Potter TCG — Kakawow", "🪄", "Kakawow Harry Potter TCG alerts"),
