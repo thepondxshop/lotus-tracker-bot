@@ -19,12 +19,26 @@ COMMANDS_CHANNEL = 1541940028165591140
 LEVELS_CHANNEL = 1563288538433192076
 EXCLUDED_CHANNELS = {COMMANDS_CHANNEL, 1541940125343293561, LEVELS_CHANNEL, 1541940377412698223}
 
-def level(xp):
-    # Start at level 1; L -> L+1 costs 100*L XP.
-    return (1 + math.isqrt(1 + max(0, int(xp)) // 50 * 4)) // 2
+def level_cost(target_level):
+    """Cost of entering a level; each tenth level costs 50% extra."""
+    return target_level * (150 if target_level % 10 == 0 else 100)
 
 def level_floor(lv):
-    return 50 * lv * (lv - 1)
+    milestones = lv // 10
+    return 50 * lv * (lv + 1) + 250 * milestones * (milestones + 1)
+
+def level(xp):
+    total = max(0, int(xp))
+    low = 0
+    # The ordinary curve provides an upper bound; milestone costs only add XP.
+    high = (math.isqrt(1 + total // 50 * 4) - 1) // 2 + 1
+    while low + 1 < high:
+        mid = (low + high) // 2
+        if level_floor(mid) <= total:
+            low = mid
+        else:
+            high = mid
+    return low
 
 def chat_allowed(message, overrides=None):
     channel = message.channel
@@ -183,7 +197,7 @@ class MemberXP(commands.Cog):
     @app_commands.default_permissions(manage_guild=True,manage_roles=True)
     @app_commands.checks.has_permissions(manage_guild=True,manage_roles=True)
     @app_commands.guild_only()
-    async def xpreward(self,interaction:discord.Interaction,at_level:app_commands.Range[int,1,100],role:discord.Role|None=None):
+    async def xpreward(self,interaction:discord.Interaction,at_level:app_commands.Range[int,1,300],role:discord.Role|None=None):
         await interaction.response.defer(ephemeral=True)
         if self.store is None:
             await interaction.followup.send('XP database unavailable.',ephemeral=True);return
@@ -277,7 +291,7 @@ class MemberXP(commands.Cog):
         try:
             r=await self.store.rank(interaction.guild_id,interaction.user.id);lv=level(r['xp'])
             await interaction.followup.send(f"{interaction.user.mention} — Level **{lv}** • **{r['xp']} XP** • Rank **{r['rank'] or 'Unranked'}**\n"
-                f"Progress: {r['xp']-level_floor(lv)}/{100*lv} XP toward level {lv+1}.",allowed_mentions=discord.AllowedMentions.none())
+                f"Progress: {r['xp']-level_floor(lv)}/{level_cost(lv+1)} XP toward level {lv+1}.",allowed_mentions=discord.AllowedMentions.none())
         except Exception:await interaction.followup.send('XP is temporarily unavailable.')
     @app_commands.command(name='level',description='Show your community level and XP in bot-commands.')
     @app_commands.guild_only()
