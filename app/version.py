@@ -1,14 +1,15 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.7'
-RELEASE_KIND = 'regular'
+VERSION = '1.7.8'
+RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Community XP: random 10–20 XP per active minute, progressive levels and public bot-command rankings.',
-    'Added private numbered support tickets, inactivity reminders and automatic closure.',
-    'Added automatic Free-role assignment for new members and level-up notices in the levels channel.',
-    'Added World of Tanks, Vibes and Shadowverse Evolve identities and discovery searches.',
-    'Corrected the reported Ascended Heroes mini-tin display and added admin-reviewed game status notices.',
+    'Corrected Gundam ST14 Starter Deck Box Heavy Dominion to a sealed starter-deck display, not an accessory or shipping case.',
+    'Verified uncapped daily XP; the 60-second eligible-message cooldown remains.',
+    'Registered Beyblade X TCG — Blader League for its announced 2027 launch; exact release date remains TBA.',
+    'Configured the supplied World of Tanks, Vibes and Shadowverse role IDs.',
+    'Assigned a distinct crystal-ball emoji to Shadowverse and a tornado to Beyblade X.',
+    'Added Blader League discovery and official-page status-watch configuration; restored missing update documentation.',
 )
 
 
