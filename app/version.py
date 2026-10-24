@@ -1,13 +1,13 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.10'
+VERSION = '1.7.12'
 RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 RELEASE_NOTES = (
-    'Configured Beyblade X role 1563394352531775618.',
-    'Paced Shopify request starts across stores and staggered rate-limit recovery.',
-    'Added a shared quiet period after throttling across five stores; per-store Retry-After remains respected.',
-    'This reduces synchronized retries; live recovery and detection latency require production verification.',
+    'Reaching each tenth level costs 50% extra for that level-up only.',
+    'Members now start at level 0; level 1 needs 100 XP, then each next level costs 100 XP more.',
+    'Existing XP totals preserved; random 10–20 XP awards and no daily cap remain unchanged.',
+    'Cosmetic XP reward settings support levels through 300; no maximum earning level is imposed.',
 )
 
 
