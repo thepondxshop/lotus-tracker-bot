@@ -112,7 +112,7 @@ class XPSetupTests(unittest.IsolatedAsyncioTestCase):
         cog.reward_roles={1:{1:9,2:10,3:11}}
         member=NS(roles=[NS(id=9)],guild=NS(id=1,get_role=lambda rid:NS(id=rid)),add_roles=AsyncMock())
         with patch.object(xp,'cosmetic_role',return_value=True):
-            await cog.sync_rewards(member,200)
+            await cog.sync_rewards(member,300)
         member.add_roles.assert_awaited_once()
         self.assertEqual(member.add_roles.call_args.args[0].id,10)
 
