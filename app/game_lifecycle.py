@@ -18,6 +18,7 @@ from sqlalchemy import text
 NEWS_CHANNEL=1560358191689367642
 ANNOUNCEMENTS_CHANNEL=1541869401220055201
 SOURCES=(
+    {'game':'Beyblade X TCG — Blader League','url':'https://bladerleague.com/news','identity':'blader league'},
     {'game':'World of Tanks TCG','url':'https://worldoftanks.com/en/news/merchandise/','identity':'world of tanks'},
     {'game':'Vibes TCG','url':'https://www.vibes.game/','identity':'vibes'},
     {'game':'Shadowverse Evolve','url':'https://en.shadowverse-evolve.com/news/','identity':'shadowverse'},
@@ -83,7 +84,7 @@ class GameLifecycle(commands.Cog):
         raw=os.getenv('CHANNEL_TCG_DISCOVERIES','')
         admin=self.bot.get_channel(int(raw)) if raw.isdigit() else None
         if not admin:
-            print('LOTUS GAME LIFECYCLE | State=ADMIN_CHANNEL_MISSING | Sources=3',flush=True);return
+            print(f'LOTUS GAME LIFECYCLE | State=ADMIN_CHANNEL_MISSING | Sources={len(SOURCES)}',flush=True);return
         # One worker per database. Sources are bounded and isolated on error.
         async with self.engine.connect() as lock:
             if not await lock.scalar(text('SELECT pg_try_advisory_lock(76290416)')):return
