@@ -1,6 +1,9 @@
 """Opt-in fixed-price listing delivery through the existing durable outbox."""
 import hashlib
 import os
+import json
+import traceback
+from pathlib import Path
 from app.marketplaces.ebay_evidence import config_hash
 from app.marketplaces.ebay_live_policy import assess
 from app.marketplaces import ebay_shadow
@@ -11,7 +14,7 @@ def fingerprint(targets):
     return hashlib.sha256(('LISTINGS1:'+config_hash(targets)+':'+os.getenv('CHANNEL_EBAY_MARKETPLACE','0')).encode()).hexdigest()
 
 
-async def handle(bot, store, item, targets, target, epoch, worker_mode, channel_check, publish):
+async def _handle(bot, store, item, targets, target, epoch, worker_mode, channel_check, publish):
     mode = os.getenv('EBAY_LISTING_MODE','OFF').upper()
     if mode == 'OFF' or worker_mode == 'OFF':
         return 'OFF'
@@ -37,3 +40,18 @@ async def handle(bot, store, item, targets, target, epoch, worker_mode, channel_
     if not await ebay_shadow.ready(store,key,target['id'],False):
         return 'LISTING_SHADOW_REQUIRED'
     return await publish(bot,store,item,result,epoch)
+
+
+def failure_location(error):
+    # Never include exception messages, source lines, locals or API payloads.
+    return {'error_type':type(error).__name__, 'frames':[
+        {'file':Path(frame.filename).name,'function':frame.name,'line':frame.lineno}
+        for frame in traceback.extract_tb(error.__traceback__)[-8:]]}
+
+
+async def handle(*args, **kwargs):
+    try:
+        return await _handle(*args, **kwargs)
+    except Exception as error:
+        print('LOTUS EBAY LISTING FAILURE | '+json.dumps(failure_location(error)),flush=True)
+        raise
