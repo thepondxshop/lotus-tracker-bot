@@ -11,6 +11,10 @@ def non_tcg_reason(title):
     text = ' '.join(''.join(c for c in unicodedata.normalize('NFKD', str(title or ''))
                            if not unicodedata.combining(c)).casefold().split())
     text = text.replace('–', '-').replace('—', '-')
+    # Licensed franchise board/dice games are not trading-card releases.
+    # Do not match dice sets, counters or sleeves sold as TCG accessories.
+    if re.search(r'\b(?:board|dice)[ -]+games?\b', text):
+        return 'NON_TCG_BOARD_OR_DICE_GAME'
     # Digital redemption products are not physical cards or sealed releases.
     # Do not exclude ordinary booster boxes just because they include a code.
     if re.search(r'^codes?\s+pour\s+(?:un\s+|des\s+|le\s+)?boosters?\b', text) or re.search(
