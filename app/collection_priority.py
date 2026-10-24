@@ -9,7 +9,7 @@ WAITING = set()
 
 def explicit_tcg(handle, title=""):
     probe = re.sub(r"[-_]+", " ", f"{handle} {title}".lower())
-    return bool(re.search(r"\b(?:tcg|ccg|trading cards?|card games?|pokemon|pokémon|one piece|riftbound|magic the gathering|mtg|lorcana|union arena|weiss|azuki|horo beat|fusion world|dragon ball|final fantasy|cookie run|cookierun|gundam|world of tanks|vibes|shadowverse)\b", probe))
+    return bool(re.search(r"\b(?:tcg|ccg|trading cards?|card games?|pokemon|pokémon|one piece|riftbound|magic the gathering|mtg|lorcana|union arena|weiss|azuki|horo beat|fusion world|dragon ball|final fantasy|cookie run|cookierun|gundam|world of tanks|vibes|shadowverse|beyblade x tcg|blader league)\b", probe))
 
 
 def tcg_candidate(handle, title=""):
