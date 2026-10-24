@@ -20,12 +20,12 @@ def message(channel=99,content='This is a useful chat message',**kwargs):
 
 class XPPolicyTests(unittest.TestCase):
     def test_level_costs_and_boundaries(self):
-        for lv in range(1,100):
+        for lv in range(0,301):
             floor=xp.level_floor(lv)
             self.assertEqual(xp.level(floor),lv)
-            self.assertEqual(xp.level(floor+lv*100-1),lv)
-            self.assertEqual(xp.level(floor+lv*100),lv+1)
-        self.assertEqual(xp.level_floor(6)-xp.level_floor(5),500)
+            self.assertEqual(xp.level(floor+xp.level_cost(lv+1)-1),lv)
+            self.assertEqual(xp.level(floor+xp.level_cost(lv+1)),lv+1)
+        self.assertEqual(xp.level_floor(6)-xp.level_floor(5),600)
     def test_random_range_cooldown_and_no_old_daily_cap(self):
         now=datetime.now(timezone.utc)
         row=dict(enabled=True,last_message_id=1,last_awarded_at=now-timedelta(seconds=60),last_content_hash='old',day=now.date(),daily_xp=999)
@@ -74,7 +74,7 @@ class XPCommandTests(unittest.IsolatedAsyncioTestCase):
         bot=NS(get_context=AsyncMock(return_value=NS(valid=False)))
         cog=xp.MemberXP(bot,store,True)
         await cog.on_message(m)
-        self.assertIn('Level 2',channel.send.call_args.args[0])
+        self.assertIn('Level 1',channel.send.call_args.args[0])
         store.award.assert_awaited_once()
         store.award.return_value=0
         await cog.on_message(m);channel.send.assert_awaited_once()
