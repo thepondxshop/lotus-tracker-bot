@@ -2149,6 +2149,8 @@ class ShopifyAdapter:
         return lock
 
     async def _request(self, session, url, *, purpose, expect_json, required):
+        from app import shopify_request_gate
+        import random as _recovery_random
         global _THEPONDX_SIGNED_ACCESS_CONFIRMED
         lock = self._domain_lock()
 
@@ -2173,6 +2175,9 @@ class ShopifyAdapter:
                 if elapsed < interval:
                     await asyncio.sleep(interval - elapsed)
 
+                gate_wait = await shopify_request_gate.acquire()
+                self.diagnostics['shared_capacity_wait_seconds'] = self.diagnostics.get('shared_capacity_wait_seconds', 0.0) + gate_wait
+                # Sign only after all waits, preserving the short signature lifetime.
                 self.diagnostics["requests_attempted"] += 1
 
                 try:
@@ -2218,6 +2223,8 @@ class ShopifyAdapter:
                                     print("SHOPIFY SIGNED ACCESS | Store=thepondx.com | HTTP=200 | ProductsJSON=True | Version=1.6.1-C21")
                                 # Only a valid products payload can clear general endpoint recovery.
                                 valid_general = isinstance(data, dict) and isinstance(data.get('products'), list) and all(isinstance(p, dict) for p in data['products'])
+                                if valid_general:
+                                    shopify_request_gate.products_succeeded()
                                 shopify_pacing.succeeded(self.domain, purpose if valid_general else None)
                                 return data
                             except Exception as error:
@@ -2233,8 +2240,11 @@ class ShopifyAdapter:
                         if status == 429:
                             self.diagnostics["http_429"] += 1
                             shopify_pacing.throttled(self.domain, purpose)
+                            shopify_request_gate.throttled(self.domain)
                             failures=_DOMAIN_THROTTLE_FAILURES.get(self.domain,0)
                             wait_seconds=_retry_after_seconds(response.headers.get("Retry-After"),failures)
+                            # Add jitter after the required backoff; never shorten Retry-After.
+                            wait_seconds += _recovery_random.uniform(0.0, 15.0)
                             _DOMAIN_THROTTLE_FAILURES[self.domain]=failures+1
                             _DOMAIN_RETRY_NOT_BEFORE[self.domain]=time.monotonic()+wait_seconds
                             self.diagnostics["backoff_seconds"]+=wait_seconds
