@@ -1,16 +1,17 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.14'
-RELEASE_KIND = 'patch'
+VERSION = '1.7.15'
+RELEASE_KIND = 'regular'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 # A nonempty list forces a major release, even if the manual kind is wrong.
 # List only newly supported games (or an explicit catch-up announcement).
 NEW_GAMES = ()
 RELEASE_NOTES = (
-    'Excluded franchise board games and dice games from distributor release ingestion and queued release-radar delivery.',
-    'The same exclusion applies to member release calendars; genuine TCG products and dice accessories remain eligible.',
-    'Shopify pacing and XP progression remain unchanged.',
+    'Added bulk reviewed eBay target imports with runtime validation and duplicate protection.',
+    'Added fresh benchmark replacement from reviewed sold CSVs or identity-bound research snapshots, with dry-run previews and backups.',
+    'Existing live gates, Shopify pacing, and XP progression remain unchanged.',
 )
+
 
 
 def release_kind():
