@@ -1,18 +1,15 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.13'
-RELEASE_KIND = 'major'
+VERSION = '1.7.14'
+RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 # A nonempty list forces a major release, even if the manual kind is wrong.
 # List only newly supported games (or an explicit catch-up announcement).
-NEW_GAMES = ('World of Tanks TCG', 'Vibes TCG', 'Shadowverse Evolve',
-             'Beyblade X TCG — Blader League')
+NEW_GAMES = ()
 RELEASE_NOTES = (
-    'New-game support catch-up: World of Tanks TCG, Vibes TCG, Shadowverse Evolve and Beyblade X TCG — Blader League.',
-    'Their game-role options are registered. Beyblade X is announced for 2027; an exact release date is not set.',
-    'New game support does not guarantee product availability or complete source coverage.',
-    'Next priority: get marketplaces and major retailers operational while preserving the recovered Shopify pacing baseline.',
-    'Marketplace and retailer access, price-reference freshness and live delivery still require verification.',
+    'Excluded franchise board games and dice games from distributor release ingestion and queued release-radar delivery.',
+    'The same exclusion applies to member release calendars; genuine TCG products and dice accessories remain eligible.',
+    'Shopify pacing and XP progression remain unchanged.',
 )
 
 
