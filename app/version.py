@@ -1,15 +1,14 @@
 """Public release identity. Change this file for each shipped release."""
 import os
-VERSION = '1.7.16'
-RELEASE_KIND = 'regular'
+VERSION = '1.7.17'
+RELEASE_KIND = 'patch'
 ANNOUNCEMENT_CHANNEL_ID = 1541869401220055201
 # A nonempty list forces a major release, even if the manual kind is wrong.
 # List only newly supported games (or an explicit catch-up announcement).
 NEW_GAMES = ()
 RELEASE_NOTES = (
-    'Added opt-in eBay fixed-price listing alerts, separate from benchmark-backed deal alerts.',
-    'Listing alerts retain product, seller, packaging, availability, channel-access and durable deduplication checks.',
-    'Added separate listing shadow validation and configuration approval; Shopify and XP are unchanged.',
+    'Added privacy-safe error locations for eBay listing failures to diagnose the production TypeError.',
+    'Alert eligibility, approval settings, Shopify pacing and XP remain unchanged.',
 )
 
 
