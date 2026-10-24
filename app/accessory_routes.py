@@ -22,6 +22,15 @@ INCLUDED_CARDS = re.compile(
     r'|\band\s+(?:bonus|promo|promotional)\s+cards?\b', re.I)
 NO_CARDS = re.compile(r'\b(?:no|without|does not include|not including)\s+(?:(?:bonus|promo|promotional)\s+)?cards?\b|\bcards?\s+not\s+included\b', re.I)
 
+def starter_display(event):
+    title = str(event.get('product_name') or event.get('title') or '')
+    # "Starter Deck Box" is a card product; "deck box for a starter deck"
+    # is storage. Never infer the number of decks from its price or image.
+    return bool(re.search(r'\bgundam\b', title, re.I)
+                and re.search(r'\bst[ -]?14\b', title, re.I)
+                and re.search(r'\bstarter deck (?:box|display)\b', title, re.I)
+                and not re.search(r'\b(?:empty|storage|acrylic|protector|holder|sleeves?|case|for|fits)\b', title, re.I))
+
 def card_contents(event):
     title = str(event.get('product_name') or event.get('title') or '')
     # Explicit accessories bearing a card number are still accessories.
@@ -48,7 +57,7 @@ def accessory_event(event):
         return False
     title = str(event.get('product_name') or event.get('title') or '')
     typ = str(event.get('product_type') or '').strip().casefold()
-    if card_contents(event):
+    if starter_display(event) or card_contents(event):
         return False
     # Mixed sealed collections remain sealed products, even if they include sleeves.
     if CARD_FORMAT.search(title) and re.search(r'\b(?:with|includes?|and|\+)\b', title, re.I):
@@ -57,6 +66,10 @@ def accessory_event(event):
                 or str(event.get('product_category') or '').upper() in {'ACCESSORY', 'ACCESSORIES'})
 
 def normalize_accessory_event(event):
+    if starter_display(event):
+        result = dict(event, product_category='SEALED', product_type='Starter Deck Display')
+        result.pop('reference_evidence', None)
+        return result
     contents = card_contents(event)
     if contents:
         result = dict(event, product_category=contents,
